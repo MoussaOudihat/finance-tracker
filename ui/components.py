@@ -1,6 +1,7 @@
 """
 ui/components.py — Widgets et helpers UI réutilisables
 """
+import tkinter as tk
 import customtkinter as ctk
 from config import C, PALETTE
 
@@ -45,11 +46,10 @@ class Tooltip:
                  + self._widget.winfo_height() // 2 - 14)
         except Exception:
             return
-        tip = ctk.CTkFrame(root, fg_color=C["card"], corner_radius=6,
-                           border_width=1, border_color=C["border"])
-        ctk.CTkLabel(tip, text=self._text,
-                     font=ctk.CTkFont(size=11),
-                     text_color=C["text"]).pack(padx=10, pady=6)
+        tip = tk.Frame(root, bg=C["card"], bd=1, relief="solid",
+                       highlightbackground=C["border"], highlightthickness=1)
+        tk.Label(tip, text=self._text, bg=C["card"], fg=C["text"],
+                 font=("Segoe UI", 10), padx=10, pady=5).pack()
         tip.place(x=x, y=y)
         tip.lift()
         self._tip_frame = tip
