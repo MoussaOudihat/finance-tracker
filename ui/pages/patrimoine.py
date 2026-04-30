@@ -15,7 +15,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
 from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE
-from ui.components import make_card
+from ui.components import make_card, Tooltip
 from ui.dialogs import (AssetDialog, QuickValueUpdateDialog,
                         AssetEvolutionDialog, AssetTransactionsDialog)
 
@@ -462,24 +462,35 @@ def _asset_row(parent, asset, db, app):
     def show_transactions():
         AssetTransactionsDialog(app, asset, db, app, today.year, today.month)
 
-    ctk.CTkButton(btns, text="✏", width=30, height=26,
-                  fg_color="#EFF6FF", text_color=C["primary"],
-                  hover_color="#DBEAFE",
-                  command=edit_asset).pack(side="left", padx=(0, 2))
-    ctk.CTkButton(btns, text="💰", width=30, height=26,
-                  fg_color="#F0FDF4", text_color=C["green"],
-                  hover_color="#DCFCE7",
-                  command=quick_update).pack(side="left", padx=(0, 2))
+    btn_edit = ctk.CTkButton(btns, text="✏", width=30, height=26,
+                             fg_color="#EFF6FF", text_color=C["primary"],
+                             hover_color="#DBEAFE",
+                             command=edit_asset)
+    btn_edit.pack(side="left", padx=(0, 2))
+    Tooltip(btn_edit, "Modifier l'actif")
+
+    btn_update = ctk.CTkButton(btns, text="💰", width=30, height=26,
+                               fg_color="#F0FDF4", text_color=C["green"],
+                               hover_color="#DCFCE7",
+                               command=quick_update)
+    btn_update.pack(side="left", padx=(0, 2))
+    Tooltip(btn_update, "Mettre à jour la valeur")
+
     has_trans = asset["asset_type"] in _TRANSACTION_TYPES
-    ctk.CTkButton(btns, text="📋", width=30, height=26,
-                  fg_color="#FFF7ED" if has_trans else "#F8FAFC",
-                  text_color="#F97316" if has_trans else C["muted"],
-                  hover_color="#FFEDD5",
-                  command=show_transactions).pack(side="left", padx=(0, 2))
-    ctk.CTkButton(btns, text="📊", width=30, height=26,
-                  fg_color="#F5F3FF", text_color="#8B5CF6",
-                  hover_color="#EDE9FE",
-                  command=show_evolution).pack(side="left", padx=(0, 2))
+    btn_trans = ctk.CTkButton(btns, text="📋", width=30, height=26,
+                              fg_color="#FFF7ED" if has_trans else "#F8FAFC",
+                              text_color="#F97316" if has_trans else C["muted"],
+                              hover_color="#FFEDD5",
+                              command=show_transactions)
+    btn_trans.pack(side="left", padx=(0, 2))
+    Tooltip(btn_trans, "Transactions" if has_trans else "Aucune transaction")
+
+    btn_evol = ctk.CTkButton(btns, text="📊", width=30, height=26,
+                             fg_color="#F5F3FF", text_color="#8B5CF6",
+                             hover_color="#EDE9FE",
+                             command=show_evolution)
+    btn_evol.pack(side="left", padx=(0, 2))
+    Tooltip(btn_evol, "Évolution historique")
 
     # Bouton "♻ Réinvesti" — uniquement pour positions vendues dont le cash
     # n'a pas encore été marqué réinvesti.
@@ -487,16 +498,20 @@ def _asset_row(parent, asset, db, app):
         def mark_reinvested():
             db.mark_sales_reinvested(asset["asset_name"], reinvested=True)
             app._go("patrimoine")
-        ctk.CTkButton(btns, text="♻", width=30, height=26,
-                      fg_color="#ECFDF5", text_color="#047857",
-                      hover_color="#D1FAE5",
-                      command=mark_reinvested).pack(side="left", padx=(0, 2))
+        btn_reinvest = ctk.CTkButton(btns, text="♻", width=30, height=26,
+                                     fg_color="#ECFDF5", text_color="#047857",
+                                     hover_color="#D1FAE5",
+                                     command=mark_reinvested)
+        btn_reinvest.pack(side="left", padx=(0, 2))
+        Tooltip(btn_reinvest, "Marquer comme réinvesti")
 
-    ctk.CTkButton(btns, text="✕", width=30, height=26,
-                  fg_color="#FEE2E2", text_color=C["red"],
-                  hover_color="#FECACA",
-                  command=lambda: (db.delete_asset(asset["id"]),
-                                   app._go("patrimoine"))).pack(side="left")
+    btn_del = ctk.CTkButton(btns, text="✕", width=30, height=26,
+                            fg_color="#FEE2E2", text_color=C["red"],
+                            hover_color="#FECACA",
+                            command=lambda: (db.delete_asset(asset["id"]),
+                                             app._go("patrimoine")))
+    btn_del.pack(side="left")
+    Tooltip(btn_del, "Supprimer l'actif")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -617,10 +632,12 @@ def _render_closed_positions(parent, closed: list[dict], db, app, row: int):
             def _undo(name=c["asset_name"]):
                 db.mark_sales_reinvested(name, reinvested=False)
                 app._go("patrimoine")
-            ctk.CTkButton(btns, text="↩", width=30, height=26,
-                          fg_color="#F5F3FF", text_color="#8B5CF6",
-                          hover_color="#EDE9FE",
-                          command=_undo).pack(side="left", padx=(0, 2))
+            btn_undo = ctk.CTkButton(btns, text="↩", width=30, height=26,
+                                     fg_color="#F5F3FF", text_color="#8B5CF6",
+                                     hover_color="#EDE9FE",
+                                     command=_undo)
+            btn_undo.pack(side="left", padx=(0, 2))
+            Tooltip(btn_undo, "Annuler réinvestissement")
 
         # Bouton voir transactions (utilise un asset minimal)
         def _show_tx(name=c["asset_name"], typ=c["asset_type"]):
@@ -635,10 +652,12 @@ def _render_closed_positions(parent, closed: list[dict], db, app, row: int):
             }
             AssetTransactionsDialog(app, asset_min, db, app, today.year, today.month)
 
-        ctk.CTkButton(btns, text="📋", width=30, height=26,
-                      fg_color="#FFF7ED", text_color="#F97316",
-                      hover_color="#FFEDD5",
-                      command=_show_tx).pack(side="left")
+        btn_tx = ctk.CTkButton(btns, text="📋", width=30, height=26,
+                               fg_color="#FFF7ED", text_color="#F97316",
+                               hover_color="#FFEDD5",
+                               command=_show_tx)
+        btn_tx.pack(side="left")
+        Tooltip(btn_tx, "Voir les transactions")
 
     # ── Bouton export CSV (déclaration fiscale) ──
     foot = ctk.CTkFrame(card, fg_color="transparent")

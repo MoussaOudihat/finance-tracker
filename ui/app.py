@@ -48,24 +48,24 @@ def _load_page_class(key: str):
     _PAGE_CLASS_CACHE[key] = cls
     return cls
 
-# None = séparateur
+# None = séparateur  |  (label, key, tooltip)
 _NAV_ITEMS = [
-    ("🏠  Tableau de bord",             "dashboard"),
+    ("🏠  Tableau de bord",             "dashboard",      "Vue d'ensemble — revenus, dépenses et solde du mois"),
     None,
-    ("💶  Revenus",                      "revenues"),
-    ("💸  Dépenses",                     "expenses"),
-    ("🏦  Épargne",                      "savings_entry"),
+    ("💶  Revenus",                      "revenues",       "Saisir et consulter vos revenus"),
+    ("💸  Dépenses",                     "expenses",       "Saisir et consulter vos dépenses"),
+    ("🏦  Épargne",                      "savings_entry",  "Enregistrer vos versements d'épargne"),
     None,
-    ("💰  Budget mensuel",              "budget"),
-    ("🎯  Objectifs d'épargne",         "objectifs"),
+    ("💰  Budget mensuel",              "budget",         "Définir et suivre votre budget par catégorie"),
+    ("🎯  Objectifs d'épargne",         "objectifs",      "Gérer vos objectifs d'épargne à long terme"),
     None,
-    ("📊  Analyses détaillées",         "analyses"),
-    ("📈  Patrimoine & Investissements", "patrimoine"),
-    ("🔮  Projection",                  "projection"),
-    ("📋  Historique",                  "historique"),
+    ("📊  Analyses détaillées",         "analyses",       "Graphiques et statistiques détaillées"),
+    ("📈  Patrimoine & Investissements", "patrimoine",     "Suivi de vos actifs et investissements"),
+    ("🔮  Projection",                  "projection",     "Simuler l'évolution future de votre patrimoine"),
+    ("📋  Historique",                  "historique",     "Historique complet et export de rapports"),
     None,
-    ("🧠  Recommandations",             "recommandations"),
-    ("⚙️  Paramètres",                 "settings"),
+    ("🧠  Recommandations",             "recommandations","Conseils personnalisés basés sur vos données"),
+    ("⚙️  Paramètres",                 "settings",       "Préférences, sécurité et gestion du compte"),
 ]
 
 
@@ -212,8 +212,8 @@ class App(ctk.CTk):
                     row=row_idx, column=0, sticky="ew", padx=20, pady=(4, 4)
                 )
             else:
-                label, key = item
-                btn = nav_button(sb, label, command=lambda k=key: self._go(k))
+                label, key, tip = item
+                btn = nav_button(sb, label, command=lambda k=key: self._go(k), tooltip=tip)
                 btn.grid(row=row_idx, column=0, sticky="ew", padx=10, pady=1)
                 self._nav_buttons[key] = btn
             row_idx += 1
