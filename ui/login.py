@@ -180,7 +180,7 @@ class LoginApp(ctk.CTk):
             if Auth.verify_password(self.db, pwd):
                 Auth.create_session(self.db)
                 self.auth_success = True
-                self.destroy()
+                self._finish()
             else:
                 err_var.set("❌  Mot de passe incorrect. Réessayez.")
                 pwd_var.set("")
@@ -325,7 +325,7 @@ class LoginApp(ctk.CTk):
             Auth.setup_password(self.db, pwd, q, ans)
             Auth.create_session(self.db)
             self.auth_success = True
-            self.destroy()
+            self._finish()
 
         ctk.CTkButton(inner,
                       text="  Créer mon accès",
@@ -473,7 +473,7 @@ class LoginApp(ctk.CTk):
                 Auth.change_password(self.db, np)
                 Auth.create_session(self.db)
                 self.auth_success = True
-                self.destroy()
+                self._finish()
 
             ctk.CTkButton(inner,
                           text="  Enregistrer le nouveau mot de passe",
@@ -485,7 +485,28 @@ class LoginApp(ctk.CTk):
                                                       sticky="ew",
                                                       pady=(14, 0))
 
-    # ── Fermeture de fenêtre ─────────────────────────────────
+    # ── Fermeture propre ────────────────────────────────────
+    def _finish(self):
+        """Stoppe le mainloop proprement.
+        Les callbacks after() de CTk (DPI, focus, titlebar…) sont dans la file
+        Tcl globale : si on les laisse, App() les exécutera sur un widget mort.
+        On les annule tous avant de quitter."""
+        self.withdraw()
+        self._purge_after_callbacks()
+        self.quit()
+
+    def _purge_after_callbacks(self):
+        try:
+            ids = self.tk.call("after", "info")
+            if ids:
+                for after_id in str(ids).split():
+                    try:
+                        self.after_cancel(after_id)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _on_close(self):
         self.auth_success = False
-        self.destroy()
+        self._finish()
