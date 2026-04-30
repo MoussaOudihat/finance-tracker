@@ -1,7 +1,6 @@
 """
 ui/components.py — Widgets et helpers UI réutilisables
 """
-import tkinter as tk
 import customtkinter as ctk
 from config import C, PALETTE
 
@@ -10,14 +9,14 @@ from config import C, PALETTE
 #  Tooltip
 # ──────────────────────────────────────────────────────────
 class Tooltip:
-    """Bulle d'aide qui apparaît après un survol de 400 ms."""
+    """Bulle d'aide placée sur la fenêtre racine — apparaît après 400 ms de survol."""
 
     def __init__(self, widget, text: str, delay_ms: int = 400):
-        self._widget   = widget
-        self._text     = text
-        self._delay    = delay_ms
-        self._tip_win  = None
-        self._after_id = None
+        self._widget    = widget
+        self._text      = text
+        self._delay     = delay_ms
+        self._tip_frame = None
+        self._after_id  = None
         widget.bind("<Enter>",       self._on_enter, add="+")
         widget.bind("<Leave>",       self._on_leave, add="+")
         widget.bind("<ButtonPress>", self._on_leave, add="+")
@@ -36,33 +35,32 @@ class Tooltip:
             self._after_id = None
 
     def _show(self):
-        if self._tip_win or not self._text:
+        if self._tip_frame or not self._text:
             return
         try:
-            x = self._widget.winfo_rootx() + self._widget.winfo_width() + 10
-            y = self._widget.winfo_rooty() + self._widget.winfo_height() // 2 - 14
+            root = self._widget.winfo_toplevel()
+            x = (self._widget.winfo_rootx() - root.winfo_rootx()
+                 + self._widget.winfo_width() + 10)
+            y = (self._widget.winfo_rooty() - root.winfo_rooty()
+                 + self._widget.winfo_height() // 2 - 14)
         except Exception:
             return
-        tw = tk.Toplevel(self._widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tw.attributes("-topmost", True)
-        outer = tk.Frame(tw, bg=C.get("border", "#334155"), padx=1, pady=1)
-        outer.pack()
-        tk.Label(outer, text=self._text,
-                 bg=C.get("card", "#1E293B"),
-                 fg=C.get("text", "#F8FAFC"),
-                 font=("Segoe UI", 10),
-                 padx=10, pady=6).pack()
-        self._tip_win = tw
+        tip = ctk.CTkFrame(root, fg_color=C["card"], corner_radius=6,
+                           border_width=1, border_color=C["border"])
+        ctk.CTkLabel(tip, text=self._text,
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["text"]).pack(padx=10, pady=6)
+        tip.place(x=x, y=y)
+        tip.lift()
+        self._tip_frame = tip
 
     def _destroy(self):
-        if self._tip_win:
+        if self._tip_frame:
             try:
-                self._tip_win.destroy()
+                self._tip_frame.destroy()
             except Exception:
                 pass
-            self._tip_win = None
+            self._tip_frame = None
 
 
 # ──────────────────────────────────────────────────────────
