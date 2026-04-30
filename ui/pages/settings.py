@@ -573,7 +573,6 @@ class SettingsPage:
                       height=32, font=ctk.CTkFont(size=12),
                       fg_color=C["primary"],
                       command=export_csv).pack(anchor="w", padx=20, pady=(8, 16))
-t_color=C["green"]).pack(anchor="w", padx=20)
 
         btn_row2 = ctk.CTkFrame(ic, fg_color="transparent")
         btn_row2.pack(anchor="w", padx=20, pady=(6, 16))
