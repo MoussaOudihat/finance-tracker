@@ -1,0 +1,491 @@
+"""
+ui/login.py — Fenêtre d'authentification (Login / Setup / Récupération)
+
+Flux :
+  • 1er lancement → _show_setup()
+  • Session valide → auth_success=True, destroy immédiat
+  • Sinon → _show_login()
+"""
+import customtkinter as ctk
+from config import C
+import auth as Auth
+
+
+# ─────────────────────────────────────────────────────────────
+#  Questions secrètes prédéfinies
+# ─────────────────────────────────────────────────────────────
+SECRET_QUESTIONS = [
+    "Quel est le prénom de votre mère ?",
+    "Quel est le nom de votre premier animal de compagnie ?",
+    "Dans quelle ville êtes-vous né(e) ?",
+    "Quel est le nom de votre école primaire ?",
+    "Quel est votre plat préféré ?",
+    "Quel est le prénom de votre meilleur(e) ami(e) d'enfance ?",
+    "Quel est le modèle de votre première voiture ?",
+]
+
+
+# ─────────────────────────────────────────────────────────────
+#  Fenêtre principale d'authentification
+# ─────────────────────────────────────────────────────────────
+class LoginApp(ctk.CTk):
+    """
+    Fenêtre CTk qui gère toute l'authentification avant l'app principale.
+    Après destroy(), lire self.auth_success pour savoir si on peut lancer App.
+    """
+
+    def __init__(self, db):
+        super().__init__()
+        self.db           = db
+        self.auth_success = False
+
+        self.title("Finance Tracker — Connexion")
+        self.resizable(False, False)
+        self.configure(fg_color=C["sidebar"])
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Centrer la fenêtre
+        self._center(480, 560)
+
+        # Colonne unique qui s'étire
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # En-tête fixe (logo)
+        self._build_header()
+
+        # Zone centrale (contenu variable selon l'écran)
+        self._body = ctk.CTkFrame(self, fg_color="transparent")
+        self._body.grid(row=1, column=0, sticky="nsew", padx=32, pady=(0, 28))
+        self._body.grid_columnconfigure(0, weight=1)
+
+        # Routage initial
+        if Auth.has_valid_session(db):
+            # Session encore valide → on passe directement
+            self.auth_success = True
+            self.after(0, self.destroy)
+        elif Auth.has_password(db):
+            self._show_login()
+        else:
+            self._show_setup()
+
+    # ── Centrage ────────────────────────────────────────────
+    def _center(self, w: int, h: int):
+        self.update_idletasks()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x  = (sw - w) // 2
+        y  = (sh - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    # ── En-tête ─────────────────────────────────────────────
+    def _build_header(self):
+        hdr = ctk.CTkFrame(self, fg_color="transparent", height=90)
+        hdr.grid(row=0, column=0, sticky="ew", padx=32, pady=(28, 0))
+        hdr.grid_propagate(False)
+        hdr.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(hdr,
+                     text="💰  Finance Tracker",
+                     font=ctk.CTkFont(size=26, weight="bold"),
+                     text_color="white").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(hdr,
+                     text="Accès sécurisé à vos finances personnelles",
+                     font=ctk.CTkFont(size=12),
+                     text_color="#94A3B8").grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+    # ── Effacer le body ─────────────────────────────────────
+    def _clear_body(self):
+        for w in self._body.winfo_children():
+            w.destroy()
+
+    # ── Carte centrale ───────────────────────────────────────
+    def _make_card(self) -> ctk.CTkFrame:
+        card = ctk.CTkFrame(self._body,
+                            fg_color=C["card"],
+                            corner_radius=16,
+                            border_width=1,
+                            border_color=C["border"])
+        card.grid(row=0, column=0, sticky="ew")
+        card.grid_columnconfigure(0, weight=1)
+        return card
+
+    # ══════════════════════════════════════════════════════════
+    #  VUE LOGIN
+    # ══════════════════════════════════════════════════════════
+    def _show_login(self):
+        self._clear_body()
+        card = self._make_card()
+
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.grid(row=0, column=0, padx=28, pady=28, sticky="ew")
+        inner.grid_columnconfigure(0, weight=1)
+
+        # Titre
+        ctk.CTkLabel(inner,
+                     text="🔐  Connexion",
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=0, sticky="w", pady=(0, 20))
+
+        # Champ mot de passe
+        ctk.CTkLabel(inner, text="Mot de passe",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=1, column=0, sticky="w", pady=(0, 4))
+
+        pwd_frame = ctk.CTkFrame(inner, fg_color="transparent")
+        pwd_frame.grid(row=2, column=0, sticky="ew")
+        pwd_frame.grid_columnconfigure(0, weight=1)
+
+        pwd_var  = ctk.StringVar()
+        show_pwd = {"visible": False}
+
+        pwd_entry = ctk.CTkEntry(pwd_frame,
+                                 textvariable=pwd_var,
+                                 show="●",
+                                 height=42,
+                                 font=ctk.CTkFont(size=14),
+                                 fg_color=C["light"],
+                                 border_color=C["border"],
+                                 placeholder_text="Entrez votre mot de passe…")
+        pwd_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        pwd_entry.focus()
+
+        def _toggle_pwd():
+            show_pwd["visible"] = not show_pwd["visible"]
+            pwd_entry.configure(show="" if show_pwd["visible"] else "●")
+            toggle_btn.configure(text="🙈" if show_pwd["visible"] else "👁")
+
+        toggle_btn = ctk.CTkButton(pwd_frame, text="👁", width=42, height=42,
+                                   fg_color=C["light"],
+                                   text_color=C["muted"],
+                                   hover_color=C["border"],
+                                   border_width=1,
+                                   border_color=C["border"],
+                                   command=_toggle_pwd)
+        toggle_btn.grid(row=0, column=1)
+
+        # Message d'erreur
+        err_var = ctk.StringVar()
+        err_lbl = ctk.CTkLabel(inner, textvariable=err_var,
+                               font=ctk.CTkFont(size=11),
+                               text_color=C["red"])
+        err_lbl.grid(row=3, column=0, sticky="w", pady=(6, 0))
+
+        # Bouton connexion
+        def _do_login(event=None):
+            pwd = pwd_var.get()
+            if not pwd:
+                err_var.set("⚠  Veuillez entrer votre mot de passe.")
+                return
+            if Auth.verify_password(self.db, pwd):
+                Auth.create_session(self.db)
+                self.auth_success = True
+                self.destroy()
+            else:
+                err_var.set("❌  Mot de passe incorrect. Réessayez.")
+                pwd_var.set("")
+                pwd_entry.focus()
+
+        pwd_entry.bind("<Return>", _do_login)
+
+        ctk.CTkButton(inner,
+                      text="  Se connecter",
+                      height=44,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      fg_color=C["primary"],
+                      hover_color="#2955C9",
+                      command=_do_login).grid(row=4, column=0, sticky="ew",
+                                              pady=(18, 0))
+
+        # Lien mot de passe oublié
+        forgot = ctk.CTkButton(inner,
+                               text="Mot de passe oublié ?",
+                               font=ctk.CTkFont(size=11),
+                               fg_color="transparent",
+                               text_color=C["muted"],
+                               hover_color="transparent",
+                               cursor="hand2",
+                               command=self._show_recovery)
+        forgot.grid(row=5, column=0, pady=(10, 0))
+
+    # ══════════════════════════════════════════════════════════
+    #  VUE SETUP (premier lancement)
+    # ══════════════════════════════════════════════════════════
+    def _show_setup(self):
+        self._center(480, 660)
+        self._clear_body()
+        card = self._make_card()
+
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.grid(row=0, column=0, padx=28, pady=28, sticky="ew")
+        inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(inner,
+                     text="🛡  Créer votre mot de passe",
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=0, sticky="w",
+                                                pady=(0, 4))
+        ctk.CTkLabel(inner,
+                     text="Premier lancement — sécurisez votre accès.",
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["muted"]).grid(row=1, column=0, sticky="w",
+                                                 pady=(0, 20))
+
+        show_state = {"pwd": False, "cpwd": False}
+
+        def _pwd_row(parent, row_idx, label, key):
+            ctk.CTkLabel(parent, text=label,
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=C["muted"]).grid(
+                row=row_idx, column=0, sticky="w", pady=(0, 4))
+            row_idx += 1
+            frm = ctk.CTkFrame(parent, fg_color="transparent")
+            frm.grid(row=row_idx, column=0, sticky="ew")
+            frm.grid_columnconfigure(0, weight=1)
+            var = ctk.StringVar()
+            entry = ctk.CTkEntry(frm, textvariable=var, show="●",
+                                 height=40, font=ctk.CTkFont(size=13),
+                                 fg_color=C["light"], border_color=C["border"])
+            entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+            def _tog(e=entry, k=key):
+                show_state[k] = not show_state[k]
+                e.configure(show="" if show_state[k] else "●")
+                tbtn.configure(text="🙈" if show_state[k] else "👁")
+
+            tbtn = ctk.CTkButton(frm, text="👁", width=40, height=40,
+                                 fg_color=C["light"], text_color=C["muted"],
+                                 hover_color=C["border"],
+                                 border_width=1, border_color=C["border"],
+                                 command=_tog)
+            tbtn.grid(row=0, column=1)
+            return var, entry, row_idx + 1
+
+        # Mot de passe
+        pwd_var,  pwd_entry,  r = _pwd_row(inner, 2,  "Mot de passe", "pwd")
+        cpwd_var, cpwd_entry, r = _pwd_row(inner, r,   "Confirmer le mot de passe", "cpwd")
+
+        # Séparateur
+        ctk.CTkFrame(inner, height=1, fg_color=C["border"]).grid(
+            row=r, column=0, sticky="ew", pady=(16, 14))
+        r += 1
+
+        # Question secrète
+        ctk.CTkLabel(inner, text="Question secrète",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=r, column=0, sticky="w",
+                                                 pady=(0, 4))
+        r += 1
+        q_var = ctk.StringVar(value=SECRET_QUESTIONS[0])
+        ctk.CTkOptionMenu(inner, values=SECRET_QUESTIONS, variable=q_var,
+                          height=38, font=ctk.CTkFont(size=11),
+                          fg_color=C["light"], button_color=C["primary"],
+                          text_color=C["text"]).grid(
+            row=r, column=0, sticky="ew")
+        r += 1
+
+        ctk.CTkLabel(inner, text="Votre réponse",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=r, column=0, sticky="w",
+                                                 pady=(10, 4))
+        r += 1
+        ans_var = ctk.StringVar()
+        ctk.CTkEntry(inner, textvariable=ans_var, height=40,
+                     font=ctk.CTkFont(size=13),
+                     fg_color=C["light"], border_color=C["border"],
+                     placeholder_text="Votre réponse…").grid(
+            row=r, column=0, sticky="ew")
+        r += 1
+
+        # Erreur
+        err_var = ctk.StringVar()
+        ctk.CTkLabel(inner, textvariable=err_var,
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["red"],
+                     wraplength=380).grid(row=r, column=0, sticky="w",
+                                         pady=(6, 0))
+        r += 1
+
+        def _do_setup():
+            pwd   = pwd_var.get()
+            cpwd  = cpwd_var.get()
+            ans   = ans_var.get().strip()
+            q     = q_var.get()
+
+            if len(pwd) < 4:
+                err_var.set("⚠  Le mot de passe doit faire au moins 4 caractères.")
+                return
+            if pwd != cpwd:
+                err_var.set("❌  Les mots de passe ne correspondent pas.")
+                return
+            if not ans:
+                err_var.set("⚠  La réponse à la question secrète est obligatoire.")
+                return
+
+            Auth.setup_password(self.db, pwd, q, ans)
+            Auth.create_session(self.db)
+            self.auth_success = True
+            self.destroy()
+
+        ctk.CTkButton(inner,
+                      text="  Créer mon accès",
+                      height=44,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      fg_color=C["primary"],
+                      hover_color="#2955C9",
+                      command=_do_setup).grid(row=r, column=0, sticky="ew",
+                                              pady=(16, 0))
+        pwd_entry.focus()
+
+    # ══════════════════════════════════════════════════════════
+    #  VUE RÉCUPÉRATION (question secrète)
+    # ══════════════════════════════════════════════════════════
+    def _show_recovery(self):
+        self._center(480, 580)
+        self._clear_body()
+        card = self._make_card()
+
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.grid(row=0, column=0, padx=28, pady=28, sticky="ew")
+        inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(inner,
+                     text="🔑  Récupération",
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=0, sticky="w",
+                                                pady=(0, 20))
+
+        question = Auth.get_secret_question(self.db)
+        ctk.CTkLabel(inner,
+                     text=question,
+                     font=ctk.CTkFont(size=12),
+                     text_color=C["text"],
+                     wraplength=380,
+                     justify="left").grid(row=1, column=0, sticky="w",
+                                          pady=(0, 6))
+
+        ans_var = ctk.StringVar()
+        ans_entry = ctk.CTkEntry(inner, textvariable=ans_var, height=40,
+                                 font=ctk.CTkFont(size=13),
+                                 fg_color=C["light"], border_color=C["border"],
+                                 placeholder_text="Votre réponse…")
+        ans_entry.grid(row=2, column=0, sticky="ew")
+        ans_entry.focus()
+
+        err_var = ctk.StringVar()
+        err_lbl = ctk.CTkLabel(inner, textvariable=err_var,
+                               font=ctk.CTkFont(size=11),
+                               text_color=C["red"])
+        err_lbl.grid(row=3, column=0, sticky="w", pady=(6, 0))
+
+        # ── Vérification de la réponse
+        def _check_answer(event=None):
+            if Auth.verify_secret_answer(self.db, ans_var.get()):
+                # Bonne réponse → formulaire nouveau mot de passe
+                _show_new_pwd_form()
+            else:
+                err_var.set("❌  Réponse incorrecte.")
+                ans_var.set("")
+                ans_entry.focus()
+
+        ans_entry.bind("<Return>", _check_answer)
+
+        ctk.CTkButton(inner,
+                      text="  Vérifier",
+                      height=42,
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      fg_color=C["primary"],
+                      hover_color="#2955C9",
+                      command=_check_answer).grid(row=4, column=0, sticky="ew",
+                                                  pady=(14, 0))
+
+        ctk.CTkButton(inner,
+                      text="← Retour à la connexion",
+                      font=ctk.CTkFont(size=11),
+                      fg_color="transparent",
+                      text_color=C["muted"],
+                      hover_color="transparent",
+                      cursor="hand2",
+                      command=self._show_login).grid(row=5, column=0,
+                                                     pady=(10, 0))
+
+        # ── Formulaire nouveau mot de passe (inséré dynamiquement)
+        new_pwd_frame = {"f": None}
+
+        def _show_new_pwd_form():
+            err_var.set("")
+            ans_entry.configure(state="disabled")
+            for w in inner.winfo_children():
+                if w.cget("text") in ("  Vérifier",
+                                      "← Retour à la connexion"):
+                    w.destroy()
+
+            sep = ctk.CTkFrame(inner, height=1, fg_color=C["border"])
+            sep.grid(row=6, column=0, sticky="ew", pady=(18, 14))
+
+            ctk.CTkLabel(inner,
+                         text="✅  Identité vérifiée — choisissez un nouveau mot de passe",
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=C["green"],
+                         wraplength=380).grid(row=7, column=0, sticky="w",
+                                              pady=(0, 12))
+
+            ctk.CTkLabel(inner, text="Nouveau mot de passe",
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=C["muted"]).grid(row=8, column=0,
+                                                     sticky="w", pady=(0, 4))
+            npwd_var = ctk.StringVar()
+            npwd_entry = ctk.CTkEntry(inner, textvariable=npwd_var,
+                                      show="●", height=40,
+                                      font=ctk.CTkFont(size=13),
+                                      fg_color=C["light"],
+                                      border_color=C["border"])
+            npwd_entry.grid(row=9, column=0, sticky="ew")
+            npwd_entry.focus()
+
+            ctk.CTkLabel(inner, text="Confirmer",
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=C["muted"]).grid(row=10, column=0,
+                                                     sticky="w", pady=(8, 4))
+            cpwd_var = ctk.StringVar()
+            ctk.CTkEntry(inner, textvariable=cpwd_var,
+                         show="●", height=40,
+                         font=ctk.CTkFont(size=13),
+                         fg_color=C["light"],
+                         border_color=C["border"]).grid(row=11, column=0,
+                                                        sticky="ew")
+
+            err2_var = ctk.StringVar()
+            ctk.CTkLabel(inner, textvariable=err2_var,
+                         font=ctk.CTkFont(size=11),
+                         text_color=C["red"]).grid(row=12, column=0,
+                                                   sticky="w", pady=(4, 0))
+
+            def _save_new_pwd():
+                np = npwd_var.get()
+                cp = cpwd_var.get()
+                if len(np) < 4:
+                    err2_var.set("⚠  Au moins 4 caractères.")
+                    return
+                if np != cp:
+                    err2_var.set("❌  Les mots de passe ne correspondent pas.")
+                    return
+                Auth.change_password(self.db, np)
+                Auth.create_session(self.db)
+                self.auth_success = True
+                self.destroy()
+
+            ctk.CTkButton(inner,
+                          text="  Enregistrer le nouveau mot de passe",
+                          height=44,
+                          font=ctk.CTkFont(size=13, weight="bold"),
+                          fg_color=C["green"],
+                          hover_color="#16A34A",
+                          command=_save_new_pwd).grid(row=13, column=0,
+                                                      sticky="ew",
+                                                      pady=(14, 0))
+
+    # ── Fermeture de fenêtre ─────────────────────────────────
+    def _on_close(self):
+        self.auth_success = False
+        self.destroy()

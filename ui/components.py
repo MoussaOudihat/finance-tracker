@@ -1,0 +1,179 @@
+"""
+ui/components.py — Widgets et helpers UI réutilisables
+"""
+import customtkinter as ctk
+from config import C, PALETTE
+
+
+# ──────────────────────────────────────────────────────────
+#  Cartes
+# ──────────────────────────────────────────────────────────
+def make_card(parent, **kwargs) -> ctk.CTkFrame:
+    defaults = dict(fg_color=C["card"], corner_radius=14,
+                    border_width=1, border_color=C["border"])
+    defaults.update(kwargs)
+    return ctk.CTkFrame(parent, **defaults)
+
+
+def kpi_card(parent, title: str, value: str, color: str, icon: str = "") -> ctk.CTkFrame:
+    card  = make_card(parent)
+    inner = ctk.CTkFrame(card, fg_color="transparent")
+    inner.pack(fill="both", expand=True, padx=18, pady=14)
+    ctk.CTkLabel(inner, text=f"{icon}  {title}", font=ctk.CTkFont(size=11),
+                 text_color=C["muted"]).pack(anchor="w")
+    ctk.CTkLabel(inner, text=value, font=ctk.CTkFont(size=24, weight="bold"),
+                 text_color=color).pack(anchor="w", pady=(2, 0))
+    return card
+
+
+# ──────────────────────────────────────────────────────────
+#  Navigation
+# ──────────────────────────────────────────────────────────
+def nav_button(parent, text: str, command) -> ctk.CTkButton:
+    return ctk.CTkButton(
+        parent, text=text, anchor="w", height=42,
+        font=ctk.CTkFont(size=13), fg_color="transparent",
+        hover_color=C["sidebar2"], text_color="#CBD5E1",
+        corner_radius=8, command=command,
+    )
+
+
+def month_selector(parent, months_fr, sel_year, sel_month, on_change) -> ctk.CTkFrame:
+    """Renvoie un widget sélecteur mois/année avec callback."""
+    sel   = ctk.CTkFrame(parent, fg_color=C["card"], corner_radius=8,
+                         border_width=1, border_color=C["border"])
+    m_var = ctk.StringVar(value=months_fr[sel_month - 1])
+    y_var = ctk.StringVar(value=str(sel_year))
+
+    def _cb(*_):
+        on_change(months_fr.index(m_var.get()) + 1, int(y_var.get()))
+
+    ctk.CTkOptionMenu(sel, values=months_fr, variable=m_var, command=_cb,
+                      width=135, height=34).pack(side="left", padx=6, pady=6)
+    ctk.CTkOptionMenu(sel, values=[str(y) for y in range(2022, 2030)],
+                      variable=y_var, command=_cb,
+                      width=90, height=34).pack(side="left", padx=(0, 6), pady=6)
+    return sel
+
+
+# ──────────────────────────────────────────────────────────
+#  Tableaux
+# ──────────────────────────────────────────────────────────
+def table_header(parent, columns: list[tuple[int, str]]):
+    """
+    Configure les colonnes du parent (grille PARTAGÉE par toutes les lignes)
+    et affiche l'en-tête directement dans parent.
+
+    Principe : header et lignes sont dans la MÊME grille du parent.
+    tkinter calcule donc les largeurs de colonnes en prenant le maximum
+    sur TOUS les widgets → alignement parfait indépendamment du contenu.
+    """
+    n = len(columns)
+    # Configure les colonnes du parent UNE SEULE FOIS pour toutes les lignes
+    for i, (weight, _) in enumerate(columns):
+        parent.grid_columnconfigure(i, weight=weight)
+    parent.grid_columnconfigure(n,     weight=0)   # colonne bouton ✏
+    parent.grid_columnconfigure(n + 1, weight=0)   # colonne bouton ✕
+
+    # Fond de l'en-tête (placé derrière via lower)
+    # width=1, height=1 : évite la taille par défaut 200×200 de CTkFrame
+    hdr_bg = ctk.CTkFrame(parent, fg_color=C["light"], corner_radius=6,
+                          width=1, height=1)
+    hdr_bg.grid(row=0, column=0, columnspan=n + 2,
+                sticky="nsew", padx=2, pady=(0, 4))
+
+    for i, (_, label) in enumerate(columns):
+        ctk.CTkLabel(
+            parent, text=label,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=C["muted"],
+            fg_color=C["light"],
+        ).grid(row=0, column=i, padx=10, pady=6, sticky="w")
+
+    hdr_bg.lower()   # fond derrière les labels
+
+
+def table_row(parent, row_idx: int, cols: list,
+              on_edit=None, on_delete=None) -> None:
+    """
+    Insère une ligne de données DIRECTEMENT dans parent (même grille que l'en-tête).
+    Les largeurs de colonnes sont partagées → alignement parfait garanti.
+    """
+    n  = len(cols)
+    r  = row_idx + 1                                      # ligne 0 = en-tête
+    bg = C["light"] if row_idx % 2 == 0 else C["card"]
+
+    # Fond de la ligne (passé derrière les cellules via lower)
+    # width=1, height=1 : évite la taille par défaut 200×200 de CTkFrame
+    row_bg = ctk.CTkFrame(parent, fg_color=bg, corner_radius=6,
+                          width=1, height=1)
+    row_bg.grid(row=r, column=0, columnspan=n + 2,
+                sticky="nsew", padx=2, pady=1)
+
+    for i, col in enumerate(cols):
+        _, text, color = col[0], col[1], col[2]
+        ctk.CTkLabel(
+            parent, text=text, text_color=color or C["text"],
+            font=ctk.CTkFont(size=12),
+            fg_color=bg,
+        ).grid(row=r, column=i, padx=10, pady=7, sticky="w")
+
+    if on_edit:
+        ctk.CTkButton(
+            parent, text="✏", width=30, height=26,
+            fg_color="#EFF6FF", text_color=C["primary"],
+            hover_color="#DBEAFE", command=on_edit,
+        ).grid(row=r, column=n, padx=(4, 2), pady=4)
+
+    if on_delete:
+        ctk.CTkButton(
+            parent, text="✕", width=30, height=26,
+            fg_color="#FEE2E2", text_color=C["red"],
+            hover_color="#FECACA", command=on_delete,
+        ).grid(row=r, column=n + 1, padx=(2, 8), pady=4)
+
+    row_bg.lower()   # fond derrière les cellules
+
+
+# ──────────────────────────────────────────────────────────
+#  Barre de filtres
+# ──────────────────────────────────────────────────────────
+def filter_dropdown(parent, label: str, values: list[str],
+                    variable: ctk.StringVar, command):
+    ctk.CTkLabel(parent, text=label, font=ctk.CTkFont(size=11),
+                 text_color=C["muted"]).pack(side="left", padx=(0, 4))
+    ctk.CTkOptionMenu(parent, values=values, variable=variable,
+                      command=command, width=165, height=30,
+                      font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 16))
+
+
+# ──────────────────────────────────────────────────────────
+#  Barres de total
+# ──────────────────────────────────────────────────────────
+def total_bar(parent, text: str, color: str, bg: str, border: str,
+              use_pack: bool = True):
+    f = ctk.CTkFrame(parent, fg_color=bg, corner_radius=8,
+                     border_width=1, border_color=border)
+    if use_pack:
+        f.pack(fill="x", padx=2, pady=(6, 4))
+    ctk.CTkLabel(f, text=text, font=ctk.CTkFont(size=14, weight="bold"),
+                 text_color=color).pack(side="right", padx=16, pady=9)
+    return f
+
+
+# ──────────────────────────────────────────────────────────
+#  Toast notification
+# ──────────────────────────────────────────────────────────
+def show_toast(root, message: str, duration_ms: int = 2800):
+    x = root.winfo_x() + root.winfo_width()  // 2 - 160
+    y = root.winfo_y() + root.winfo_height() - 90
+    t = ctk.CTkToplevel(root)
+    t.geometry(f"320x54+{x}+{y}")
+    t.overrideredirect(True)
+    t.attributes("-topmost", True)
+    ctk.CTkLabel(
+        t, text=message,
+        font=ctk.CTkFont(size=13, weight="bold"),
+        fg_color=C["sidebar"], text_color="white", corner_radius=10,
+    ).pack(fill="both", expand=True, padx=4, pady=4)
+    t.after(duration_ms, t.destroy)
