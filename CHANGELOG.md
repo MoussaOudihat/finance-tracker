@@ -6,6 +6,21 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [3.1.0] — 2026-04-30
+
+### Ajouté
+- 🏷️ Tooltips sur les boutons icônes de la vue Patrimoine (Modifier, Mettre à jour la valeur, Transactions, Évolution, Supprimer, Réinvesti)
+
+### Corrigé
+- 🐛 `invalid command name` au démarrage : les callbacks `after()` de CTk étaient purgés avant de quitter `LoginApp`, empêchant les erreurs Tcl au lancement de l'app principale
+- 🐛 `SyntaxError: unmatched ')'` dans `settings.py` (fragment de code orphelin ligne 576)
+
+### Technique
+- `ui/login.py` : `_finish()` purge la file `after()` Tcl avant `quit()` — `destroy()` délégué à `main.py` après le mainloop
+- `ui/pages/patrimoine.py` : utilisation de la classe `Tooltip` de `ui/components.py`
+
+---
+
 ## [3.0.0] — 2025-04-30
 
 ### Ajouté
