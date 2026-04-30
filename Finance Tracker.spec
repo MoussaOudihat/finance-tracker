@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [('data/seed_data.sql', 'data')]
-datas += collect_data_files('customtkinter')
+# Note : data/seed_data.sql est exclu (données personnelles, non versionné).
+# L'app démarre proprement sans ce fichier (base vide au premier lancement).
+datas = collect_data_files('customtkinter')
 datas += collect_data_files('matplotlib')
 
 

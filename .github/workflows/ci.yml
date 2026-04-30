@@ -1,0 +1,103 @@
+name: CI
+
+# Déclenché sur chaque push/PR vers develop et main
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  # ──────────────────────────────────────────────────────────
+  #  Vérification syntaxe & imports
+  # ──────────────────────────────────────────────────────────
+  syntax-check:
+    name: Syntax & Import Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check Python syntax (all .py files)
+        run: |
+          echo "Vérification syntaxe..."
+          python -m compileall -q . -x "__pycache__|venv|env|build|dist"
+          echo "✅ Syntaxe OK"
+
+      - name: Check core module imports
+        run: |
+          echo "Vérification des imports principaux..."
+          python -c "
+          import config
+          import database
+          import auth
+          import ui.components
+          print('✅ Imports principaux OK')
+          "
+
+      - name: Check all page imports
+        run: |
+          python -c "
+          pages = [
+              'ui.pages.dashboard', 'ui.pages.revenues', 'ui.pages.expenses',
+              'ui.pages.savings_entry', 'ui.pages.analyses', 'ui.pages.budget',
+              'ui.pages.objectifs', 'ui.pages.patrimoine', 'ui.pages.historique',
+              'ui.pages.settings', 'ui.pages.recommandations', 'ui.pages.projection',
+          ]
+          for p in pages:
+              __import__(p)
+          print(f'✅ {len(pages)} pages importées avec succès')
+          "
+
+  # ──────────────────────────────────────────────────────────
+  #  Vérification build PyInstaller (dry-run, sans upx)
+  # ──────────────────────────────────────────────────────────
+  build-check:
+    name: Build Check (Windows)
+    runs-on: windows-latest
+    # Seulement sur les PR vers main (pour ne pas ralentir chaque push develop)
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller reportlab
+
+      - name: Build executable
+        run: pyinstaller "Finance Tracker.spec"
+
+      - name: Verify output
+        run: |
+          if (Test-Path "dist\Finance Tracker\Finance Tracker.exe") {
+            Write-Host "✅ Build OK — Finance Tracker.exe généré"
+          } else {
+            Write-Host "❌ Build FAILED — exe non trouvé"
+            exit 1
+          }
