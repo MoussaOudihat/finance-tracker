@@ -19,11 +19,12 @@ if __name__ == "__main__":
     # ── Authentification ─────────────────────────────────────
     from ui.login import LoginApp
     login = LoginApp(db)
-    login.mainloop()
-
-    if not login.auth_success:
-        # L'utilisateur a fermé la fenêtre sans se connecter
-        raise SystemExit(0)
+    if login.auth_success:
+        login.destroy()
+    else:
+        login.mainloop()
+        if not login.auth_success:
+            raise SystemExit(0)
 
     # ── Application principale ───────────────────────────────
     from ui.app import App
