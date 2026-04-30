@@ -19,12 +19,15 @@ if __name__ == "__main__":
     # ── Authentification ─────────────────────────────────────
     from ui.login import LoginApp
     login = LoginApp(db)
-    if login.auth_success:
-        login.destroy()
-    else:
+    if not login.auth_success:
         login.mainloop()
-        if not login.auth_success:
-            raise SystemExit(0)
+    if not login.auth_success:
+        raise SystemExit(0)
+    # destroy() après mainloop + purge — la file Tcl est propre
+    try:
+        login.destroy()
+    except Exception:
+        pass
 
     # ── Application principale ───────────────────────────────
     from ui.app import App
