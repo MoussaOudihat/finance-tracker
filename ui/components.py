@@ -1,8 +1,68 @@
 """
 ui/components.py — Widgets et helpers UI réutilisables
 """
+import tkinter as tk
 import customtkinter as ctk
 from config import C, PALETTE
+
+
+# ──────────────────────────────────────────────────────────
+#  Tooltip
+# ──────────────────────────────────────────────────────────
+class Tooltip:
+    """Bulle d'aide qui apparaît après un survol de 400 ms."""
+
+    def __init__(self, widget, text: str, delay_ms: int = 400):
+        self._widget   = widget
+        self._text     = text
+        self._delay    = delay_ms
+        self._tip_win  = None
+        self._after_id = None
+        widget.bind("<Enter>",       self._on_enter, add="+")
+        widget.bind("<Leave>",       self._on_leave, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+
+    def _on_enter(self, _=None):
+        self._cancel()
+        self._after_id = self._widget.after(self._delay, self._show)
+
+    def _on_leave(self, _=None):
+        self._cancel()
+        self._destroy()
+
+    def _cancel(self):
+        if self._after_id:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self):
+        if self._tip_win or not self._text:
+            return
+        try:
+            x = self._widget.winfo_rootx() + self._widget.winfo_width() + 10
+            y = self._widget.winfo_rooty() + self._widget.winfo_height() // 2 - 14
+        except Exception:
+            return
+        tw = tk.Toplevel(self._widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        outer = tk.Frame(tw, bg=C.get("border", "#334155"), padx=1, pady=1)
+        outer.pack()
+        tk.Label(outer, text=self._text,
+                 bg=C.get("card", "#1E293B"),
+                 fg=C.get("text", "#F8FAFC"),
+                 font=("Segoe UI", 10),
+                 padx=10, pady=6).pack()
+        self._tip_win = tw
+
+    def _destroy(self):
+        if self._tip_win:
+            try:
+                self._tip_win.destroy()
+            except Exception:
+                pass
+            self._tip_win = None
 
 
 # ──────────────────────────────────────────────────────────
@@ -29,13 +89,16 @@ def kpi_card(parent, title: str, value: str, color: str, icon: str = "") -> ctk.
 # ──────────────────────────────────────────────────────────
 #  Navigation
 # ──────────────────────────────────────────────────────────
-def nav_button(parent, text: str, command) -> ctk.CTkButton:
-    return ctk.CTkButton(
+def nav_button(parent, text: str, command, tooltip: str = "") -> ctk.CTkButton:
+    btn = ctk.CTkButton(
         parent, text=text, anchor="w", height=42,
         font=ctk.CTkFont(size=13), fg_color="transparent",
         hover_color=C["sidebar2"], text_color="#CBD5E1",
         corner_radius=8, command=command,
     )
+    if tooltip:
+        Tooltip(btn, tooltip)
+    return btn
 
 
 def month_selector(parent, months_fr, sel_year, sel_month, on_change) -> ctk.CTkFrame:
@@ -119,18 +182,22 @@ def table_row(parent, row_idx: int, cols: list,
         ).grid(row=r, column=i, padx=10, pady=7, sticky="w")
 
     if on_edit:
-        ctk.CTkButton(
+        edit_btn = ctk.CTkButton(
             parent, text="✏", width=30, height=26,
             fg_color="#EFF6FF", text_color=C["primary"],
             hover_color="#DBEAFE", command=on_edit,
-        ).grid(row=r, column=n, padx=(4, 2), pady=4)
+        )
+        edit_btn.grid(row=r, column=n, padx=(4, 2), pady=4)
+        Tooltip(edit_btn, "Modifier cette ligne")
 
     if on_delete:
-        ctk.CTkButton(
+        del_btn = ctk.CTkButton(
             parent, text="✕", width=30, height=26,
             fg_color="#FEE2E2", text_color=C["red"],
             hover_color="#FECACA", command=on_delete,
-        ).grid(row=r, column=n + 1, padx=(2, 8), pady=4)
+        )
+        del_btn.grid(row=r, column=n + 1, padx=(2, 8), pady=4)
+        Tooltip(del_btn, "Supprimer cette ligne")
 
     row_bg.lower()   # fond derrière les cellules
 
