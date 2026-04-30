@@ -63,7 +63,7 @@ class LoginApp(ctk.CTk):
         if Auth.has_valid_session(db):
             # Session encore valide → on passe directement
             self.auth_success = True
-            self.after(0, self.destroy)
+            self.withdraw()  # hide before caller destroys, avoids mainloop entirely
         elif Auth.has_password(db):
             self._show_login()
         else:
