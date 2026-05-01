@@ -615,10 +615,15 @@ class SettingsPage:
                      fg_color=C["light"], border_color=C["border"],
                      placeholder_text="sb_secret_…").grid(row=3, column=0, sticky="ew")
 
-        sync_status_var = ctk.StringVar()
-        ctk.CTkLabel(sc2, textvariable=sync_status_var,
-                     font=ctk.CTkFont(size=11), wraplength=500).pack(
-            anchor="w", padx=20, pady=(6, 0))
+        sync_status_lbl = ctk.CTkLabel(sc2, text="",
+                                        font=ctk.CTkFont(size=11),
+                                        wraplength=500,
+                                        justify="left")
+        sync_status_lbl.pack(anchor="w", padx=20, pady=(6, 0))
+
+        def _set_status(msg: str):
+            sync_status_lbl.configure(text=msg)
+            sync_status_lbl.update()
 
         btn_row_sync = ctk.CTkFrame(sc2, fg_color="transparent")
         btn_row_sync.pack(anchor="w", padx=20, pady=(10, 16))
@@ -627,43 +632,51 @@ class SettingsPage:
             url = url_var2.get().strip()
             key = key_var2.get().strip()
             if not url or not key:
-                sync_status_var.set("⚠️  Renseignez l'URL et la clé.")
+                _set_status("⚠️  Renseignez l'URL et la clé.")
                 return
-            sync_status_var.set("⏳  Test en cours…")
-            sc2.update()
-            try:
-                from sync_supabase import SupabaseSync
-                s = SupabaseSync(url, key, db.db_path)
-                ok, msg = s.test_connection()
-                sync_status_var.set(msg)
-                if ok:
-                    db.set_setting("supabase_url", url)
-                    db.set_setting("supabase_service_key", key)
-                    db.set_setting("db_mode", "online")
-                    show_toast(app, "☁️  Mode Supabase activé")
-            except Exception as e:
-                sync_status_var.set(f"❌  {e}")
+            _set_status("⏳  Test en cours…")
+
+            def _run():
+                try:
+                    from sync_supabase import SupabaseSync
+                    s = SupabaseSync(url, key, db.db_path)
+                    ok, msg = s.test_connection()
+                    def _done():
+                        _set_status(msg)
+                        if ok:
+                            db.set_setting("supabase_url", url)
+                            db.set_setting("supabase_service_key", key)
+                            db.set_setting("db_mode", "online")
+                            show_toast(app, "☁️  Mode Supabase activé")
+                    app.after(0, _done)
+                except Exception as e:
+                    app.after(0, lambda: _set_status(f"❌  {e}"))
+
+            threading.Thread(target=_run, daemon=True).start()
 
         def _sync_now():
             url = db.get_setting("supabase_url", "")
             key = db.get_setting("supabase_service_key", "")
             if not url or not key:
-                sync_status_var.set("⚠️  Configurez d'abord Supabase.")
+                _set_status("⚠️  Configurez d'abord Supabase.")
                 return
-            sync_status_var.set("⏳  Upload en cours…")
-            sc2.update()
-            try:
-                from sync_supabase import SupabaseSync
-                s = SupabaseSync(url, key, db.db_path)
-                msg = s._do_push()
-                sync_status_var.set(msg)
-            except Exception as e:
-                sync_status_var.set(f"❌  {e}")
+            _set_status("⏳  Upload en cours…")
+
+            def _run():
+                try:
+                    from sync_supabase import SupabaseSync
+                    s = SupabaseSync(url, key, db.db_path)
+                    msg = s._do_push()
+                    app.after(0, lambda: _set_status(msg))
+                except Exception as e:
+                    app.after(0, lambda: _set_status(f"❌  {e}"))
+
+            threading.Thread(target=_run, daemon=True).start()
 
         def _switch_local():
             db.set_setting("db_mode", "local")
             show_toast(app, "💾  Mode local activé")
-            sync_status_var.set("Mode local activé. Redémarrez l'app pour appliquer.")
+            _set_status("💾  Mode local activé. Redémarrez l'app pour appliquer.")
 
         ctk.CTkButton(btn_row_sync, text="🔌  Tester & Activer",
                       height=34, font=ctk.CTkFont(size=12),
