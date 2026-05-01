@@ -7,7 +7,7 @@ from database import Database
 
 
 if __name__ == "__main__":
-    # ── Base de données ──────────────────────────────────────
+    # ── Base de données locale (toujours présente) ───────────
     db = Database(DB_PATH)
 
     # ── Palette (dark/light) doit être appliquée avant tout CTk ──
@@ -23,12 +23,31 @@ if __name__ == "__main__":
         login.mainloop()
     if not login.auth_success:
         raise SystemExit(0)
-    # destroy() après mainloop + purge — la file Tcl est propre
+    # Ne pas appeler login.destroy() : CTk schedule de nouveaux after()
+    # pendant la destruction qui tireraient sur le mainloop de App.
+    # La fenêtre est déjà withdraw() par _finish() — le GC s'en chargera.
+
+    # ── Sync Supabase au démarrage (si mode online) ──────────
+    sync = None
     try:
-        login.destroy()
-    except Exception:
-        pass
+        from sync_supabase import SupabaseSync
+        sync = SupabaseSync.from_db(db)
+        if sync:
+            pulled, msg = sync.pull_if_newer()
+            if pulled:
+                # Le fichier SQLite a été mis à jour → recharger la DB
+                db.close() if hasattr(db, "close") else None
+                db = Database(DB_PATH)
+                print(f"[Sync] {msg}")
+    except Exception as e:
+        print(f"[Sync] Initialisation échouée : {e}")
 
     # ── Application principale ───────────────────────────────
     from ui.app import App
-    App().mainloop()
+    app = App(sync=sync)
+    app.mainloop()
+
+    # ── Push final à la fermeture ────────────────────────────
+    if sync:
+        print("[Sync] Upload final en cours…")
+        sync.push(blocking=True)
