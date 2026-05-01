@@ -6,6 +6,26 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.0.2] — 2026-05-01
+
+### Ajouté
+- 👋 Écran de bienvenue au premier lancement : choix "Nouveau compte" ou "Compte existant (Supabase)"
+- ☁️ Restauration depuis Supabase au premier lancement : pull complet avec backup automatique local
+- ← Boutons "Retour" dans les écrans de création de compte et de restauration Supabase
+
+### Corrigé
+- 🐛 Bouton "Restaurer mes données" sans effet : mise à jour UI thread-safe via `self.after()` (suppression de `status_lbl.update()` appelé hors main thread)
+- 🐛 Fenêtres de login tronquées en bas : hauteur augmentée (`_show_welcome` 460→580px, `_show_setup` 660→720px)
+- 🐛 CI GitHub Actions : permission `attestations: write` manquante pour Sigstore
+
+### Technique
+- `ui/login.py` : `_show_welcome()` — point d'entrée unique du premier lancement
+- `ui/login.py` : `_show_existing_account()` — flow de restauration Supabase complet avec feedback visuel
+- `ui/login.py` : fenêtres redimensionnables verticalement (`resizable(False, True)`)
+- `.github/workflows/release.yml` : job `cleanup-on-failure` — suppression automatique du tag si le build échoue
+
+---
+
 ## [1.0.1] — 2026-05-01
 
 ### Ajouté

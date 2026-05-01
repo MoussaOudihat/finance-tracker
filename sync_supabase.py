@@ -8,6 +8,8 @@ Stratégie :
   • Un timestamp `last_supabase_sync` dans app_settings pilote la direction.
   • Les clés sensibles (URL, clé API, mode DB) ne sont jamais synchronisées.
 """
+import os
+import shutil
 import sqlite3
 import threading
 import datetime
@@ -112,6 +114,10 @@ class SupabaseSync:
             return False, f"⚠️  Pull échoué : {e}"
 
     def _do_pull(self):
+        # Backup local avant écrasement
+        if self._db_path and os.path.exists(self._db_path):
+            shutil.copy2(self._db_path, self._db_path + ".bak")
+
         con = sqlite3.connect(self._db_path)
         con.execute("PRAGMA foreign_keys=OFF")
 
