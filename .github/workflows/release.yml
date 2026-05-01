@@ -7,8 +7,9 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
-  contents: write   # Nécessaire pour créer la GitHub Release
-  id-token: write   # Nécessaire pour Sigstore / attestation
+  contents: write      # Nécessaire pour créer la GitHub Release
+  id-token: write      # Nécessaire pour Sigstore (OIDC token)
+  attestations: write  # Nécessaire pour persister l'attestation
 
 jobs:
   # ──────────────────────────────────────────────────────────
@@ -117,3 +118,30 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: false
+
+  # ──────────────────────────────────────────────────────────
+  #  Nettoyage : supprime le tag si le build a échoué
+  # ──────────────────────────────────────────────────────────
+  cleanup-on-failure:
+    name: Supprimer le tag si échec
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    if: failure()
+    permissions:
+      contents: write
+    steps:
+      - name: Delete tag ${{ github.ref_name }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '')
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                ref:   `tags/${tag}`,
+              })
+              core.info(`✅ Tag ${tag} supprimé.`)
+            } catch (e) {
+              core.warning(`Impossible de supprimer le tag : ${e.message}`)
+            }
