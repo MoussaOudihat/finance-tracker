@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write   # Nécessaire pour créer la GitHub Release
+  id-token: write   # Nécessaire pour Sigstore / attestation
 
 jobs:
   # ──────────────────────────────────────────────────────────
@@ -55,6 +56,11 @@ jobs:
           Compress-Archive -Path "dist\Finance Tracker" -DestinationPath $zipName
           Write-Host "✅ Archive créée : $zipName"
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Attest build provenance (Sigstore)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ env.ZIP_NAME }}
 
       - name: Extract release notes from CHANGELOG
         id: changelog

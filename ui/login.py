@@ -325,7 +325,7 @@ class LoginApp(ctk.CTk):
             Auth.setup_password(self.db, pwd, q, ans)
             Auth.create_session(self.db)
             self.auth_success = True
-            self._finish()
+            self._show_db_setup()  # Choix local / Supabase avant de lancer l'app
 
         ctk.CTkButton(inner,
                       text="  Créer mon accès",
@@ -484,6 +484,174 @@ class LoginApp(ctk.CTk):
                           command=_save_new_pwd).grid(row=13, column=0,
                                                       sticky="ew",
                                                       pady=(14, 0))
+
+    # ══════════════════════════════════════════════════════════
+    #  VUE CHOIX BASE DE DONNÉES (après setup initial)
+    # ══════════════════════════════════════════════════════════
+    def _show_db_setup(self):
+        """Proposé uniquement au premier lancement, après création du mot de passe."""
+        self._center(480, 580)
+        self._clear_body()
+        card = self._make_card()
+
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.grid(row=0, column=0, padx=28, pady=28, sticky="ew")
+        inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(inner,
+                     text="🗄️  Stockage des données",
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=0, sticky="w",
+                                                pady=(0, 6))
+        ctk.CTkLabel(inner,
+                     text="Où souhaitez-vous stocker votre base de données ?",
+                     font=ctk.CTkFont(size=12),
+                     text_color=C["muted"]).grid(row=1, column=0, sticky="w",
+                                                 pady=(0, 20))
+
+        mode_var = ctk.StringVar(value="local")
+
+        # ── Carte Local ─────────────────────────────────────
+        local_card = ctk.CTkFrame(inner, fg_color=C["light"],
+                                  corner_radius=10,
+                                  border_width=2,
+                                  border_color=C["primary"])
+        local_card.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        local_card.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkRadioButton(local_card, text="", variable=mode_var,
+                           value="local",
+                           fg_color=C["primary"]).grid(
+            row=0, column=0, padx=(14, 8), pady=14)
+        ctk.CTkLabel(local_card,
+                     text="💾  Local uniquement",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(local_card,
+                     text="Données sur cet ordinateur. Rapide, simple, privé.",
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["muted"]).grid(row=1, column=1, sticky="w",
+                                                 pady=(0, 10))
+
+        # ── Carte Supabase ───────────────────────────────────
+        online_card = ctk.CTkFrame(inner, fg_color=C["light"],
+                                   corner_radius=10,
+                                   border_width=2,
+                                   border_color=C["border"])
+        online_card.grid(row=3, column=0, sticky="ew")
+        online_card.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkRadioButton(online_card, text="", variable=mode_var,
+                           value="online",
+                           fg_color=C["primary"]).grid(
+            row=0, column=0, padx=(14, 8), pady=14)
+        ctk.CTkLabel(online_card,
+                     text="☁️  En ligne (Supabase)",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(online_card,
+                     text="Sync multi-appareils + backup automatique. Gratuit.",
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["muted"]).grid(row=1, column=1, sticky="w",
+                                                 pady=(0, 10))
+
+        # ── Champs Supabase (visibles si mode=online) ────────
+        supabase_frame = ctk.CTkFrame(inner, fg_color="transparent")
+        supabase_frame.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        supabase_frame.grid_columnconfigure(0, weight=1)
+        supabase_frame.grid_remove()  # caché par défaut
+
+        ctk.CTkLabel(supabase_frame, text="URL du projet Supabase",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=0, column=0, sticky="w",
+                                                 pady=(0, 4))
+        url_var = ctk.StringVar()
+        ctk.CTkEntry(supabase_frame, textvariable=url_var, height=38,
+                     font=ctk.CTkFont(size=12),
+                     fg_color=C["light"], border_color=C["border"],
+                     placeholder_text="https://xxxx.supabase.co").grid(
+            row=1, column=0, sticky="ew", pady=(0, 10))
+
+        ctk.CTkLabel(supabase_frame, text="Clé secrète (Secret key)",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=2, column=0, sticky="w",
+                                                 pady=(0, 4))
+        key_var = ctk.StringVar()
+        ctk.CTkEntry(supabase_frame, textvariable=key_var, height=38,
+                     show="●", font=ctk.CTkFont(size=12),
+                     fg_color=C["light"], border_color=C["border"],
+                     placeholder_text="sb_secret_…").grid(
+            row=3, column=0, sticky="ew")
+
+        status_var = ctk.StringVar()
+        ctk.CTkLabel(supabase_frame, textvariable=status_var,
+                     font=ctk.CTkFont(size=11),
+                     wraplength=380).grid(row=4, column=0, sticky="w",
+                                          pady=(6, 0))
+
+        def _test_connection():
+            url = url_var.get().strip()
+            key = key_var.get().strip()
+            if not url or not key:
+                status_var.set("⚠️  Entrez l'URL et la clé.")
+                return
+            status_var.set("⏳  Test en cours…")
+            supabase_frame.update()
+            try:
+                from sync_supabase import SupabaseSync
+                s = SupabaseSync(url, key, "")
+                ok, msg = s.test_connection()
+                status_var.set(msg)
+            except Exception as e:
+                status_var.set(f"❌  {e}")
+
+        ctk.CTkButton(supabase_frame, text="🔌  Tester la connexion",
+                      height=36, font=ctk.CTkFont(size=12),
+                      fg_color=C["muted"], hover_color="#475569",
+                      command=_test_connection).grid(row=5, column=0,
+                                                     sticky="w", pady=(10, 0))
+
+        # ── Afficher/masquer les champs Supabase ─────────────
+        def _on_mode_change(*_):
+            if mode_var.get() == "online":
+                supabase_frame.grid()
+                online_card.configure(border_color=C["primary"])
+                local_card.configure(border_color=C["border"])
+            else:
+                supabase_frame.grid_remove()
+                local_card.configure(border_color=C["primary"])
+                online_card.configure(border_color=C["border"])
+
+        mode_var.trace_add("write", _on_mode_change)
+
+        # ── Bouton Continuer ─────────────────────────────────
+        err_var = ctk.StringVar()
+        ctk.CTkLabel(inner, textvariable=err_var,
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["red"]).grid(row=5, column=0, sticky="w",
+                                               pady=(10, 0))
+
+        def _confirm():
+            mode = mode_var.get()
+            if mode == "online":
+                url = url_var.get().strip()
+                key = key_var.get().strip()
+                if not url or not key:
+                    err_var.set("⚠  Renseignez l'URL et la clé Supabase.")
+                    return
+                self.db.set_setting("supabase_url", url)
+                self.db.set_setting("supabase_service_key", key)
+            self.db.set_setting("db_mode", mode)
+            self._finish()
+
+        ctk.CTkButton(inner,
+                      text="  Continuer →",
+                      height=44,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      fg_color=C["primary"],
+                      hover_color="#2955C9",
+                      command=_confirm).grid(row=6, column=0, sticky="ew",
+                                             pady=(16, 0))
 
     # ── Fermeture propre ────────────────────────────────────
     def _finish(self):
