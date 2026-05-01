@@ -560,7 +560,7 @@ class SettingsPage:
 
         def export_csv():
             save_path = fd.asksaveasfilename(
-                title="Exporter les données CSV",
+                              title="Exporter les données CSV",
                 defaultextension=".csv",
                 filetypes=[("CSV", "*.csv")],
                 initialfile="finance_export.csv",
@@ -574,134 +574,106 @@ class SettingsPage:
                       fg_color=C["primary"],
                       command=export_csv).pack(anchor="w", padx=20, pady=(8, 16))
 
-        btn_row2 = ctk.CTkFrame(ic, fg_color="transparent")
-        btn_row2.pack(anchor="w", padx=20, pady=(6, 16))
-
-        def do_import():
-            paths = fd.askopenfilenames(
-                title="Sélectionner les fichiers ZIP Notion",
-                filetypes=[("ZIP", "*.zip"), ("Tous", "*.*")],
-            )
-            if not paths:
-                return
-            self._import_status.set("⏳  Import en cours…")
-
-            def _run():
-                total_rev = total_exp = total_sav = 0
-                errors = []
-                for p in paths:
-                    try:
-                        r, e, s = db.import_notion_zip(p)
-                        total_rev += r; total_exp += e; total_sav += s
-                    except Exception as exc:
-                        errors.append(str(exc))
-                if errors:
-                    self._import_status.set("⚠️  Erreur : " + " | ".join(errors))
-                else:
-                    self._import_status.set(
-                        f"✅  {total_rev} revenus, {total_exp} dépenses, {total_sav} épargnes importés"
-                    )
-            threading.Thread(target=_run, daemon=True).start()
-
-        ctk.CTkButton(btn_row2, text="📂  Choisir ZIP(s) et importer",
-                      height=38, command=do_import,
-                      font=ctk.CTkFont(size=13)).pack(side="left")
-
         # ══════════════════════════════════════════════════════
-        #  6. CATÉGORIES
+        #  7. SYNCHRONISATION SUPABASE
         # ══════════════════════════════════════════════════════
-        cc = make_card(scroll)
-        cc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
+        sc2 = make_card(scroll)
+        sc2.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
 
-        ctk.CTkLabel(cc, text="🗂️  Catégories de dépenses",
+        ctk.CTkLabel(sc2, text="☁️  Synchronisation Supabase",
                      font=ctk.CTkFont(size=15, weight="bold"),
                      text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
 
-        list_frame = ctk.CTkFrame(cc, fg_color="transparent")
-        list_frame.pack(fill="x", padx=20, pady=(0, 8))
+        current_mode = db.get_setting("db_mode", "local")
+        mode_lbl_text = "✅  Mode actuel : En ligne (Supabase)" if current_mode == "online" \
+                        else "💾  Mode actuel : Local uniquement"
+        mode_color    = C["green"] if current_mode == "online" else C["muted"]
+        ctk.CTkLabel(sc2, text=mode_lbl_text,
+                     font=ctk.CTkFont(size=12),
+                     text_color=mode_color).pack(anchor="w", padx=20, pady=(0, 12))
 
-        def refresh_cat_list():
-            for w in list_frame.winfo_children():
-                w.destroy()
-            cats = db.get_categories()
-            for i, cat in enumerate(cats):
-                row_f = ctk.CTkFrame(list_frame,
-                                     fg_color=C["card"] if i % 2 == 0 else C["light"],
-                                     corner_radius=6)
-                row_f.pack(fill="x", pady=1)
-                ctk.CTkLabel(row_f, text=cat["name"],
-                             font=ctk.CTkFont(size=12),
-                             text_color=C["text"]).pack(side="left", padx=14, pady=7)
+        fields_frame = ctk.CTkFrame(sc2, fg_color="transparent")
+        fields_frame.pack(fill="x", padx=20, pady=(0, 6))
+        fields_frame.grid_columnconfigure(0, weight=1)
 
-                def make_del(c=cat):
-                    return lambda: (
-                        db.delete_category(c["id"]),
-                        refresh_cat_list(),
-                        show_toast(app, f"Catégorie supprimée"),
-                    )
-                ctk.CTkButton(row_f, text="✕", width=28, height=26,
-                              fg_color="#FEE2E2", text_color=C["red"],
-                              hover_color="#FECACA",
-                              command=make_del()).pack(side="right", padx=8, pady=4)
+        ctk.CTkLabel(fields_frame, text="URL du projet Supabase",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        url_var2 = ctk.StringVar(value=db.get_setting("supabase_url", ""))
+        ctk.CTkEntry(fields_frame, textvariable=url_var2, height=36,
+                     font=ctk.CTkFont(size=12),
+                     fg_color=C["light"], border_color=C["border"],
+                     placeholder_text="https://xxxx.supabase.co").grid(
+            row=1, column=0, sticky="ew", pady=(0, 10))
 
-        refresh_cat_list()
+        ctk.CTkLabel(fields_frame, text="Clé secrète (Secret key)",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=2, column=0, sticky="w", pady=(0, 4))
+        key_var2 = ctk.StringVar(value=db.get_setting("supabase_service_key", ""))
+        ctk.CTkEntry(fields_frame, textvariable=key_var2, height=36,
+                     show="●", font=ctk.CTkFont(size=12),
+                     fg_color=C["light"], border_color=C["border"],
+                     placeholder_text="sb_secret_…").grid(row=3, column=0, sticky="ew")
 
-        add_row = ctk.CTkFrame(cc, fg_color="transparent")
-        add_row.pack(fill="x", padx=20, pady=(4, 4))
-        new_cat_var = ctk.StringVar()
-        ctk.CTkEntry(add_row, textvariable=new_cat_var,
-                     placeholder_text="Nouvelle catégorie…",
-                     height=34, width=220).pack(side="left", padx=(0, 8))
+        sync_status_var = ctk.StringVar()
+        ctk.CTkLabel(sc2, textvariable=sync_status_var,
+                     font=ctk.CTkFont(size=11), wraplength=500).pack(
+            anchor="w", padx=20, pady=(6, 0))
 
-        def add_cat():
-            name = new_cat_var.get().strip()
-            if not name:
+        btn_row_sync = ctk.CTkFrame(sc2, fg_color="transparent")
+        btn_row_sync.pack(anchor="w", padx=20, pady=(10, 16))
+
+        def _save_and_test():
+            url = url_var2.get().strip()
+            key = key_var2.get().strip()
+            if not url or not key:
+                sync_status_var.set("⚠️  Renseignez l'URL et la clé.")
                 return
-            db.add_category(name)
-            new_cat_var.set("")
-            refresh_cat_list()
-            show_toast(app, f"Catégorie « {name.upper()} » ajoutée")
+            sync_status_var.set("⏳  Test en cours…")
+            sc2.update()
+            try:
+                from sync_supabase import SupabaseSync
+                s = SupabaseSync(url, key, db.db_path)
+                ok, msg = s.test_connection()
+                sync_status_var.set(msg)
+                if ok:
+                    db.set_setting("supabase_url", url)
+                    db.set_setting("supabase_service_key", key)
+                    db.set_setting("db_mode", "online")
+                    show_toast(app, "☁️  Mode Supabase activé")
+            except Exception as e:
+                sync_status_var.set(f"❌  {e}")
 
-        ctk.CTkButton(add_row, text="＋  Ajouter", height=34, width=120,
-                      command=add_cat).pack(side="left")
+        def _sync_now():
+            url = db.get_setting("supabase_url", "")
+            key = db.get_setting("supabase_service_key", "")
+            if not url or not key:
+                sync_status_var.set("⚠️  Configurez d'abord Supabase.")
+                return
+            sync_status_var.set("⏳  Upload en cours…")
+            sc2.update()
+            try:
+                from sync_supabase import SupabaseSync
+                s = SupabaseSync(url, key, db.db_path)
+                msg = s._do_push()
+                sync_status_var.set(msg)
+            except Exception as e:
+                sync_status_var.set(f"❌  {e}")
 
-        def reset_cats():
-            db.reset_categories()
-            refresh_cat_list()
-            show_toast(app, "Catégories réinitialisées")
+        def _switch_local():
+            db.set_setting("db_mode", "local")
+            show_toast(app, "💾  Mode local activé")
+            sync_status_var.set("Mode local activé. Redémarrez l'app pour appliquer.")
 
-        ctk.CTkButton(cc,
-                      text="↺  Réinitialiser les catégories par défaut",
-                      height=32, fg_color=C["muted"], hover_color="#475569",
-                      font=ctk.CTkFont(size=12),
-                      command=reset_cats).pack(anchor="e", padx=20, pady=(4, 14))
-
-        # ══════════════════════════════════════════════════════
-        #  7. BASE DE DONNÉES
-        # ══════════════════════════════════════════════════════
-        dbc = make_card(scroll)
-        dbc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(dbc, text="🗄️  Base de données",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(dbc,
-                     text=f"Chemin : {db.db_path}",
-                     text_color=C["muted"], font=ctk.CTkFont(size=11),
-                     justify="left").pack(anchor="w", padx=20)
-
-        def export_csv():
-            save_path = fd.asksaveasfilename(
-                title="Exporter les données CSV",
-                defaultextension=".csv",
-                filetypes=[("CSV", "*.csv")],
-                initialfile="finance_export.csv",
-            )
-            if save_path:
-                db.export_csv(save_path)
-                show_toast(app, "Export CSV terminé !")
-
-        ctk.CTkButton(dbc, text="📤  Exporter CSV complet",
-                      height=32, font=ctk.CTkFont(size=12),
+        ctk.CTkButton(btn_row_sync, text="🔌  Tester & Activer",
+                      height=34, font=ctk.CTkFont(size=12),
                       fg_color=C["primary"],
-                      command=export_csv).pack(anchor="w", padx=20, pady=(8, 16))
+                      command=_save_and_test).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_row_sync, text="☁️  Sync maintenant",
+                      height=34, font=ctk.CTkFont(size=12),
+                      fg_color=C["green"],
+                      command=_sync_now).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_row_sync, text="💾  Passer en local",
+                      height=34, font=ctk.CTkFont(size=12),
+                      fg_color=C["muted"], hover_color="#475569",
+                      command=_switch_local).pack(side="left")
