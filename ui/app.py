@@ -70,8 +70,11 @@ _NAV_ITEMS = [
 
 
 class App(ctk.CTk):
-    def __init__(self):
+    def __init__(self, sync=None):
         super().__init__()
+
+        # ── Sync Supabase (optionnel) ────────────────────────
+        self.sync = sync
 
         # ── DB ──────────────────────────────────────────────
         self.db = Database(DB_PATH)
@@ -126,6 +129,10 @@ class App(ctk.CTk):
         # ── Alertes au démarrage (légèrement différé) ────────
         self.after(800, self._run_startup_checks)
 
+        # ── Auto-sync Supabase toutes les 5 minutes ──────────
+        if self.sync:
+            self._schedule_auto_sync()
+
     # ────────────────────────────────────────────────────────
     #  PRÉ-CHARGEMENT CACHE DB
     # ────────────────────────────────────────────────────────
@@ -142,11 +149,30 @@ class App(ctk.CTk):
             pass  # Silencieux — juste un préchauffage
 
     # ────────────────────────────────────────────────────────
+    #  AUTO-SYNC SUPABASE (toutes les 5 minutes)
+    # ────────────────────────────────────────────────────────
+    _AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000  # 5 minutes
+
+    def _schedule_auto_sync(self):
+        """Planifie un push Supabase en arrière-plan toutes les 5 minutes."""
+        def _do():
+            if self.sync:
+                self.sync.push(blocking=False)
+            # Replanifier seulement si la fenêtre existe encore
+            try:
+                self.after(self._AUTO_SYNC_INTERVAL_MS, _do)
+            except Exception:
+                pass
+        self.after(self._AUTO_SYNC_INTERVAL_MS, _do)
+
+    # ────────────────────────────────────────────────────────
     #  ALERTES AU DÉMARRAGE
     # ────────────────────────────────────────────────────────
     def _run_startup_checks(self):
-        """Lance les vérifications d'alertes dans un thread secondaire."""
-        threading.Thread(target=self._check_alerts, daemon=True).start()
+        """Lance les vérifications d'alertes dans le thread principal.
+        Déjà différé de 800 ms via after() — pas besoin d'un thread séparé
+        (appeler self.after() depuis un thread secondaire est interdit en Tkinter)."""
+        self._check_alerts()
 
     def _check_alerts(self):
         alerts = []
@@ -181,7 +207,7 @@ class App(ctk.CTk):
         alerts.extend(late_goals)
 
         if alerts:
-            self.after(0, lambda: _show_alerts_popup(self, alerts))
+            _show_alerts_popup(self, alerts)
 
     # ────────────────────────────────────────────────────────
     #  SIDEBAR
