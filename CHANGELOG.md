@@ -6,6 +6,27 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.0.1] — 2026-05-01
+
+### Ajouté
+- ☁️ Synchronisation Supabase PostgreSQL (tables réelles, pas Storage)
+- 🔄 Auto-sync toutes les 5 minutes pendant la session
+- 🗄️ Écran de choix Local / Supabase au premier lancement
+- 📋 Script `supabase_schema.sql` pour initialiser le schéma en une commande
+
+### Corrigé
+- 🐛 `invalid command name` au démarrage : suppression de `login.destroy()` dans `main.py` (CTk schedule des callbacks pendant la destruction)
+- 🐛 `RuntimeError: main thread is not in main loop` dans `_check_alerts` : exécution dans le thread principal (après le délai de 800 ms) plutôt qu'un thread secondaire
+- 🐛 Labels "anon key" / "service_role" → "Clé secrète (Secret key)" pour les nouvelles API keys Supabase
+
+### Technique
+- `sync_supabase.py` : réécriture complète — sync table par table avec respect des FK, pagination BATCH_SIZE=500, timestamp `last_supabase_sync` pour arbitrer pull/push
+- `ui/app.py` : `_schedule_auto_sync()` — push background toutes les 5 min via `after()`
+- `ui/app.py` : `_check_alerts()` exécuté dans le thread principal (plus de thread secondaire)
+- `main.py` : suppression de `login.destroy()` post-mainloop
+
+---
+
 ## [3.1.0] — 2026-04-30
 
 ### Ajouté

@@ -19,6 +19,10 @@ a = Analysis(
         'reportlab', 'reportlab.lib.pagesizes', 'reportlab.platypus',
         'reportlab.lib.styles', 'reportlab.lib.units', 'reportlab.lib.colors',
         'smtplib', 'email.mime.multipart', 'email.mime.text', 'csv',
+        # authentification & sync
+        'auth', 'ui.login', 'sync_supabase',
+        'supabase', 'httpx', 'httpcore', 'anyio', 'sniffio',
+        'gotrue', 'postgrest', 'realtime', 'storage3',
         # pages chargées dynamiquement via importlib (Phase 2 lazy-load)
         'ui.pages',
         'ui.pages.dashboard', 'ui.pages.revenues', 'ui.pages.expenses',
