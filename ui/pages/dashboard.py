@@ -16,8 +16,9 @@ matplotlib.rcParams.update({
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR, PALETTE, ASSET_LABEL
+from config import C, MONTHS_FR, PALETTE, ASSET_LABEL, FILTER_ALL_CATS, FILTER_ALL_PAYEES
 from ui.components import kpi_card, make_card, filter_dropdown, month_selector
+from ui.dialogs import RecurringApplyDialog, RecurringManagerDialog
 
 
 class DashboardPage:
@@ -46,6 +47,28 @@ class DashboardPage:
 
         month_selector(hdr, MONTHS_FR, y, m, on_month_change).grid(
             row=0, column=2, sticky="e")
+
+        # ── Bouton Récurrentes ────────────────────────────
+        pending_rec = db.get_pending_recurring(y, m)
+        n_pending   = len(pending_rec)
+        rec_label   = f"📅  Récurrentes  ({n_pending})" if n_pending else "📅  Récurrentes"
+        rec_color   = C["primary"] if n_pending else C["light"]
+        rec_txtclr  = "white" if n_pending else C["text"]
+
+        def _open_recurring_apply():
+            month_name = f"{MONTHS_FR[m - 1]} {y}"
+            RecurringApplyDialog(
+                app, db, y, m, month_name,
+                on_applied=lambda n: app._go("dashboard"),
+            )
+
+        ctk.CTkButton(
+            hdr, text=rec_label, height=32, width=170,
+            fg_color=rec_color, text_color=rec_txtclr,
+            hover_color=C.get("primary_hover", C["primary"]),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=_open_recurring_apply,
+        ).grid(row=0, column=1, padx=(20, 8), sticky="w")
 
         # ── Données statiques (non filtrées) ─────────────────
         rev_data = db.get_revenues(y, m)
@@ -76,8 +99,8 @@ class DashboardPage:
                     row=0, column=col, padx=6, pady=6, sticky="ew")
 
         # ── Barre de filtres (row=2) ──────────────────────────
-        cats   = ["Toutes catégories"] + [c["name"] for c in db.get_categories()]
-        payees = ["Toutes enseignes"]  + db.get_payees(y, m)
+        cats   = [FILTER_ALL_CATS] + [c["name"] for c in db.get_categories()]
+        payees = [FILTER_ALL_PAYEES]  + db.get_payees(y, m)
 
         fb = make_card(scroll, corner_radius=10)
         fb.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 4))
@@ -104,15 +127,15 @@ class DashboardPage:
 
         def _sync_effacer():
             is_active = (
-                app.dash_cat_filter   not in ("Toutes catégories",) or
-                app.dash_payee_filter not in ("Toutes enseignes",)
+                app.dash_cat_filter   not in (FILTER_ALL_CATS,) or
+                app.dash_payee_filter not in (FILTER_ALL_PAYEES,)
             )
             if is_active and effacer_holder["btn"] is None:
                 def _clear():
-                    app.dash_cat_filter   = "Toutes catégories"
-                    app.dash_payee_filter = "Toutes enseignes"
-                    cat_var.set("Toutes catégories")
-                    payee_var.set("Toutes enseignes")
+                    app.dash_cat_filter   = FILTER_ALL_CATS
+                    app.dash_payee_filter = FILTER_ALL_PAYEES
+                    cat_var.set(FILTER_ALL_CATS)
+                    payee_var.set(FILTER_ALL_PAYEES)
                     _soft_refresh()
                 btn = ctk.CTkButton(fi, text="✕ Effacer", height=28, width=90,
                                     fg_color="#FEE2E2", text_color=C["red"],
@@ -152,18 +175,18 @@ class DashboardPage:
             bar_zone[0] = bz
 
             cat_data = db.get_expenses_by_category(
-                y, m, pf if pf not in ("Toutes enseignes",) else None)
+                y, m, pf if pf not in (FILTER_ALL_PAYEES,) else None)
             payee_data = db.get_expenses_by_payee(
-                y, m, cf if cf not in ("Toutes catégories",) else None)
+                y, m, cf if cf not in (FILTER_ALL_CATS,) else None)
 
             _render_pie(pz, cat_data, key="name", root=app,
                         filter_attr="dash_cat_filter",
                         on_change=_soft_refresh,
-                        active_filter=cf, reset_value="Toutes catégories")
+                        active_filter=cf, reset_value=FILTER_ALL_CATS)
             _render_hbar(bz, payee_data, key="payee", root=app,
                          filter_attr="dash_payee_filter",
                          on_change=_soft_refresh,
-                         active_filter=pf, reset_value="Toutes enseignes")
+                         active_filter=pf, reset_value=FILTER_ALL_PAYEES)
 
         # ── Soft refresh (met à jour KPIs + graphiques seulement) ──
         def _soft_refresh():
@@ -347,7 +370,7 @@ def _ctk_legend(parent, labels, vals, colors, total,
     leg.grid_columnconfigure((0, 1), weight=1)
     for i, (lbl, val) in enumerate(zip(labels, vals)):
         is_active = (active_filter and lbl == active_filter and
-                     active_filter not in ("Toutes catégories", "Toutes enseignes", None, ""))
+                     active_filter not in (FILTER_ALL_CATS, FILTER_ALL_PAYEES, None, ""))
         rf = ctk.CTkFrame(leg,
                           fg_color="#DBEAFE" if is_active else "transparent",
                           corner_radius=4,
@@ -371,7 +394,7 @@ def _ctk_legend(parent, labels, vals, colors, total,
 # ── Renderers graphiques ──────────────────────────────────
 def _render_pie(card, data, key: str, root=None,
                 filter_attr=None, on_change=None,
-                active_filter=None, reset_value="Toutes catégories"):
+                active_filter=None, reset_value=FILTER_ALL_CATS):
     if not data:
         ctk.CTkLabel(card, text="Aucune donnée",
                      text_color=C["muted"]).pack(expand=True, pady=55)
@@ -436,7 +459,7 @@ def _render_pie(card, data, key: str, root=None,
 
 def _render_hbar(card, data, key: str, root=None,
                  filter_attr=None, on_change=None,
-                 active_filter=None, reset_value="Toutes enseignes"):
+                 active_filter=None, reset_value=FILTER_ALL_PAYEES):
     if not data:
         ctk.CTkLabel(card, text="Aucune enseigne enregistrée",
                      text_color=C["muted"]).pack(expand=True, pady=55)

@@ -53,7 +53,7 @@ def send_monthly_summary(db, year: int, month: int,
 
         # Construire le HTML
         month_name = MONTHS_FR[month - 1]
-        subject = f"Finance Tracker — Résumé {month_name} {year}"
+        subject = f"Fintrack — Résumé {month_name} {year}"
 
         html_body = _build_html_summary(
             month_name, year,
@@ -301,7 +301,7 @@ def _build_html_summary(month_name: str, year: int,
             <!-- Footer -->
             <div class="footer">
                 <p>
-                    <strong>Finance Tracker</strong> — Application personnelle de suivi financier
+                    <strong>Fintrack</strong> — Application personnelle de suivi financier
                 </p>
             </div>
         </div>
