@@ -1,29 +1,67 @@
 """
 auth.py — Gestion de l'authentification locale
-Utilise SHA-256 + sel aléatoire pour stocker les secrets en base.
+
+Hachage : bcrypt (si disponible) avec migration automatique depuis l'ancien SHA-256.
+Migration transparente : à la première connexion réussie avec un hash SHA-256 legacy,
+le mot de passe est automatiquement re-haché en bcrypt sans action utilisateur.
+
+Pour installer bcrypt : python -m pip install bcrypt
 """
 import hashlib
 import secrets
 import datetime
 from database import Database
+from logger import log
+
+# ── Détection bcrypt ─────────────────────────────────────────
+try:
+    import bcrypt as _bcrypt
+    _BCRYPT_AVAILABLE = True
+except ImportError:
+    _BCRYPT_AVAILABLE = False
+    log.warning("bcrypt non installé — hachage legacy SHA-256 utilisé. "
+                "Installez bcrypt : python -m pip install bcrypt")
+
+_BCRYPT_PREFIX = "bcrypt:"   # préfixe pour distinguer les hashs bcrypt des SHA-256 legacy
 
 
 # ─────────────────────────────────────────────────────────────
-#  Primitives cryptographiques
+#  Primitives cryptographiques — bcrypt (préféré) + SHA-256 (legacy)
 # ─────────────────────────────────────────────────────────────
 
 def _generate_salt() -> str:
     return secrets.token_hex(16)
 
 
+# ── Bcrypt ───────────────────────────────────────────────────
+def _bcrypt_hash(value: str) -> str:
+    """Retourne un hash bcrypt préfixé par _BCRYPT_PREFIX."""
+    normalized = value.strip().lower().encode("utf-8")
+    hashed = _bcrypt.hashpw(normalized, _bcrypt.gensalt(rounds=12))
+    return _BCRYPT_PREFIX + hashed.decode("utf-8")
+
+
+def _bcrypt_verify(value: str, stored: str) -> bool:
+    normalized = value.strip().lower().encode("utf-8")
+    stored_hash = stored[len(_BCRYPT_PREFIX):].encode("utf-8")
+    try:
+        return _bcrypt.checkpw(normalized, stored_hash)
+    except Exception:
+        return False
+
+
+# ── SHA-256 legacy (conservé pour rétrocompatibilité) ────────
 def _hash(value: str, salt: str) -> str:
-    """SHA-256 du couple (valeur + sel). La valeur est normalisée."""
     normalized = value.strip().lower()
     return hashlib.sha256((normalized + salt).encode("utf-8")).hexdigest()
 
 
 def _verify(value: str, stored_hash: str, salt: str) -> bool:
     return _hash(value, salt) == stored_hash
+
+
+def _is_bcrypt(stored: str) -> bool:
+    return stored.startswith(_BCRYPT_PREFIX)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -38,37 +76,67 @@ def has_password(db: Database) -> bool:
 def setup_password(db: Database, password: str,
                    question: str, answer: str) -> None:
     """Initialise le mot de passe + question secrète (premier lancement)."""
-    pwd_salt = _generate_salt()
-    db.set_setting("auth_password_hash", _hash(password, pwd_salt))
-    db.set_setting("auth_password_salt", pwd_salt)
+    if _BCRYPT_AVAILABLE:
+        db.set_setting("auth_password_hash", _bcrypt_hash(password))
+        db.set_setting("auth_password_salt", "")          # non utilisé avec bcrypt
+        db.set_setting("auth_secret_answer_hash", _bcrypt_hash(answer))
+        db.set_setting("auth_secret_answer_salt", "")
+    else:
+        pwd_salt = _generate_salt()
+        db.set_setting("auth_password_hash", _hash(password, pwd_salt))
+        db.set_setting("auth_password_salt", pwd_salt)
+        ans_salt = _generate_salt()
+        db.set_setting("auth_secret_answer_hash", _hash(answer, ans_salt))
+        db.set_setting("auth_secret_answer_salt", ans_salt)
     db.set_setting("auth_secret_question", question.strip())
-
-    ans_salt = _generate_salt()
-    db.set_setting("auth_secret_answer_hash", _hash(answer, ans_salt))
-    db.set_setting("auth_secret_answer_salt", ans_salt)
 
 
 def verify_password(db: Database, password: str) -> bool:
+    """
+    Vérifie le mot de passe. Migre automatiquement les hashs SHA-256 legacy
+    vers bcrypt à la première connexion réussie.
+    """
     stored = db.get_setting("auth_password_hash")
-    salt   = db.get_setting("auth_password_salt")
-    if not stored or not salt:
+    if not stored:
         return False
-    return _verify(password, stored, salt)
+
+    if _is_bcrypt(stored):
+        # Hash bcrypt moderne
+        return _BCRYPT_AVAILABLE and _bcrypt_verify(password, stored)
+
+    # ── Hash SHA-256 legacy ──────────────────────────────────
+    salt = db.get_setting("auth_password_salt", "")
+    if not _verify(password, stored, salt):
+        return False
+    # Migration automatique vers bcrypt après succès
+    if _BCRYPT_AVAILABLE:
+        log.info("Migration du hash mot de passe SHA-256 → bcrypt")
+        db.set_setting("auth_password_hash", _bcrypt_hash(password))
+        db.set_setting("auth_password_salt", "")
+    return True
 
 
 def change_password(db: Database, new_password: str) -> None:
     """Change le mot de passe (appelé après vérification de la question secrète)."""
-    pwd_salt = _generate_salt()
-    db.set_setting("auth_password_hash", _hash(new_password, pwd_salt))
-    db.set_setting("auth_password_salt", pwd_salt)
+    if _BCRYPT_AVAILABLE:
+        db.set_setting("auth_password_hash", _bcrypt_hash(new_password))
+        db.set_setting("auth_password_salt", "")
+    else:
+        pwd_salt = _generate_salt()
+        db.set_setting("auth_password_hash", _hash(new_password, pwd_salt))
+        db.set_setting("auth_password_salt", pwd_salt)
 
 
 def update_secret_question(db: Database, question: str, answer: str) -> None:
     """Met à jour la question secrète."""
     db.set_setting("auth_secret_question", question.strip())
-    ans_salt = _generate_salt()
-    db.set_setting("auth_secret_answer_hash", _hash(answer, ans_salt))
-    db.set_setting("auth_secret_answer_salt", ans_salt)
+    if _BCRYPT_AVAILABLE:
+        db.set_setting("auth_secret_answer_hash", _bcrypt_hash(answer))
+        db.set_setting("auth_secret_answer_salt", "")
+    else:
+        ans_salt = _generate_salt()
+        db.set_setting("auth_secret_answer_hash", _hash(answer, ans_salt))
+        db.set_setting("auth_secret_answer_salt", ans_salt)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -81,10 +149,19 @@ def get_secret_question(db: Database) -> str:
 
 def verify_secret_answer(db: Database, answer: str) -> bool:
     stored = db.get_setting("auth_secret_answer_hash")
-    salt   = db.get_setting("auth_secret_answer_salt")
-    if not stored or not salt:
+    if not stored:
         return False
-    return _verify(answer, stored, salt)
+    if _is_bcrypt(stored):
+        return _BCRYPT_AVAILABLE and _bcrypt_verify(answer, stored)
+    # Legacy SHA-256
+    salt = db.get_setting("auth_secret_answer_salt", "")
+    if not _verify(answer, stored, salt):
+        return False
+    # Migration vers bcrypt
+    if _BCRYPT_AVAILABLE:
+        db.set_setting("auth_secret_answer_hash", _bcrypt_hash(answer))
+        db.set_setting("auth_secret_answer_salt", "")
+    return True
 
 
 # ─────────────────────────────────────────────────────────────

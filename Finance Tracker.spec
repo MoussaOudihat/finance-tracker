@@ -5,6 +5,7 @@ from PyInstaller.utils.hooks import collect_data_files
 # L'app démarre proprement sans ce fichier (base vide au premier lancement).
 datas = collect_data_files('customtkinter')
 datas += collect_data_files('matplotlib')
+datas += [('VERSION', '.')]          # version lue au runtime par config.py
 
 
 a = Analysis(
@@ -19,8 +20,10 @@ a = Analysis(
         'reportlab', 'reportlab.lib.pagesizes', 'reportlab.platypus',
         'reportlab.lib.styles', 'reportlab.lib.units', 'reportlab.lib.colors',
         'smtplib', 'email.mime.multipart', 'email.mime.text', 'csv',
+        # IA
+        'google.genai', 'google.genai.types', 'utils_ai',
         # authentification & sync
-        'auth', 'ui.login', 'sync_supabase',
+        'auth', 'ui.login', 'sync_supabase', 'bcrypt',
         'supabase', 'httpx', 'httpcore', 'anyio', 'sniffio',
         'gotrue', 'postgrest', 'realtime', 'storage3',
         # pages chargées dynamiquement via importlib (Phase 2 lazy-load)
@@ -44,7 +47,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='Finance Tracker',
+    name='Fintrack',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -55,6 +58,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='fintrack.ico',   # généré par generate_icon.py
 )
 coll = COLLECT(
     exe,
@@ -63,5 +67,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='Finance Tracker',
+    name='Fintrack',
 )

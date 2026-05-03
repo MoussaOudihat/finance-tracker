@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Finance Tracker - Application de suivi financier personnel
+Fintrack - Application de suivi financier personnel
 Développé avec CustomTkinter + SQLite + Matplotlib
 """
 
@@ -18,7 +18,7 @@ import tkinter.messagebox as mb
 # ─────────────────────────────────────────────
 #  CONFIG
 # ─────────────────────────────────────────────
-APP_TITLE   = "Finance Tracker"
+APP_TITLE   = "Fintrack"
 APP_VERSION = "1.1"
 DB_PATH     = os.path.join(os.path.expanduser("~"), "Documents", "finance_tracker.db")
 

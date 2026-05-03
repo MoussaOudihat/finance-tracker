@@ -8,8 +8,11 @@ import datetime
 import tkinter.filedialog as fd
 
 import customtkinter as ctk
+import auth as Auth
 from config import C, DEFAULT_CATEGORIES, DB_PATH
+from logger import configure_log_level, LOG_LEVELS, get_log_file_path
 from ui.components import make_card, show_toast
+from ui.dialogs import RecurringManagerDialog
 
 
 class SettingsPage:
@@ -62,8 +65,6 @@ class SettingsPage:
         today = datetime.date.today()
         pdf_month_var = ctk.StringVar(value=MONTHS_FR[app.sel_month - 1])
         pdf_year_var  = ctk.StringVar(value=str(app.sel_year))
-        pdf_status    = ctk.StringVar(value="")
-
         sel_row = ctk.CTkFrame(pdf_inner, fg_color="transparent")
         sel_row.grid(row=1, column=0, sticky="w", pady=(6, 0))
         ctk.CTkLabel(sel_row, text="Mois :", font=ctk.CTkFont(size=11),
@@ -73,15 +74,15 @@ class SettingsPage:
         ctk.CTkOptionMenu(sel_row, values=[str(y) for y in range(2020, today.year + 2)],
                           variable=pdf_year_var, width=90, height=30).pack(side="left")
 
-        ctk.CTkLabel(pdf_inner, textvariable=pdf_status,
-                     font=ctk.CTkFont(size=11), text_color=C["green"]).grid(
-            row=2, column=0, sticky="w", pady=(4, 0))
+        pdf_status_lbl = ctk.CTkLabel(pdf_inner, text="",
+                                       font=ctk.CTkFont(size=11), text_color=C["green"])
+        pdf_status_lbl.grid(row=2, column=0, sticky="w", pady=(4, 0))
 
         def gen_pdf():
             try:
                 from utils_pdf import generate_monthly_report
             except ImportError:
-                pdf_status.set("❌  Installez reportlab : pip install reportlab")
+                pdf_status_lbl.configure(text="❌  Installez reportlab : pip install reportlab")
                 return
 
             m_num = MONTHS_FR.index(pdf_month_var.get()) + 1
@@ -94,15 +95,15 @@ class SettingsPage:
             )
             if not save_path:
                 return
-            pdf_status.set("⏳  Génération en cours…")
+            pdf_status_lbl.configure(text="⏳  Génération en cours…")
 
             def _run():
                 try:
                     generate_monthly_report(db, y_num, m_num, save_path)
-                    pdf_status.set(f"✅  PDF généré avec succès")
-                    show_toast(app, "Rapport PDF généré !")
+                    app.after(0, lambda: pdf_status_lbl.configure(text="✅  PDF généré avec succès"))
+                    app.after(0, lambda: show_toast(app, "Rapport PDF généré !"))
                 except Exception as e:
-                    pdf_status.set(f"❌  Erreur : {e}")
+                    app.after(0, lambda msg=str(e): pdf_status_lbl.configure(text=f"❌  Erreur : {msg}"))
             threading.Thread(target=_run, daemon=True).start()
 
         ctk.CTkButton(pdf_inner, text="📄  Générer le rapport PDF",
@@ -127,7 +128,6 @@ class SettingsPage:
                      font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(anchor="w")
 
         tax_year_var  = ctk.StringVar(value=str(today.year - 1))
-        tax_status    = ctk.StringVar(value="")
 
         tax_row = ctk.CTkFrame(tax_inner, fg_color="transparent")
         tax_row.pack(anchor="w", pady=(6, 0))
@@ -136,14 +136,15 @@ class SettingsPage:
         ctk.CTkOptionMenu(tax_row, values=[str(y) for y in range(2020, today.year + 1)],
                           variable=tax_year_var, width=100, height=30).pack(side="left")
 
-        ctk.CTkLabel(tax_inner, textvariable=tax_status,
-                     font=ctk.CTkFont(size=11), text_color=C["green"]).pack(anchor="w", pady=(4, 0))
+        tax_status_lbl = ctk.CTkLabel(tax_inner, text="",
+                                       font=ctk.CTkFont(size=11), text_color=C["green"])
+        tax_status_lbl.pack(anchor="w", pady=(4, 0))
 
         def gen_tax():
             try:
                 from utils_taxes import export_tax_summary
             except ImportError:
-                tax_status.set("❌  Module utils_taxes introuvable")
+                tax_status_lbl.configure(text="❌  Module utils_taxes introuvable")
                 return
             save_path = fd.asksaveasfilename(
                 title="Enregistrer l'export fiscal",
@@ -153,15 +154,15 @@ class SettingsPage:
             )
             if not save_path:
                 return
-            tax_status.set("⏳  Export en cours…")
+            tax_status_lbl.configure(text="⏳  Export en cours…")
 
             def _run():
                 try:
                     result = export_tax_summary(db, int(tax_year_var.get()), save_path)
-                    tax_status.set(f"✅  Exporté ({len(result)} lignes)")
-                    show_toast(app, "Export fiscal généré !")
+                    app.after(0, lambda n=len(result): tax_status_lbl.configure(text=f"✅  Exporté ({n} lignes)"))
+                    app.after(0, lambda: show_toast(app, "Export fiscal généré !"))
                 except Exception as e:
-                    tax_status.set(f"❌  {e}")
+                    app.after(0, lambda msg=str(e): tax_status_lbl.configure(text=f"❌  {msg}"))
             threading.Thread(target=_run, daemon=True).start()
 
         ctk.CTkButton(tax_inner, text="📊  Exporter pour les impôts",
@@ -211,10 +212,9 @@ class SettingsPage:
                         font=ctk.CTkFont(size=11)).grid(
             row=5, column=1, sticky="w", padx=(8, 0), pady=6)
 
-        smtp_status = ctk.StringVar(value="")
-        ctk.CTkLabel(ec, textvariable=smtp_status,
-                     font=ctk.CTkFont(size=11), text_color=C["green"]).pack(
-            anchor="w", padx=20)
+        smtp_status_lbl = ctk.CTkLabel(ec, text="",
+                                        font=ctk.CTkFont(size=11), text_color=C["green"])
+        smtp_status_lbl.pack(anchor="w", padx=20)
 
         def save_smtp():
             db.set_setting("smtp_host", smtp_host_var.get().strip())
@@ -223,7 +223,7 @@ class SettingsPage:
             db.set_setting("smtp_pass", smtp_pass_var.get().strip())
             db.set_setting("smtp_to",   smtp_to_var.get().strip())
             db.set_setting("smtp_tls",  "1" if tls_var.get() else "0")
-            smtp_status.set("✅  Paramètres SMTP sauvegardés")
+            smtp_status_lbl.configure(text="✅  Paramètres SMTP sauvegardés")
             show_toast(app, "Configuration email sauvegardée")
 
         def send_now():
@@ -231,7 +231,7 @@ class SettingsPage:
             try:
                 from utils_email import send_monthly_summary
             except ImportError:
-                smtp_status.set("❌  Module utils_email introuvable")
+                smtp_status_lbl.configure(text="❌  Module utils_email introuvable")
                 return
 
             host = db.get_setting("smtp_host", "")
@@ -242,17 +242,18 @@ class SettingsPage:
             tls  = db.get_setting("smtp_tls", "1") == "1"
 
             if not all([host, user, pwd, to]):
-                smtp_status.set("❌  Renseignez tous les champs SMTP")
+                smtp_status_lbl.configure(text="❌  Renseignez tous les champs SMTP")
                 return
 
-            smtp_status.set("⏳  Envoi en cours…")
+            smtp_status_lbl.configure(text="⏳  Envoi en cours…")
 
             def _run():
                 ok, msg = send_monthly_summary(
                     db, app.sel_year, app.sel_month,
                     to, host, port, user, pwd, tls
                 )
-                smtp_status.set(f"{'✅' if ok else '❌'}  {msg}")
+                icon = "✅" if ok else "❌"
+                app.after(0, lambda i=icon, m=msg: smtp_status_lbl.configure(text=f"{i}  {m}"))
             threading.Thread(target=_run, daemon=True).start()
 
         btn_row = ctk.CTkFrame(ec, fg_color="transparent")
@@ -303,9 +304,63 @@ class SettingsPage:
             anchor="w", padx=20, pady=(0, 10))
 
         # ══════════════════════════════════════════════════════
+        #  3b. JOURNALISATION (LOGS)
+        # ══════════════════════════════════════════════════════
+        lc = make_card(scroll)
+        lc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
+
+        ctk.CTkLabel(lc, text="📋  Journalisation",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+
+        log_inner = ctk.CTkFrame(lc, fg_color=C["light"], corner_radius=8)
+        log_inner.pack(fill="x", padx=16, pady=(4, 6))
+        log_inner_f = ctk.CTkFrame(log_inner, fg_color="transparent")
+        log_inner_f.pack(fill="x", padx=14, pady=12)
+
+        # Toggle activation
+        log_en_var = ctk.BooleanVar(value=db.get_setting("log_enabled", "1") == "1")
+        ctk.CTkLabel(log_inner_f, text="Activer les logs",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=C["text"]).pack(side="left")
+        ctk.CTkSwitch(log_inner_f, text="", variable=log_en_var).pack(side="right")
+
+        # Niveau de log
+        level_row = ctk.CTkFrame(lc, fg_color="transparent")
+        level_row.pack(anchor="w", padx=20, pady=(4, 0))
+        ctk.CTkLabel(level_row, text="Niveau :",
+                     font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(side="left")
+        log_level_var = ctk.StringVar(value=db.get_setting("log_level", "INFO"))
+        ctk.CTkOptionMenu(level_row, values=LOG_LEVELS, variable=log_level_var,
+                          height=30, width=130,
+                          font=ctk.CTkFont(size=12)).pack(side="left", padx=8)
+
+        # Chemin du fichier log
+        log_path = get_log_file_path()
+        ctk.CTkLabel(lc, text=f"📂  {log_path}",
+                     font=ctk.CTkFont(size=10), text_color=C["muted"]).pack(
+            anchor="w", padx=20, pady=(4, 4))
+
+        log_status_lbl = ctk.CTkLabel(lc, text="",
+                                       font=ctk.CTkFont(size=11), text_color=C["green"])
+        log_status_lbl.pack(anchor="w", padx=20)
+
+        def save_log_settings():
+            level   = log_level_var.get()
+            enabled = log_en_var.get()
+            db.set_setting("log_level",   level)
+            db.set_setting("log_enabled", "1" if enabled else "0")
+            configure_log_level(level, enabled)
+            log_status_lbl.configure(text="✅  Paramètres logs sauvegardés")
+            show_toast(app, "Configuration logs sauvegardée")
+
+        ctk.CTkButton(lc, text="💾  Sauvegarder", height=32, width=160,
+                      font=ctk.CTkFont(size=12),
+                      command=save_log_settings).pack(anchor="w", padx=20, pady=(4, 16))
+
+        # ══════════════════════════════════════════════════════
         #  4. SÉCURITÉ
         # ══════════════════════════════════════════════════════
-        import auth as Auth
         sc = make_card(scroll)
         sc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
 
@@ -369,8 +424,7 @@ class SettingsPage:
                                       border_color=C["border"])
             cpwd_entry.grid(row=5, column=0, sticky="ew")
 
-            err_var = ctk.StringVar()
-            err_lbl = ctk.CTkLabel(pwd_inner, textvariable=err_var,
+            err_lbl = ctk.CTkLabel(pwd_inner, text="",
                                    font=ctk.CTkFont(size=11),
                                    text_color=C["red"])
             err_lbl.grid(row=6, column=0, sticky="w", pady=(4, 0))
@@ -379,13 +433,13 @@ class SettingsPage:
                 np_ = npwd_var.get()
                 cp_ = cpwd_var.get()
                 if len(np_) < 4:
-                    err_var.set("⚠  Au moins 4 caractères.")
+                    err_lbl.configure(text="⚠  Au moins 4 caractères.")
                     return
                 if np_ != cp_:
-                    err_var.set("❌  Les mots de passe ne correspondent pas.")
+                    err_lbl.configure(text="❌  Les mots de passe ne correspondent pas.")
                     return
                 Auth.change_password(db, np_)
-                err_var.set("")
+                err_lbl.configure(text="")
                 show_toast(app, "✅  Mot de passe modifié !")
                 _toggle_pwd_form()
 
@@ -438,9 +492,9 @@ class SettingsPage:
                      text_color=C["muted"], font=ctk.CTkFont(size=12),
                      justify="left").pack(anchor="w", padx=20, pady=(0, 12))
 
-        self._import_status = ctk.StringVar(value="")
-        ctk.CTkLabel(ic, textvariable=self._import_status,
-                     font=ctk.CTkFont(size=12), text_color=C["green"]).pack(anchor="w", padx=20)
+        self._import_status_lbl = ctk.CTkLabel(ic, text="",
+                                               font=ctk.CTkFont(size=12), text_color=C["green"])
+        self._import_status_lbl.pack(anchor="w", padx=20)
 
         btn_row2 = ctk.CTkFrame(ic, fg_color="transparent")
         btn_row2.pack(anchor="w", padx=20, pady=(6, 16))
@@ -452,7 +506,7 @@ class SettingsPage:
             )
             if not paths:
                 return
-            self._import_status.set("⏳  Import en cours…")
+            self._import_status_lbl.configure(text="⏳  Import en cours…")
 
             def _run():
                 total_rev = total_exp = total_sav = 0
@@ -464,11 +518,10 @@ class SettingsPage:
                     except Exception as exc:
                         errors.append(str(exc))
                 if errors:
-                    self._import_status.set("⚠️  Erreur : " + " | ".join(errors))
+                    msg = "⚠️  Erreur : " + " | ".join(errors)
                 else:
-                    self._import_status.set(
-                        f"✅  {total_rev} revenus, {total_exp} dépenses, {total_sav} épargnes importés"
-                    )
+                    msg = f"✅  {total_rev} revenus, {total_exp} dépenses, {total_sav} épargnes importés"
+                app.after(0, lambda m=msg: self._import_status_lbl.configure(text=m))
             threading.Thread(target=_run, daemon=True).start()
 
         ctk.CTkButton(btn_row2, text="📂  Choisir ZIP(s) et importer",
@@ -573,6 +626,34 @@ class SettingsPage:
                       height=32, font=ctk.CTkFont(size=12),
                       fg_color=C["primary"],
                       command=export_csv).pack(anchor="w", padx=20, pady=(8, 16))
+
+        # ══════════════════════════════════════════════════════
+        #  6b. TRANSACTIONS RÉCURRENTES
+        # ══════════════════════════════════════════════════════
+        rrc = make_card(scroll)
+        rrc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
+
+        ctk.CTkLabel(rrc, text="📅  Transactions récurrentes",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(
+            rrc,
+            text=("Gérez vos loyers, abonnements, salaires… définissez-les une fois,\n"
+                  "et appliquez-les chaque mois depuis le tableau de bord."),
+            text_color=C["muted"], font=ctk.CTkFont(size=12), justify="left",
+        ).pack(anchor="w", padx=20, pady=(0, 10))
+
+        rec_count = len(db.get_recurring_transactions())
+        ctk.CTkLabel(rrc, text=f"🔄  {rec_count} transaction(s) configurée(s)",
+                     font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(
+            anchor="w", padx=20, pady=(0, 8))
+
+        ctk.CTkButton(
+            rrc, text="⚙  Gérer les récurrentes",
+            height=36, width=200,
+            font=ctk.CTkFont(size=13),
+            command=lambda: RecurringManagerDialog(app, db),
+        ).pack(anchor="w", padx=20, pady=(0, 16))
 
         # ══════════════════════════════════════════════════════
         #  7. SYNCHRONISATION SUPABASE
@@ -690,3 +771,137 @@ class SettingsPage:
                       height=34, font=ctk.CTkFont(size=12),
                       fg_color=C["muted"], hover_color="#475569",
                       command=_switch_local).pack(side="left")
+
+        # ══════════════════════════════════════════════════════
+        #  8. INTELLIGENCE ARTIFICIELLE
+        # ══════════════════════════════════════════════════════
+        aic = make_card(scroll)
+        aic.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
+
+        ctk.CTkLabel(aic, text="🤖  Intelligence Artificielle",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(aic,
+                     text="Optionnel — enrichit les recommandations avec une analyse IA personnalisée.\n"
+                          "Gemini 2.0 Flash Lite (gratuit, sans CB) · Anthropic Haiku · OpenAI GPT-4o-mini.\n"
+                          "Gemini : clé API gratuite sur aistudio.google.com → python -m pip install google-genai",
+                     text_color=C["muted"], font=ctk.CTkFont(size=12),
+                     justify="left", wraplength=560).pack(anchor="w", padx=20, pady=(0, 12))
+
+        ai_fields = ctk.CTkFrame(aic, fg_color="transparent")
+        ai_fields.pack(fill="x", padx=20, pady=(0, 6))
+        ai_fields.grid_columnconfigure(0, weight=1)
+
+        # Fournisseur
+        ctk.CTkLabel(ai_fields, text="Fournisseur",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ai_provider_var = ctk.StringVar(
+            value=db.get_setting("ai_provider", "gemini"))
+        ctk.CTkOptionMenu(ai_fields,
+                          values=["gemini", "anthropic", "openai"],
+                          variable=ai_provider_var,
+                          height=34, font=ctk.CTkFont(size=12),
+                          fg_color=C["light"], button_color=C["primary"],
+                          text_color=C["text"]).grid(row=1, column=0, sticky="w", pady=(0, 10))
+
+        # Clé API — référence directe à l'entry (évite le bug textvariable+show)
+        ctk.CTkLabel(ai_fields, text="Clé API",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["muted"]).grid(row=2, column=0, sticky="w", pady=(0, 4))
+        ai_key_entry = ctk.CTkEntry(ai_fields, height=36,
+                                    show="●", font=ctk.CTkFont(size=12),
+                                    fg_color=C["light"], border_color=C["border"],
+                                    placeholder_text="AIza… (Gemini) · sk-ant-… (Anthropic) · sk-… (OpenAI)")
+        ai_key_entry.grid(row=3, column=0, sticky="ew")
+        # Pré-remplir si déjà enregistrée
+        _saved_key = db.get_setting("ai_api_key", "")
+        if _saved_key:
+            ai_key_entry.insert(0, _saved_key)
+
+        ai_status_lbl = ctk.CTkLabel(aic, text="",
+                                     font=ctk.CTkFont(size=11),
+                                     wraplength=500, justify="left")
+        ai_status_lbl.pack(anchor="w", padx=20, pady=(6, 0))
+
+        def _ai_set_status(msg: str, color: str = C["muted"]):
+            ai_status_lbl.configure(text=msg, text_color=color)
+
+        ai_btn_row = ctk.CTkFrame(aic, fg_color="transparent")
+        ai_btn_row.pack(anchor="w", padx=20, pady=(10, 16))
+
+        def _ai_save_and_test():
+            provider = ai_provider_var.get().strip()
+            key      = ai_key_entry.get().strip()
+            if not key:
+                _ai_set_status("⚠️  Entrez votre clé API.", C["amber"])
+                return
+            _ai_set_status("⏳  Test en cours…", C["muted"])
+
+            def _run():
+                try:
+                    from utils_ai import get_ai_recommendations, build_financial_summary
+                    test_summary = "Revenus : 3000 €, Dépenses : 2000 €, Épargne : 500 €."
+                    ok, text = get_ai_recommendations(test_summary, 1, provider, key)
+                    def _done():
+                        if ok:
+                            db.set_setting("ai_provider", provider)
+                            db.set_setting("ai_api_key",  key)
+                            _ai_set_status(
+                                f"✅  Connexion {provider.title()} OK — clé enregistrée.",
+                                C["green"])
+                            show_toast(app, "🤖  IA configurée avec succès")
+                        else:
+                            _ai_set_status(f"❌  {text}", C["red"])
+                    app.after(0, _done)
+                except Exception as e:
+                    app.after(0, lambda: _ai_set_status(f"❌  {e}", C["red"]))
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        def _ai_clear():
+            db.set_setting("ai_provider", "")
+            db.set_setting("ai_api_key",  "")
+            ai_key_entry.delete(0, "end")
+            _ai_set_status("🗑️  Clé IA supprimée.", C["muted"])
+
+        ctk.CTkButton(ai_btn_row, text="🔌  Tester & Enregistrer",
+                      height=34, font=ctk.CTkFont(size=12),
+                      fg_color="#7C3AED", hover_color="#6D28D9",
+                      command=_ai_save_and_test).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(ai_btn_row, text="🗑️  Effacer la clé",
+                      height=34, font=ctk.CTkFont(size=12),
+                      fg_color=C["muted"], hover_color="#475569",
+                      command=_ai_clear).pack(side="left")
+
+        # ── Mon profil (contexte injecté dans le prompt IA) ───
+        ctk.CTkFrame(aic, fg_color=C["border"], height=1).pack(
+            fill="x", padx=20, pady=(8, 12))
+
+        ctk.CTkLabel(aic, text="👤  Mon profil",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=20)
+        ctk.CTkLabel(aic,
+                     text="Ce texte est ajouté à chaque analyse IA pour personnaliser les conseils.",
+                     font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(
+            anchor="w", padx=20, pady=(2, 6))
+
+        ctx_var = ctk.StringVar(value=db.get_setting("user_context", ""))
+        ctx_entry = ctk.CTkEntry(aic, textvariable=ctx_var, height=36,
+                                  font=ctk.CTkFont(size=12),
+                                  placeholder_text="Ex : Jeune couple, un seul salaire, à Sartrouville (78)…")
+        ctx_entry.pack(fill="x", padx=20, pady=(0, 6))
+
+        ctx_status = ctk.CTkLabel(aic, text="", font=ctk.CTkFont(size=11),
+                                   text_color=C["green"])
+        ctx_status.pack(anchor="w", padx=20)
+
+        def _save_ctx():
+            db.set_setting("user_context", ctx_var.get().strip())
+            ctx_status.configure(text="✅  Profil sauvegardé")
+            aic.after(2000, lambda: ctx_status.configure(text=""))
+
+        ctk.CTkButton(aic, text="💾  Sauvegarder le profil",
+                      height=32, width=200, font=ctk.CTkFont(size=12),
+                      fg_color="#7C3AED", hover_color="#6D28D9",
+                      command=_save_ctx).pack(anchor="w", padx=20, pady=(4, 16))
