@@ -360,7 +360,7 @@ def generate_monthly_report(db, year: int, month: int, output_path: str) -> str:
     )
     story.append(Spacer(1, 1*cm))
     story.append(Paragraph(
-        f"Généré par Finance Tracker — {gen_date}",
+        f"Généré par Fintrack — {gen_date}",
         footer_style
     ))
 

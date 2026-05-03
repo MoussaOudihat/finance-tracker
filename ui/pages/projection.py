@@ -1,6 +1,7 @@
 """
 ui/pages/projection.py — Projection du patrimoine à long terme
 """
+import threading
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -8,7 +9,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
 from config import C, MONTHS_FR
-from ui.components import make_card
+from ui.components import make_card, render_ai_text
+from utils_ai import get_ai_config, get_projection_advice
 
 
 class ProjectionPage:
@@ -404,6 +406,134 @@ class ProjectionPage:
 
         # Calcul initial
         _recalculate()
+
+        # ──────────────────────────────────────────────────────
+        # CARTE IA — ON DEMAND
+        # ──────────────────────────────────────────────────────
+        ai_card = make_card(scroll, corner_radius=12)
+        ai_card.pack(fill="x", pady=(0, 20))
+
+        ai_inner = ctk.CTkFrame(ai_card, fg_color="transparent")
+        ai_inner.pack(fill="x", padx=16, pady=16)
+
+        # Titre de la section IA
+        ai_header_row = ctk.CTkFrame(ai_inner, fg_color="transparent")
+        ai_header_row.pack(fill="x", pady=(0, 12))
+
+        ctk.CTkLabel(
+            ai_header_row,
+            text="✨ Analyse IA du scénario",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=C["text"],
+        ).pack(side="left")
+
+        # Zone de contenu IA (cachée initialement)
+        ai_content = ctk.CTkFrame(ai_inner, fg_color="transparent")
+
+        ai_btn_ref = [None]   # référence mutable au bouton
+        ai_running = [False]  # verrou anti double-clic
+
+        def _show_ai_result(success: bool, text: str):
+            """Appelé depuis le thread principal après la réponse IA."""
+            for w in ai_content.winfo_children():
+                w.destroy()
+
+            if success:
+                # Rendu Markdown formaté
+                md_widget = render_ai_text(ai_content, text, bg_color=C["card"])
+                md_widget.pack(fill="x", pady=(0, 10))
+
+                # Bouton rafraîchir
+                ctk.CTkButton(
+                    ai_content,
+                    text="🔄  Relancer l'analyse",
+                    height=32,
+                    fg_color=C["light"],
+                    text_color=C["primary"],
+                    hover_color=C["border"],
+                    corner_radius=8,
+                    font=ctk.CTkFont(size=12),
+                    command=_run_ai,
+                ).pack(anchor="e")
+            else:
+                ctk.CTkLabel(
+                    ai_content,
+                    text=f"⚠  {text}",
+                    font=ctk.CTkFont(size=12),
+                    text_color=C["red"],
+                    wraplength=600,
+                    justify="left",
+                ).pack(anchor="w")
+
+            ai_content.pack(fill="x")
+            ai_running[0] = False
+            if ai_btn_ref[0]:
+                ai_btn_ref[0].configure(state="normal", text="✨  Analyser ce scénario avec l'IA")
+
+        def _run_ai():
+            if ai_running[0]:
+                return
+            ai_running[0] = True
+            if ai_btn_ref[0]:
+                ai_btn_ref[0].configure(state="disabled", text="⏳ Analyse en cours…")
+
+            # Lire valeurs actuelles de la projection
+            try:
+                ep_m = float(epargne_entry.get() or state["epargne_mensuelle"])
+                ep_m = max(0, ep_m)
+            except ValueError:
+                ep_m = state["epargne_mensuelle"]
+            try:
+                infl = float(inflation_entry.get() or 2.0)
+                infl = max(0, infl)
+            except ValueError:
+                infl = state["inflation"]
+
+            taux    = state["taux_rendement"]
+            horizon = state["horizon_ans"]
+            data    = _compute_projection(patrimoine_actuel, ep_m, taux, infl, horizon)
+            pat_fin = data["patrimoines"][-1]
+            val_ree = data["valeurs_reelles"][-1]
+            gain    = data["gains_composés"][-1]
+
+            configured, _, api_key = get_ai_config(db)
+            if not configured:
+                _show_ai_result(False, "Aucune clé API configurée. Rendez-vous dans Paramètres → IA pour renseigner votre clé Gemini.")
+                return
+
+            user_context = db.get_setting("user_context", "")
+
+            def _worker():
+                ok, txt = get_projection_advice(
+                    patrimoine_actuel=patrimoine_actuel,
+                    epargne_mensuelle=ep_m,
+                    taux=taux,
+                    inflation=infl,
+                    horizon=horizon,
+                    patrimoine_projete=pat_fin,
+                    valeur_reelle=val_ree,
+                    gain_compose=gain,
+                    api_key=api_key,
+                    user_context=user_context,
+                )
+                scroll.after(0, lambda: _show_ai_result(ok, txt))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        # Bouton principal (affiché par défaut, seul élément visible)
+        ai_btn = ctk.CTkButton(
+            ai_inner,
+            text="✨ Analyser ce scénario avec l'IA",
+            height=38,
+            fg_color=C["primary"],
+            hover_color=C.get("primary_hover", "#2B5FD8"),
+            text_color="white",
+            corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=_run_ai,
+        )
+        ai_btn.pack(anchor="w")
+        ai_btn_ref[0] = ai_btn
 
 
 def _compute_projection(patrimoine_initial: float, epargne_mensuelle: float,

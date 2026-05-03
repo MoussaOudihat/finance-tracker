@@ -13,7 +13,7 @@ matplotlib.rcParams.update({
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR, PALETTE
+from config import C, MONTHS_FR, PALETTE, FILTER_ALL_CATS, FILTER_ALL_PAYEES
 from ui.components import make_card, filter_dropdown, month_selector
 
 
@@ -43,8 +43,8 @@ class AnalysesPage:
 
         month_selector(top, MONTHS_FR, y, m, on_month_change).pack(side="left")
 
-        cats   = ["Toutes catégories"] + [c["name"] for c in db.get_categories()]
-        payees = ["Toutes enseignes"]  + db.get_payees(y, m)
+        cats   = [FILTER_ALL_CATS] + [c["name"] for c in db.get_categories()]
+        payees = [FILTER_ALL_PAYEES]  + db.get_payees(y, m)
         cat_var   = ctk.StringVar(value=app.ana_cat_filter)
         payee_var = ctk.StringVar(value=app.ana_payee_filter)
 
@@ -54,14 +54,14 @@ class AnalysesPage:
         effacer_holder = {"btn": None}
 
         def _sync_effacer():
-            is_active = (app.ana_cat_filter not in ("Toutes catégories",) or
-                         app.ana_payee_filter not in ("Toutes enseignes",))
+            is_active = (app.ana_cat_filter not in (FILTER_ALL_CATS,) or
+                         app.ana_payee_filter not in (FILTER_ALL_PAYEES,))
             if is_active and effacer_holder["btn"] is None:
                 def clear_filters():
-                    app.ana_cat_filter   = "Toutes catégories"
-                    app.ana_payee_filter = "Toutes enseignes"
-                    cat_var.set("Toutes catégories")
-                    payee_var.set("Toutes enseignes")
+                    app.ana_cat_filter   = FILTER_ALL_CATS
+                    app.ana_payee_filter = FILTER_ALL_PAYEES
+                    cat_var.set(FILTER_ALL_CATS)
+                    payee_var.set(FILTER_ALL_PAYEES)
                     _soft_refresh()
                 btn = ctk.CTkButton(fi, text="✕ Effacer", height=28, width=90,
                                     fg_color="#FEE2E2", text_color=C["red"],
@@ -84,13 +84,13 @@ class AnalysesPage:
         # ── Fonctions toggle partagées ────────────────────────
         def _toggle_cat(label: str):
             current = app.ana_cat_filter
-            app.ana_cat_filter = "Toutes catégories" if current == label else label
+            app.ana_cat_filter = FILTER_ALL_CATS if current == label else label
             cat_var.set(app.ana_cat_filter)
             app.after(0, _soft_refresh)
 
         def _toggle_payee(label: str):
             current = app.ana_payee_filter
-            app.ana_payee_filter = "Toutes enseignes" if current == label else label
+            app.ana_payee_filter = FILTER_ALL_PAYEES if current == label else label
             payee_var.set(app.ana_payee_filter)
             app.after(0, _soft_refresh)
 
@@ -279,7 +279,7 @@ def _ctk_legend(parent, items, colors, toggle_fn=None,
 
     for i, (lbl, val_str) in enumerate(items):
         is_active = (active_filter and lbl == active_filter and
-                     active_filter not in ("Toutes catégories", "Toutes enseignes", "", None))
+                     active_filter not in (FILTER_ALL_CATS, FILTER_ALL_PAYEES, "", None))
         rf = ctk.CTkFrame(
             leg,
             fg_color="#DBEAFE" if is_active else "transparent",
@@ -363,10 +363,10 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
     payee_f = app.ana_payee_filter
 
     cat_data   = db.get_expenses_by_category(
-        y, m, payee_f if payee_f not in ("Toutes enseignes",) else None
+        y, m, payee_f if payee_f not in (FILTER_ALL_PAYEES,) else None
     )
     payee_data = db.get_expenses_by_payee(
-        y, m, cat_f if cat_f not in ("Toutes catégories",) else None
+        y, m, cat_f if cat_f not in (FILTER_ALL_CATS,) else None
     )
 
     # ── Camembert catégories ──
@@ -380,7 +380,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
         labels_p = [r["name"] for r in cat_data]
         vals_p   = [r["total"] for r in cat_data]
         colors_p = [PALETTE[i % len(PALETTE)] for i in range(len(labels_p))]
-        is_cat_active = (cat_f and cat_f not in ("Toutes catégories", "", None)
+        is_cat_active = (cat_f and cat_f not in (FILTER_ALL_CATS, "", None)
                          and cat_f in labels_p)
 
         def _draw_pie(parent, figsize=(5, 3.2)):
@@ -432,7 +432,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
     if payee_data:
         pnames   = [r["payee"] for r in payee_data]
         pamounts = [r["total"] for r in payee_data]
-        is_payee_active = (payee_f and payee_f not in ("Toutes enseignes", "", None)
+        is_payee_active = (payee_f and payee_f not in (FILTER_ALL_PAYEES, "", None)
                            and payee_f in pnames)
 
         def _draw_hbar(parent, figsize=(5, 4.2)):
@@ -496,7 +496,7 @@ def _section_cat_evolution(parent, db, app):
         cats_m = db.get_expenses_by_category(y2, m2)
         for c in cats_m:
             cname = c["name"]
-            if cat_filter not in ("Toutes catégories",) and cname != cat_filter:
+            if cat_filter not in (FILTER_ALL_CATS,) and cname != cat_filter:
                 continue
             cat_series.setdefault(cname, [0] * len(summaries))
 
@@ -659,7 +659,7 @@ def _draw_stacked(parent, db, n_months: int, app, toggle_cat):
 
         for ci, (cname, vals) in enumerate(sorted_cats):
             alpha = 0.88
-            if (cat_filter and cat_filter not in ("Toutes catégories", "", None)
+            if (cat_filter and cat_filter not in (FILTER_ALL_CATS, "", None)
                     and cname != cat_filter):
                 alpha = 0.25
             bars = ax.bar(x, vals, bottom=bottoms, color=colors[ci],

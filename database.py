@@ -6,8 +6,10 @@ import csv
 import sqlite3
 import zipfile
 import io
+import threading
 
-from config import DEFAULT_CATEGORIES, MONTHS_FR
+from config import DEFAULT_CATEGORIES, MONTHS_FR, FILTER_ALL_CATS, FILTER_ALL_PAYEES
+from logger import log
 from utils import parse_notion_month, parse_amount
 
 
@@ -28,19 +30,23 @@ class Database:
         self._seed_categories()
         self._load_seed_sql_if_empty()
         self._cache: dict = {}
+        self._cache_lock = threading.Lock()
 
     # ──────────────────────────────────────────
     #  CACHE
     # ──────────────────────────────────────────
     def _invalidate(self):
         """Vide le cache des requêtes (appelé après chaque écriture)."""
-        self._cache.clear()
+        with self._cache_lock:
+            self._cache.clear()
 
     def _q(self, key: str, fn):
-        """Retourne le résultat depuis le cache ou exécute fn() et le met en cache."""
-        if key not in self._cache:
-            self._cache[key] = fn()
-        return self._cache[key]
+        """Retourne le résultat depuis le cache ou exécute fn() et le met en cache.
+        Thread-safe : le lock protège lecture et écriture du dict."""
+        with self._cache_lock:
+            if key not in self._cache:
+                self._cache[key] = fn()
+            return self._cache[key]
 
     # ──────────────────────────────────────────
     #  SCHEMA
@@ -124,8 +130,20 @@ class Database:
                 key   TEXT PRIMARY KEY,
                 value TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS recurring_transactions (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                label              TEXT    NOT NULL DEFAULT '',
+                amount             REAL    NOT NULL DEFAULT 0,
+                type               TEXT    NOT NULL DEFAULT 'expense',
+                category_id        INTEGER REFERENCES categories(id),
+                source             TEXT    DEFAULT '',
+                payee              TEXT    DEFAULT '',
+                active             INTEGER DEFAULT 1,
+                last_applied_year  INTEGER DEFAULT 0,
+                last_applied_month INTEGER DEFAULT 0
+            );
 
-            -- Index de performance (Phase 1)
+            -- Index simples
             CREATE INDEX IF NOT EXISTS idx_expenses_month       ON expenses(month_id);
             CREATE INDEX IF NOT EXISTS idx_expenses_cat         ON expenses(category_id);
             CREATE INDEX IF NOT EXISTS idx_expenses_payee       ON expenses(payee);
@@ -136,6 +154,10 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_asset_tx_period      ON asset_transactions(year, month);
             CREATE INDEX IF NOT EXISTS idx_asset_tx_name        ON asset_transactions(asset_name);
             CREATE INDEX IF NOT EXISTS idx_budgets_period       ON budgets(year, month);
+            -- Index composites (couvrent les filtres les plus fréquents en un seul scan)
+            CREATE INDEX IF NOT EXISTS idx_expenses_month_cat   ON expenses(month_id, category_id);
+            CREATE INDEX IF NOT EXISTS idx_expenses_month_payee ON expenses(month_id, payee);
+            CREATE INDEX IF NOT EXISTS idx_assets_type_period   ON assets(asset_type, year, month);
         """)
         self.con.commit()
 
@@ -155,8 +177,11 @@ class Database:
             try:
                 self.con.execute(stmt)
                 self.con.commit()
-            except Exception:
+            except sqlite3.OperationalError:
+                # Colonne déjà existante — comportement normal, pas de log
                 pass
+            except Exception:
+                log.warning("Migration inattendue : %s", stmt, exc_info=True)
         # Normaliser toutes les enseignes existantes en MAJUSCULES
         self.con.execute(
             "UPDATE expenses SET payee = UPPER(TRIM(payee))"
@@ -310,10 +335,10 @@ class Database:
             WHERE e.month_id = ?
         """
         params = [mid]
-        if cat_filter and cat_filter not in ("Toutes", "Toutes catégories"):
+        if cat_filter and cat_filter not in ("Toutes", FILTER_ALL_CATS):
             q += " AND c.name = ?"
             params.append(cat_filter)
-        if payee_filter and payee_filter not in ("Tous", "Toutes enseignes"):
+        if payee_filter and payee_filter not in ("Tous", FILTER_ALL_PAYEES):
             q += " AND e.payee = ?"
             params.append(payee_filter)
         q += " ORDER BY c.name, e.payee, e.amount DESC"
@@ -333,12 +358,38 @@ class Database:
             WHERE e.month_id = ?
         """
         params = [mid]
-        if payee_filter and payee_filter not in ("Tous", "Toutes enseignes"):
+        if payee_filter and payee_filter not in ("Tous", FILTER_ALL_PAYEES):
             q += " AND e.payee = ?"
             params.append(payee_filter)
         q += " GROUP BY c.id ORDER BY total DESC"
         result = self.con.execute(q, params).fetchall()
         self._cache[ck] = result
+        return result
+
+    def get_expenses_by_category_range(self, months: list[tuple[int, int]]) -> list:
+        """
+        Retourne le total des dépenses par catégorie sur une liste de (year, month).
+        1 seule requête SQL au lieu de N — supprime le problème N+1 de build_financial_summary.
+        """
+        if not months:
+            return []
+        ck = f"ebc_range_{'_'.join(f'{y}{m}' for y, m in months)}"
+        with self._cache_lock:
+            if ck in self._cache:
+                return self._cache[ck]
+        placeholders = ",".join("(?,?)" for _ in months)
+        params = [val for pair in months for val in pair]
+        q = f"""
+            SELECT c.name, SUM(e.amount) AS total
+            FROM expenses e
+            JOIN categories c ON e.category_id = c.id
+            JOIN months mo ON e.month_id = mo.id
+            WHERE (mo.year, mo.month) IN ({placeholders})
+            GROUP BY c.id ORDER BY total DESC
+        """
+        result = [dict(r) for r in self.con.execute(q, params).fetchall()]
+        with self._cache_lock:
+            self._cache[ck] = result
         return result
 
     def get_expenses_by_payee(self, year, month, cat_filter=None) -> list:
@@ -355,7 +406,7 @@ class Database:
             WHERE e.month_id = ? AND e.payee != ''
         """
         params = [mid]
-        if cat_filter and cat_filter not in ("Toutes", "Toutes catégories"):
+        if cat_filter and cat_filter not in ("Toutes", FILTER_ALL_CATS):
             q += " AND c.name = ?"
             params.append(cat_filter)
         q += " GROUP BY e.payee ORDER BY total DESC LIMIT 20"
@@ -1159,6 +1210,127 @@ class Database:
             DO UPDATE SET value=excluded.value
             """,
             (key, value),
+        )
+        self.con.commit()
+        self._invalidate()
+
+    # ──────────────────────────────────────────
+    #  TRANSACTIONS RÉCURRENTES
+    # ──────────────────────────────────────────
+
+    def get_recurring_transactions(self) -> list:
+        """Retourne toutes les transactions récurrentes (actives + inactives)."""
+        return self.con.execute(
+            """
+            SELECT r.id, r.label, r.amount, r.type,
+                   r.category_id, c.name AS cat_name,
+                   r.source, r.payee, r.active,
+                   r.last_applied_year, r.last_applied_month
+            FROM recurring_transactions r
+            LEFT JOIN categories c ON r.category_id = c.id
+            ORDER BY r.type, r.label
+            """
+        ).fetchall()
+
+    def add_recurring(self, label: str, amount: float, rtype: str,
+                      category_id: int | None, source: str = "",
+                      payee: str = "") -> int:
+        """
+        Crée une transaction récurrente.
+        rtype : 'expense' | 'revenue'
+        """
+        payee = payee.strip().upper() if payee else ""
+        cur = self.con.execute(
+            """
+            INSERT INTO recurring_transactions
+                (label, amount, type, category_id, source, payee, active)
+            VALUES (?,?,?,?,?,?,1)
+            """,
+            (label, amount, rtype, category_id, source, payee),
+        )
+        self.con.commit()
+        self._invalidate()
+        return cur.lastrowid
+
+    def update_recurring(self, rec_id: int, label: str, amount: float,
+                         rtype: str, category_id: int | None,
+                         source: str, payee: str, active: int):
+        """Met à jour une transaction récurrente existante."""
+        payee = payee.strip().upper() if payee else ""
+        self.con.execute(
+            """
+            UPDATE recurring_transactions
+            SET label=?, amount=?, type=?, category_id=?,
+                source=?, payee=?, active=?
+            WHERE id=?
+            """,
+            (label, amount, rtype, category_id, source, payee, active, rec_id),
+        )
+        self.con.commit()
+        self._invalidate()
+
+    def delete_recurring(self, rec_id: int):
+        """Supprime une transaction récurrente."""
+        self.con.execute(
+            "DELETE FROM recurring_transactions WHERE id=?", (rec_id,)
+        )
+        self.con.commit()
+        self._invalidate()
+
+    def get_pending_recurring(self, year: int, month: int) -> list:
+        """
+        Retourne les transactions récurrentes actives qui n'ont pas encore
+        été appliquées pour le mois (year, month) donné.
+        """
+        return self.con.execute(
+            """
+            SELECT r.id, r.label, r.amount, r.type,
+                   r.category_id, c.name AS cat_name,
+                   r.source, r.payee,
+                   r.last_applied_year, r.last_applied_month
+            FROM recurring_transactions r
+            LEFT JOIN categories c ON r.category_id = c.id
+            WHERE r.active = 1
+              AND NOT (r.last_applied_year = ? AND r.last_applied_month = ?)
+            ORDER BY r.type, r.label
+            """,
+            (year, month),
+        ).fetchall()
+
+    def apply_recurring(self, rec_id: int, year: int, month: int,
+                        amount: float):
+        """
+        Applique une transaction récurrente pour le mois donné :
+        - Crée la dépense ou le revenu correspondant
+        - Met à jour last_applied_year / last_applied_month
+        """
+        row = self.con.execute(
+            "SELECT * FROM recurring_transactions WHERE id=?", (rec_id,)
+        ).fetchone()
+        if not row:
+            return
+
+        if row["type"] == "expense" and row["category_id"]:
+            self.add_expense(
+                year, month, row["category_id"], amount,
+                row["label"], row["payee"],
+            )
+        elif row["type"] == "revenue":
+            self.add_revenue(
+                year, month,
+                row["source"] or row["label"],
+                amount,
+                row["label"],
+            )
+
+        # Marquer comme appliquée ce mois-ci
+        self.con.execute(
+            """
+            UPDATE recurring_transactions
+            SET last_applied_year=?, last_applied_month=?
+            WHERE id=?
+            """,
+            (year, month, rec_id),
         )
         self.con.commit()
         self._invalidate()

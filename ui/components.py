@@ -1,6 +1,7 @@
 """
 ui/components.py — Widgets et helpers UI réutilisables
 """
+import re
 import tkinter as tk
 import customtkinter as ctk
 from config import C, PALETTE
@@ -89,8 +90,8 @@ def kpi_card(parent, title: str, value: str, color: str, icon: str = "") -> ctk.
 # ──────────────────────────────────────────────────────────
 def nav_button(parent, text: str, command, tooltip: str = "") -> ctk.CTkButton:
     btn = ctk.CTkButton(
-        parent, text=text, anchor="w", height=42,
-        font=ctk.CTkFont(size=13), fg_color="transparent",
+        parent, text=text, anchor="w", height=36,
+        font=ctk.CTkFont(size=12), fg_color="transparent",
         hover_color=C["sidebar2"], text_color="#CBD5E1",
         corner_radius=8, command=command,
     )
@@ -224,6 +225,120 @@ def total_bar(parent, text: str, color: str, bg: str, border: str,
     ctk.CTkLabel(f, text=text, font=ctk.CTkFont(size=14, weight="bold"),
                  text_color=color).pack(side="right", padx=16, pady=9)
     return f
+
+
+# ──────────────────────────────────────────────────────────
+#  Renderer Markdown léger pour les réponses IA
+# ──────────────────────────────────────────────────────────
+def render_ai_text(parent, text: str, bg_color: str = None) -> tk.Text:
+    """
+    Affiche une réponse IA (Markdown-like) dans un tk.Text avec mise en forme :
+      ### Titre   → header gras coloré
+      **gras**    → texte en gras (inline)
+      * item      → puce •
+      ligne vide  → séparateur
+    Retourne le widget (déjà pack/grid selon le parent voulu).
+    """
+    bg = bg_color or C["light"]
+
+    widget = tk.Text(
+        parent,
+        wrap="word",
+        relief="flat",
+        borderwidth=0,
+        bg=bg,
+        fg=C["text"],
+        font=("Segoe UI", 11),
+        cursor="arrow",
+        state="normal",
+        padx=10,
+        pady=6,
+        spacing1=1,
+        spacing2=2,
+        spacing3=6,
+        exportselection=False,
+    )
+
+    # ── Tags ────────────────────────────────────────────────
+    widget.tag_configure(
+        "h3",
+        font=("Segoe UI", 13, "bold"),
+        foreground=C["primary"],
+        spacing1=12,
+        spacing3=4,
+    )
+    widget.tag_configure("bold",   font=("Segoe UI", 11, "bold"))
+    widget.tag_configure("normal", font=("Segoe UI", 11))
+    widget.tag_configure(
+        "bullet",
+        lmargin1=4,
+        lmargin2=22,
+        spacing1=2,
+        spacing3=2,
+    )
+    widget.tag_configure(
+        "bullet_marker",
+        font=("Segoe UI", 11, "bold"),
+        foreground=C["primary"],
+        lmargin1=4,
+    )
+    widget.tag_configure(
+        "action",
+        font=("Segoe UI", 11),
+        foreground=C.get("primary_hover", C["primary"]),
+        lmargin1=4,
+        lmargin2=22,
+    )
+
+    _BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
+
+    def _insert_inline(line_text: str, base_tag: str = "normal"):
+        """Insère du texte en gérant le **gras** inline."""
+        pos = 0
+        for m in _BOLD_RE.finditer(line_text):
+            before = line_text[pos:m.start()]
+            if before:
+                widget.insert("end", before, base_tag)
+            widget.insert("end", m.group(1), "bold")
+            pos = m.end()
+        remainder = line_text[pos:]
+        if remainder:
+            widget.insert("end", remainder, base_tag)
+
+    # ── Parser ligne par ligne ───────────────────────────────
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+
+        if line.startswith("### ") or line.startswith("## "):
+            title = line.lstrip("# ").strip()
+            widget.insert("end", title + "\n", "h3")
+
+        elif line.startswith("* ") or line.startswith("- "):
+            content = line[2:].strip()
+            widget.insert("end", "  •  ", "bullet_marker")
+            _insert_inline(content, "bullet")
+            widget.insert("end", "\n", "bullet")
+
+        elif line.startswith("→ ") or line.startswith("-> "):
+            content = line[2:].strip()
+            widget.insert("end", "  → ", "action")
+            _insert_inline(content, "action")
+            widget.insert("end", "\n", "action")
+
+        elif line == "":
+            widget.insert("end", "\n")
+
+        else:
+            _insert_inline(line, "normal")
+            widget.insert("end", "\n", "normal")
+
+    widget.configure(state="disabled")
+
+    # Hauteur automatique (min 4, max 35 lignes)
+    n_lines = int(widget.index("end-1c").split(".")[0])
+    widget.configure(height=min(max(n_lines, 4), 35))
+
+    return widget
 
 
 # ──────────────────────────────────────────────────────────
