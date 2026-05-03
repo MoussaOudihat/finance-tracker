@@ -6,9 +6,10 @@ import importlib
 import threading
 
 import customtkinter as ctk
-from config import C, DB_PATH, apply_palette
+from config import C, DB_PATH, APP_VERSION, apply_palette, FILTER_ALL_CATS, FILTER_ALL_PAYEES, FILTER_ALL_TYPES
 from database import Database
 from ui.components import nav_button
+from logger import log
 
 # ─── Lazy page loading ──────────────────────────────────────────
 # Au lieu d'importer toutes les pages au démarrage (ce qui charge
@@ -48,24 +49,31 @@ def _load_page_class(key: str):
     _PAGE_CLASS_CACHE[key] = cls
     return cls
 
-# None = séparateur  |  (label, key, tooltip)
+# Structure du menu latéral :
+# None         = séparateur fin
+# str          = label de section (texte en petites majuscules)
+# tuple        = (label, page_key, tooltip)
 _NAV_ITEMS = [
-    ("🏠  Tableau de bord",             "dashboard",      "Vue d'ensemble — revenus, dépenses et solde du mois"),
+    ("🏠  Tableau de bord",  "dashboard",      "Vue d'ensemble du mois"),
     None,
-    ("💶  Revenus",                      "revenues",       "Saisir et consulter vos revenus"),
-    ("💸  Dépenses",                     "expenses",       "Saisir et consulter vos dépenses"),
-    ("🏦  Épargne",                      "savings_entry",  "Enregistrer vos versements d'épargne"),
+    "SAISIE DU MOIS",
+    ("💶  Revenus",          "revenues",       "Saisir et consulter vos revenus"),
+    ("💸  Dépenses",         "expenses",       "Saisir et consulter vos dépenses"),
+    ("🏦  Épargne",          "savings_entry",  "Enregistrer vos versements d'épargne"),
     None,
-    ("💰  Budget mensuel",              "budget",         "Définir et suivre votre budget par catégorie"),
-    ("🎯  Objectifs d'épargne",         "objectifs",      "Gérer vos objectifs d'épargne à long terme"),
+    "SUIVI & OBJECTIFS",
+    ("💰  Budget",           "budget",         "Définir et suivre votre budget par catégorie"),
+    ("🎯  Objectifs",        "objectifs",      "Gérer vos objectifs d'épargne"),
     None,
-    ("📊  Analyses détaillées",         "analyses",       "Graphiques et statistiques détaillées"),
-    ("📈  Patrimoine & Investissements", "patrimoine",     "Suivi de vos actifs et investissements"),
-    ("🔮  Projection",                  "projection",     "Simuler l'évolution future de votre patrimoine"),
-    ("📋  Historique",                  "historique",     "Historique complet et export de rapports"),
+    "ANALYSES",
+    ("📊  Analyses",         "analyses",       "Graphiques et statistiques détaillées"),
+    ("📈  Patrimoine",       "patrimoine",     "Suivi de vos actifs et investissements"),
+    ("🔮  Projection",       "projection",     "Simuler l'évolution future de votre patrimoine"),
+    ("📋  Historique",       "historique",     "Historique complet et export"),
     None,
-    ("🧠  Recommandations",             "recommandations","Conseils personnalisés basés sur vos données"),
-    ("⚙️  Paramètres",                 "settings",       "Préférences, sécurité et gestion du compte"),
+    "OUTILS",
+    ("🧠  Conseils IA",      "recommandations","Conseils personnalisés par l'IA"),
+    ("⚙️  Paramètres",      "settings",       "Préférences, sécurité et compte"),
 ]
 
 
@@ -96,11 +104,11 @@ class App(ctk.CTk):
             self.sel_month = today.month
 
         # Filtres persistants
-        self.dash_cat_filter   = "Toutes catégories"
-        self.dash_payee_filter = "Toutes enseignes"
-        self.ana_cat_filter    = "Toutes catégories"
-        self.ana_payee_filter  = "Toutes enseignes"
-        self.pat_type_filter   = "Tous types"
+        self.dash_cat_filter   = FILTER_ALL_CATS
+        self.dash_payee_filter = FILTER_ALL_PAYEES
+        self.ana_cat_filter    = FILTER_ALL_CATS
+        self.ana_payee_filter  = FILTER_ALL_PAYEES
+        self.pat_type_filter   = FILTER_ALL_TYPES
         self.stacked_period    = 6
 
         # Callbacks soft-refresh
@@ -108,10 +116,19 @@ class App(ctk.CTk):
         self._ana_soft_refresh  = None
 
         # ── Fenêtre ─────────────────────────────────────────
-        self.title("Finance Tracker")
+        self.title("Fintrack")
         self.geometry("1280x800")
         self.minsize(960, 620)
         self.configure(fg_color=C["bg"])
+
+        # Icône de la fenêtre (fichier généré par generate_icon.py)
+        import os
+        _ico = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fintrack.ico")
+        if os.path.isfile(_ico):
+            try:
+                self.iconbitmap(_ico)
+            except Exception:
+                pass   # Silencieux — icône non critique
 
         # ── Layout principal ─────────────────────────────────
         self.grid_columnconfigure(1, weight=1)
@@ -146,7 +163,7 @@ class App(ctk.CTk):
             self.db.get_revenues(y, m)
             self.db.monthly_summary(6)
         except Exception:
-            pass  # Silencieux — juste un préchauffage
+            log.warning("Préchauffage cache DB échoué", exc_info=True)
 
     # ────────────────────────────────────────────────────────
     #  AUTO-SYNC SUPABASE (toutes les 5 minutes)
@@ -213,41 +230,69 @@ class App(ctk.CTk):
     #  SIDEBAR
     # ────────────────────────────────────────────────────────
     def _build_sidebar(self):
-        sb = ctk.CTkFrame(self, width=235, fg_color=C["sidebar"],
+        sb = ctk.CTkFrame(self, width=220, fg_color=C["sidebar"],
                           corner_radius=0)
-        sb.grid(row=0, column=0, sticky="nsw")
+        sb.grid(row=0, column=0, sticky="nsew")
         sb.grid_propagate(False)
-        sb.grid_rowconfigure(99, weight=1)
+        sb.grid_columnconfigure(0, weight=1)
+        # row 0 = logo, row 1 = sep, row 2 = nav (expand), row 3 = footer
+        sb.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(sb,
-                     text="💰 Finance\n   Tracker",
-                     font=ctk.CTkFont(size=20, weight="bold"),
-                     text_color="white",
-                     justify="left").grid(
-            row=0, column=0, padx=22, pady=(28, 18), sticky="w"
-        )
+        # ── Logo ──────────────────────────────────────────────
+        logo_f = ctk.CTkFrame(sb, fg_color="transparent")
+        logo_f.grid(row=0, column=0, padx=16, pady=(18, 10), sticky="w")
+        ctk.CTkLabel(logo_f, text="",
+                     font=ctk.CTkFont(size=22),
+                     text_color="#A5B4FC").pack(side="left")
+        ctk.CTkLabel(logo_f, text=" Fintrack",
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color="white", justify="left").pack(side="left")
+
         ctk.CTkFrame(sb, height=1, fg_color="#334155").grid(
-            row=1, column=0, sticky="ew", padx=16, pady=(0, 6)
+            row=1, column=0, sticky="ew", padx=14, pady=(0, 2)
         )
+
+        # ── Zone de navigation scrollable ─────────────────────
+        # Permet au menu de défiler si la fenêtre est trop petite
+        nav_scroll = ctk.CTkScrollableFrame(
+            sb, fg_color="transparent", corner_radius=0,
+            scrollbar_button_color=C["sidebar"],
+            scrollbar_button_hover_color="#334155",
+        )
+        nav_scroll.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
+        nav_scroll.grid_columnconfigure(0, weight=1)
 
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
-        row_idx = 2
         for item in _NAV_ITEMS:
             if item is None:
-                ctk.CTkFrame(sb, height=1, fg_color="#2D3F5E").grid(
-                    row=row_idx, column=0, sticky="ew", padx=20, pady=(4, 4)
+                # Séparateur fin
+                ctk.CTkFrame(nav_scroll, height=1,
+                             fg_color="#1E2D45").pack(
+                    fill="x", padx=16, pady=(2, 2)
+                )
+            elif isinstance(item, str):
+                # Label de section — compact
+                ctk.CTkLabel(nav_scroll, text=item,
+                             font=ctk.CTkFont(size=9, weight="bold"),
+                             text_color="#475569",
+                             anchor="w").pack(
+                    fill="x", padx=20, pady=(7, 1)
                 )
             else:
                 label, key, tip = item
-                btn = nav_button(sb, label, command=lambda k=key: self._go(k), tooltip=tip)
-                btn.grid(row=row_idx, column=0, sticky="ew", padx=10, pady=1)
+                btn = nav_button(nav_scroll, label,
+                                 command=lambda k=key: self._go(k),
+                                 tooltip=tip)
+                btn.pack(fill="x", padx=6, pady=1)
                 self._nav_buttons[key] = btn
-            row_idx += 1
 
-        ctk.CTkLabel(sb, text="v3.0  |  sqlite local",
+        # ── Pied de page ──────────────────────────────────────
+        db_mode  = self.db.get_setting("db_mode", "local")
+        mode_str = "☁ Supabase" if db_mode == "online" else "💾 local"
+        ctk.CTkLabel(sb, text=f"v{APP_VERSION}  ·  {mode_str}",
                      font=ctk.CTkFont(size=10),
-                     text_color="#64748B").grid(
-            row=100, column=0, padx=22, pady=(8, 18), sticky="sw"
+                     text_color="#475569").grid(
+            row=3, column=0, padx=18, pady=(4, 14), sticky="sw"
         )
 
     # ────────────────────────────────────────────────────────
@@ -315,9 +360,7 @@ class App(ctk.CTk):
         try:
             page_cls().render(container, self)
         except Exception as exc:
-            import traceback
-            print(f"[Finance Tracker] Erreur lors du rendu : {exc}")
-            traceback.print_exc()
+            log.error("Erreur rendu page : %s", exc, exc_info=True)
 
     def _update_nav_highlight(self, active_key: str):
         for key, btn in self._nav_buttons.items():
@@ -363,27 +406,33 @@ def _detect_unusual_expenses(db) -> list[dict]:
     if not recent_cats:
         return alerts
 
-    # Calcule la moyenne des 3 mois précédents pour chaque catégorie
+    # Calcule la moyenne des mois précédents pour chaque catégorie
     history = db.monthly_summary(6)  # jusqu'à 6 mois
     # On exclut le mois le plus récent (index 0 = le plus récent)
     prev_months = list(reversed(history))[:-1]   # du plus ancien au plus récent, sans le dernier
     if len(prev_months) < 2:
         return alerts
 
-    cat_avgs: dict = {}
-    for m in prev_months:
-        for r in db.get_expenses_by_category(m["year"], m["month"]):
-            if r["name"] not in cat_avgs:
-                cat_avgs[r["name"]] = []
-            cat_avgs[r["name"]].append(r["total"])
+    # 1 seule requête pour tous les mois (remplace le N+1 précédent)
+    nb_prev = len(prev_months)
+    periods  = [(m["year"], m["month"]) for m in prev_months]
+    cat_rows = db.get_expenses_by_category_range(periods)
+
+    # Moyenne mensuelle = total sur la période / nb de mois étudiés
+    # (diviser par nb_prev est intentionnellement conservateur : si une catégorie
+    #  n'a de données que 2 mois sur 5, sa moyenne sera basse → moins de faux positifs)
+    cat_avgs: dict = {
+        r["name"]: float(r["total"]) / nb_prev
+        for r in cat_rows
+    }
 
     from config import MONTHS_FR
     month_label = f"{MONTHS_FR[lm-1]} {ly}"
 
     for cat, current in recent_cats.items():
-        if cat not in cat_avgs or len(cat_avgs[cat]) < 2:
+        if cat not in cat_avgs:
             continue
-        avg = sum(cat_avgs[cat]) / len(cat_avgs[cat])
+        avg = cat_avgs[cat]
         if avg > 0 and current > avg * 2 and current > 50:   # seuil min 50 € pour éviter le bruit
             alerts.append({
                 "type":  "unusual",
@@ -509,34 +558,3 @@ def _show_alerts_popup(app, alerts: list[dict]):
                   command=win.destroy).pack(side="right")
 
 
-# ─────────────────────────────────────────────────────────────
-#  Avis de redémarrage (mode sombre)
-# ─────────────────────────────────────────────────────────────
-def _show_restart_notice(app):
-    win = ctk.CTkToplevel(app)
-    win.title("Redémarrage requis")
-    win.geometry("380x180")
-    win.resizable(False, False)
-    win.lift()
-    win.grab_set()
-
-    ctk.CTkLabel(win,
-                 text="🌙  Changement de thème",
-                 font=ctk.CTkFont(size=15, weight="bold"),
-                 text_color=C["text"]).pack(pady=(24, 6))
-    ctk.CTkLabel(win,
-                 text="Le nouveau thème sera appliqué\nau prochain démarrage de l'application.",
-                 font=ctk.CTkFont(size=12),
-                 text_color=C["muted"],
-                 justify="center").pack(pady=(0, 18))
-
-    btns = ctk.CTkFrame(win, fg_color="transparent")
-    btns.pack()
-    ctk.CTkButton(btns, text="OK",
-                  width=120, height=34,
-                  fg_color=C["primary"],
-                  command=win.destroy).pack(side="left", padx=6)
-    ctk.CTkButton(btns, text="Redémarrer maintenant",
-                  width=180, height=34,
-                  fg_color=C["muted"],
-                  command=lambda: (win.destroy(), app.destroy())).pack(side="left", padx=6)

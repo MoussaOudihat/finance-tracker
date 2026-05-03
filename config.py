@@ -4,17 +4,25 @@ config.py — Constantes globales de l'application
 import os
 import sys
 
-APP_TITLE   = "Finance Tracker"
-APP_VERSION = "2.1"
+APP_TITLE = "Fintrack"
 
 # ── Chemin de base ───────────────────────────────────────────
 # Fonctionne en mode script (.py) ET en mode .exe (PyInstaller --onedir)
 if getattr(sys, "frozen", False):
     # Exécutable PyInstaller : base = dossier contenant le .exe
-    _BASE_DIR = os.path.dirname(sys.executable)
+    _BASE_DIR    = os.path.dirname(sys.executable)
+    _BUNDLE_DIR  = sys._MEIPASS          # répertoire des fichiers bundlés
 else:
     # Mode script normal
-    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+    _BUNDLE_DIR  = _BASE_DIR
+
+# ── Version lue depuis le fichier VERSION (écrit par le CI au moment de la release) ──
+try:
+    with open(os.path.join(_BUNDLE_DIR, "VERSION"), encoding="utf-8") as _vf:
+        APP_VERSION = _vf.read().strip()
+except Exception:
+    APP_VERSION = "dev"
 
 DB_PATH = os.path.join(_BASE_DIR, "data", "finance_tracker.db")
 
@@ -40,6 +48,12 @@ ASSET_TYPES = [
 ]
 ASSET_LABEL = {key: label for label, key in ASSET_TYPES}
 
+# ── Valeurs des filtres "Tout afficher" ──────────────────────
+# Centralisées ici pour éviter les typos qui cassent le reset silencieusement.
+FILTER_ALL_CATS   = "Toutes catégories"
+FILTER_ALL_PAYEES = "Toutes enseignes"
+FILTER_ALL_TYPES  = "Tous types"
+
 DEFAULT_CATEGORIES = [
     "ABONNEMENT", "ALIMENTATION", "AUTRES", "BANQUE", "BRICOLAGE",
     "CADEAUX", "DONS", "FAMILLE", "FORMATION", "IMPÔT",
@@ -55,52 +69,61 @@ PALETTE = [
 ]
 
 C = {
-    "bg":      "#F0F4F8",
-    "sidebar": "#1A2340",
-    "sidebar2":"#243050",
-    "card":    "#FFFFFF",
-    "border":  "#E2E8F0",
-    "primary": "#3B6FE8",
-    "green":   "#22C55E",
-    "red":     "#EF4444",
-    "blue":    "#3B82F6",
-    "amber":   "#F59E0B",
-    "text":    "#1E293B",
-    "muted":   "#64748B",
-    "light":   "#F8FAFC",
+    "bg":           "#F0F4F8",
+    "sidebar":      "#1E1B4B",   # indigo très foncé — cohérent avec l'icône
+    "sidebar2":     "#2D2A6E",
+    "card":         "#FFFFFF",
+    "border":       "#E2E8F0",
+    "primary":      "#4F46E5",   # indigo #4F46E5 — Option D
+    "primary_hover":"#4338CA",
+    "green":        "#22C55E",
+    "green_soft":   "#DCFCE7",
+    "red":          "#EF4444",
+    "red_soft":     "#FEE2E2",
+    "blue":         "#3B82F6",
+    "amber":        "#F59E0B",
+    "text":         "#1E293B",
+    "muted":        "#64748B",
+    "light":        "#F8FAFC",
 }
 
 # Palettes light / dark (muter C en place pour un effet immédiat)
 _C_LIGHT = {
-    "bg":      "#F0F4F8",
-    "sidebar": "#1A2340",
-    "sidebar2":"#243050",
-    "card":    "#FFFFFF",
-    "border":  "#E2E8F0",
-    "primary": "#3B6FE8",
-    "green":   "#22C55E",
-    "red":     "#EF4444",
-    "blue":    "#3B82F6",
-    "amber":   "#F59E0B",
-    "text":    "#1E293B",
-    "muted":   "#64748B",
-    "light":   "#F8FAFC",
+    "bg":           "#F0F4F8",
+    "sidebar":      "#1E1B4B",
+    "sidebar2":     "#2D2A6E",
+    "card":         "#FFFFFF",
+    "border":       "#E2E8F0",
+    "primary":      "#4F46E5",
+    "primary_hover":"#4338CA",
+    "green":        "#22C55E",
+    "green_soft":   "#DCFCE7",
+    "red":          "#EF4444",
+    "red_soft":     "#FEE2E2",
+    "blue":         "#3B82F6",
+    "amber":        "#F59E0B",
+    "text":         "#1E293B",
+    "muted":        "#64748B",
+    "light":        "#F8FAFC",
 }
 
 _C_DARK = {
-    "bg":      "#0F1623",
-    "sidebar": "#0A0F1A",
-    "sidebar2":"#141E30",
-    "card":    "#1A2340",
-    "border":  "#2D3F5E",
-    "primary": "#4F8EF7",
-    "green":   "#22C55E",
-    "red":     "#EF4444",
-    "blue":    "#3B82F6",
-    "amber":   "#F59E0B",
-    "text":    "#E2E8F0",
-    "muted":   "#94A3B8",
-    "light":   "#243050",
+    "bg":           "#0F0E1F",
+    "sidebar":      "#0C0A1E",
+    "sidebar2":     "#1A1740",
+    "card":         "#1A1740",
+    "border":       "#2D2A6E",
+    "primary":      "#6D63F5",   # indigo plus clair en dark
+    "primary_hover":"#5B52E8",
+    "green":        "#22C55E",
+    "green_soft":   "#14532D",
+    "red":          "#EF4444",
+    "red_soft":     "#7F1D1D",
+    "blue":         "#3B82F6",
+    "amber":        "#F59E0B",
+    "text":         "#E2E8F0",
+    "muted":        "#94A3B8",
+    "light":        "#1E1B4B",
 }
 
 
