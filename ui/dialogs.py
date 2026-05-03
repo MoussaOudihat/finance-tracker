@@ -11,6 +11,32 @@ def _fmt_qty(q: float) -> str:
     return f"{q:.6f}".rstrip("0")
 
 
+def _parse_amount(entry: "ctk.CTkEntry", allow_zero: bool = False,
+                  max_val: float = 1_000_000) -> "float | None":
+    """
+    Parse et valide un montant depuis un CTkEntry.
+    Retourne le float si valide, None + bordure rouge sinon.
+    Règles : doit être un nombre, > 0 (sauf allow_zero), <= max_val.
+    """
+    raw = entry.get().replace(",", ".").replace(" ", "").replace(" ", "")
+    try:
+        value = float(raw)
+    except ValueError:
+        entry.configure(border_color=C["red"])
+        return None
+    if not allow_zero and value <= 0:
+        entry.configure(border_color=C["red"])
+        return None
+    if value < 0:
+        entry.configure(border_color=C["red"])
+        return None
+    if value > max_val:
+        entry.configure(border_color=C["red"])
+        return None
+    entry.configure(border_color=C["border"])
+    return value
+
+
 class _BaseDialog(ctk.CTkToplevel):
     """Dialogue modal générique."""
 
@@ -87,10 +113,8 @@ class RevenueDialog(_BaseDialog):
         self._source.focus()
 
     def _on_save(self):
-        try:
-            amount = float(self._amount.get().replace(",", ".").replace(" ", ""))
-        except ValueError:
-            self._amount.configure(border_color=C["red"])
+        amount = _parse_amount(self._amount)
+        if amount is None:
             return
         source = self._source.get().strip()
         if not source:
@@ -131,10 +155,8 @@ class ExpenseDialog(_BaseDialog):
         self._payee.focus()
 
     def _on_save(self):
-        try:
-            amount = float(self._amount.get().replace(",", ".").replace(" ", ""))
-        except ValueError:
-            self._amount.configure(border_color=C["red"])
+        amount = _parse_amount(self._amount)
+        if amount is None:
             return
         if self._on_save_cb:
             self._on_save_cb({
@@ -164,10 +186,8 @@ class SavingDialog(_BaseDialog):
         self._account.focus()
 
     def _on_save(self):
-        try:
-            amount = float(self._amount.get().replace(",", ".").replace(" ", ""))
-        except ValueError:
-            self._amount.configure(border_color=C["red"])
+        amount = _parse_amount(self._amount)
+        if amount is None:
             return
         account = self._account.get().strip()
         if not account:
@@ -186,10 +206,19 @@ class SavingDialog(_BaseDialog):
 #  Dialogue: Actif / Investissement
 # ──────────────────────────────────────────────────────────
 class AssetDialog(_BaseDialog):
+    """
+    Dialogue d'ajout/modification d'un actif.
+    Deux modes selon le type :
+      • compte  → Nom + Solde actuel + Notes  (pas de coût d'achat)
+      • autres  → Nom + Valeur actuelle + Prix d'achat/Investi + Notes
+    """
+
+    _COMPTE_KEYS = {"compte"}   # types traités comme dépôt monétaire
+
     def __init__(self, parent, initial: dict = None, on_save=None):
         super().__init__(parent,
                          "✏  Modifier l'actif" if initial else "＋  Ajouter un actif",
-                         width=560, height=520)
+                         width=560, height=480)
         self._on_save_cb = on_save
         init = initial or {}
 
@@ -204,7 +233,7 @@ class AssetDialog(_BaseDialog):
             type_names[0]
         )
 
-        # Type d'actif (pleine largeur)
+        # ── Type d'actif (pleine largeur) ──────────────────
         ctk.CTkLabel(self.body, text="Type d'actif *",
                      font=ctk.CTkFont(size=11, weight="bold"),
                      text_color=C["muted"]).grid(
@@ -212,44 +241,97 @@ class AssetDialog(_BaseDialog):
         self._type_var = ctk.StringVar(value=init_type)
         ctk.CTkOptionMenu(self.body, values=type_names, variable=self._type_var,
                           height=38, font=ctk.CTkFont(size=13),
-                          fg_color=C["primary"], button_color=C["primary"]).grid(
+                          fg_color=C["primary"], button_color=C["primary"],
+                          command=self._on_type_change).grid(
             row=1, column=0, columnspan=2, padx=20, sticky="ew")
 
-        # Nom (pleine largeur)
-        self._name = self._field(1, "Nom *", "Ex : PEA Boursorama",
+        # ── Nom (pleine largeur) ────────────────────────────
+        self._name = self._field(1, "Nom *", "Ex : Livret A, Bourso+, PEA…",
                                   init.get("asset_name", ""), col=0, colspan=2)
 
-        # Valeur actuelle | Prix d'achat (côte à côte)
-        self._value = self._field(2, "Valeur actuelle (€) *", "0.00",
-                                   str(init.get("value", "") or ""), col=0)
-        self._cost_basis = self._field(2, "Prix d'achat / Investi (€)", "0.00",
-                                        str(init.get("cost_basis", "") or ""), col=1)
+        # ── Valeur / Solde — label dynamique, col=0 ────────
+        self._value_lbl = ctk.CTkLabel(
+            self.body, text="Solde actuel (€) *",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=C["muted"])
+        self._value_lbl.grid(row=4, column=0, padx=20, pady=(14, 2), sticky="w")
+        self._value = ctk.CTkEntry(self.body, placeholder_text="0.00",
+                                    height=38, font=ctk.CTkFont(size=13))
+        self._value.grid(row=5, column=0, padx=20, sticky="ew")
+        val_init = str(init.get("value", "") or "")
+        if val_init:
+            self._value.insert(0, val_init)
 
-        # Notes (pleine largeur)
+        # ── Prix d'achat / Investi — col=1, masqué pour compte ──
+        self._cost_lbl = ctk.CTkLabel(
+            self.body, text="Prix d'achat / Investi (€)",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=C["muted"])
+        self._cost_lbl.grid(row=4, column=1, padx=20, pady=(14, 2), sticky="w")
+        self._cost_basis = ctk.CTkEntry(self.body, placeholder_text="0.00",
+                                         height=38, font=ctk.CTkFont(size=13))
+        self._cost_basis.grid(row=5, column=1, padx=20, sticky="ew")
+        cost_init = str(init.get("cost_basis", "") or "")
+        if cost_init:
+            self._cost_basis.insert(0, cost_init)
+
+        # ── Notes (pleine largeur) ──────────────────────────
         self._notes = self._field(3, "Notes", "Optionnel",
                                    init.get("notes", "") or "", col=0, colspan=2)
 
-        # Astuce
+        # ── Astuce ──────────────────────────────────────────
         ctk.CTkLabel(self.body,
                      text="* champs obligatoires  ·  Entrée pour valider  ·  Échap pour annuler",
                      font=ctk.CTkFont(size=10), text_color=C["muted"]).grid(
             row=8, column=0, columnspan=2, padx=20, pady=(12, 8), sticky="w")
 
         self._name.focus()
+        # Applique l'état initial selon le type sélectionné
+        self._on_type_change(init_type)
+
+    # ── Adaptation du formulaire selon le type ─────────────
+    def _on_type_change(self, selected_name: str):
+        is_compte = self._type_keys.get(selected_name, "") in self._COMPTE_KEYS
+        if is_compte:
+            # Compte / Épargne : Solde actuel | Total versé (côte à côte)
+            # Le "Total versé" permet de calculer les intérêts gagnés = solde - versé
+            self._value_lbl.configure(text="Solde actuel (€) *")
+            self._value_lbl.grid(row=4, column=0, columnspan=1,
+                                  padx=20, pady=(14, 2), sticky="w")
+            self._value.grid(row=5, column=0, columnspan=1, padx=20, sticky="ew")
+            self._cost_lbl.configure(text="Total versé (€)  — facultatif")
+            self._cost_lbl.grid(row=4, column=1, padx=20, pady=(14, 2), sticky="w")
+            self._cost_basis.grid(row=5, column=1, padx=20, sticky="ew")
+            self._cost_basis.configure(placeholder_text="Ex : 3 000")
+        else:
+            # Investissement : valeur + coût d'achat côte à côte
+            self._value_lbl.configure(text="Valeur actuelle (€) *")
+            self._value_lbl.grid(row=4, column=0, columnspan=1,
+                                  padx=20, pady=(14, 2), sticky="w")
+            self._value.grid(row=5, column=0, columnspan=1, padx=20, sticky="ew")
+            self._cost_lbl.configure(text="Prix d'achat / Investi (€)")
+            self._cost_lbl.grid(row=4, column=1, padx=20, pady=(14, 2), sticky="w")
+            self._cost_basis.grid(row=5, column=1, padx=20, sticky="ew")
+            self._cost_basis.configure(placeholder_text="0.00")
 
     def _on_save(self):
         name = self._name.get().strip()
         if not name:
             self._name.configure(border_color=C["red"])
             return
-        raw_value = self._value.get().replace(",", ".").replace(" ", "")
-        raw_cb    = (self._cost_basis.get() or "0").replace(",", ".").replace(" ", "")
-        try:
-            value      = float(raw_value)
-            cost_basis = float(raw_cb) if raw_cb else 0.0
-        except ValueError:
-            self._value.configure(border_color=C["red"])
+        value = _parse_amount(self._value, allow_zero=True)
+        if value is None:
             return
+
+        # cost_basis = total versé (compte) ou prix d'achat (investissement)
+        # Dans les deux cas : facultatif, >= 0
+        raw_cb = (self._cost_basis.get() or "0").replace(",", ".").replace(" ", "").replace(" ", "")
+        try:
+            cost_basis = float(raw_cb) if raw_cb else 0.0
+            if cost_basis < 0:
+                raise ValueError
+        except ValueError:
+            self._cost_basis.configure(border_color=C["red"])
+            return
+
         if self._on_save_cb:
             self._on_save_cb({
                 "asset_type": self._type_keys.get(self._type_var.get(), "autre"),
@@ -265,31 +347,29 @@ class AssetDialog(_BaseDialog):
 #  Dialogue: Mise à jour rapide de la valeur
 # ──────────────────────────────────────────────────────────
 class QuickValueUpdateDialog(_BaseDialog):
-    """Popup minimaliste pour mettre à jour la valeur actuelle d'un actif."""
+    """Popup minimaliste pour mettre à jour la valeur ou le solde d'un actif."""
 
-    def __init__(self, parent, asset_name: str, current_value: float, on_save=None):
-        label = asset_name if len(asset_name) <= 30 else asset_name[:28] + "…"
-        super().__init__(parent, f"💰  Màj valeur — {label}",
-                         width=400, height=250)
+    def __init__(self, parent, asset_name: str, current_value: float,
+                 on_save=None, label: str = "valeur"):
+        short_name = asset_name if len(asset_name) <= 30 else asset_name[:28] + "…"
+        super().__init__(parent, f"💰  Màj {label} — {short_name}",
+                         width=420, height=260)
         self._on_save_cb = on_save
 
         ctk.CTkLabel(self.body,
-                     text=f"Actif : {asset_name}",
+                     text=f"Compte / Actif : {asset_name}",
                      font=ctk.CTkFont(size=13, weight="bold"),
                      text_color=C["text"]).grid(
             row=0, column=0, padx=20, pady=(16, 4), sticky="w")
 
-        self._value = self._field(1, "Nouvelle valeur actuelle (€) *", "0.00",
-                                   f"{current_value:.2f}")
+        field_lbl = f"Nouveau {label} (€) *"
+        self._value = self._field(1, field_lbl, "0.00", f"{current_value:.2f}")
         self._value.select_range(0, "end")
         self._value.focus()
 
     def _on_save(self):
-        raw = self._value.get().replace(",", ".").replace(" ", "").replace("\u202f", "")
-        try:
-            value = float(raw)
-        except ValueError:
-            self._value.configure(border_color=C["red"])
+        value = _parse_amount(self._value, allow_zero=True)
+        if value is None:
             return
         if self._on_save_cb:
             self._on_save_cb(value)
@@ -861,3 +941,430 @@ class AssetTransactionsDialog(ctk.CTkToplevel):
         self._asset             = dict(self._asset)
         self._asset["cost_basis"] = new_cost
         self._asset["value"]      = new_value
+
+
+# ──────────────────────────────────────────────────────────
+#  Dialogue: Ajouter / Modifier une récurrente
+# ──────────────────────────────────────────────────────────
+class RecurringEditDialog(_BaseDialog):
+    """Formulaire d'édition d'une transaction récurrente."""
+
+    def __init__(self, parent, categories: list, initial: dict = None,
+                 on_save=None):
+        is_edit = initial is not None
+        super().__init__(
+            parent,
+            "✏  Modifier la récurrente" if is_edit else "＋  Nouvelle récurrente",
+            width=500, height=420,
+        )
+        self._on_save_cb = on_save
+        init = initial or {}
+        self._cats = categories  # list of dicts with 'id' and 'name'
+        self._cat_names = [c["name"] for c in categories]
+
+        # ── Type (Dépense / Revenu) ──────────────────────
+        ctk.CTkLabel(self.body, text="Type *",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=0, column=0, padx=20, pady=(14, 2), sticky="w")
+        self._type_var = ctk.StringVar(
+            value="Dépense" if init.get("type", "expense") == "expense" else "Revenu"
+        )
+        ctk.CTkOptionMenu(
+            self.body, values=["Dépense", "Revenu"],
+            variable=self._type_var, height=38,
+            font=ctk.CTkFont(size=13),
+            command=self._on_type_change,
+        ).grid(row=1, column=0, padx=20, sticky="ew")
+
+        # ── Label ────────────────────────────────────────
+        self._label = self._field(1, "Libellé *", "Ex : Loyer, Netflix…",
+                                  init.get("label", ""))
+
+        # ── Montant ──────────────────────────────────────
+        self._amount = self._field(2, "Montant par défaut (€) *", "0.00",
+                                   str(init.get("amount", "")))
+
+        # ── Catégorie (dépense) ──────────────────────────
+        self._cat_frame = ctk.CTkFrame(self.body, fg_color="transparent")
+        self._cat_frame.grid(row=6, column=0, padx=20, pady=(14, 2), sticky="ew")
+        self._cat_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self._cat_frame, text="Catégorie *",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(row=0, column=0, sticky="w")
+        init_cat = init.get("cat_name", self._cat_names[0] if self._cat_names else "")
+        self._cat_var = ctk.StringVar(value=init_cat)
+        self._cat_menu = ctk.CTkOptionMenu(
+            self._cat_frame, values=self._cat_names or ["—"],
+            variable=self._cat_var, height=38, font=ctk.CTkFont(size=13),
+        )
+        self._cat_menu.grid(row=1, column=0, sticky="ew")
+
+        # ── Enseigne (dépense) ───────────────────────────
+        self._payee_lbl = ctk.CTkLabel(self.body, text="Enseigne",
+                                        font=ctk.CTkFont(size=11, weight="bold"),
+                                        text_color=C["muted"])
+        self._payee_lbl.grid(row=8, column=0, padx=20, pady=(14, 2), sticky="w")
+        self._payee = ctk.CTkEntry(self.body, placeholder_text="Ex : EDF, Orange…",
+                                    height=38, font=ctk.CTkFont(size=13))
+        self._payee.grid(row=9, column=0, padx=20, sticky="ew")
+        if init.get("payee"):
+            self._payee.insert(0, init["payee"])
+
+        # ── Source (revenu) ──────────────────────────────
+        self._source_lbl = ctk.CTkLabel(self.body, text="Source",
+                                         font=ctk.CTkFont(size=11, weight="bold"),
+                                         text_color=C["muted"])
+        self._source_lbl.grid(row=10, column=0, padx=20, pady=(14, 2), sticky="w")
+        self._source = ctk.CTkEntry(self.body, placeholder_text="Ex : Salaire, Loyer perçu…",
+                                     height=38, font=ctk.CTkFont(size=13))
+        self._source.grid(row=11, column=0, padx=20, sticky="ew")
+        if init.get("source"):
+            self._source.insert(0, init["source"])
+
+        self._on_type_change(self._type_var.get())
+        self._label.focus()
+
+    def _on_type_change(self, val: str):
+        is_expense = (val == "Dépense")
+        if is_expense:
+            self._cat_frame.grid()
+            self._cat_menu.grid()
+            self._payee_lbl.grid()
+            self._payee.grid()
+            self._source_lbl.grid_remove()
+            self._source.grid_remove()
+        else:
+            self._cat_frame.grid_remove()
+            self._cat_menu.grid_remove()
+            self._payee_lbl.grid_remove()
+            self._payee.grid_remove()
+            self._source_lbl.grid()
+            self._source.grid()
+
+    def _on_save(self):
+        label = self._label.get().strip()
+        if not label:
+            self._label.configure(border_color=C["red"])
+            return
+        amount = _parse_amount(self._amount)
+        if amount is None:
+            return
+        is_expense = self._type_var.get() == "Dépense"
+        cat_id = None
+        if is_expense and self._cats:
+            sel = self._cat_var.get()
+            cat_id = next((c["id"] for c in self._cats if c["name"] == sel), None)
+        if self._on_save_cb:
+            self._on_save_cb({
+                "label":      label,
+                "amount":     amount,
+                "type":       "expense" if is_expense else "revenue",
+                "category_id": cat_id,
+                "cat_name":   self._cat_var.get() if is_expense else "",
+                "source":     self._source.get().strip(),
+                "payee":      self._payee.get().strip(),
+            })
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────
+#  Dialogue: Gestionnaire des récurrentes
+# ──────────────────────────────────────────────────────────
+class RecurringManagerDialog(ctk.CTkToplevel):
+    """Liste CRUD de toutes les transactions récurrentes."""
+
+    def __init__(self, parent, db, on_change=None):
+        super().__init__(parent)
+        self.title("⚙  Transactions récurrentes")
+        self.geometry("700x540")
+        self.resizable(False, False)
+        self.grab_set()
+        self.focus_force()
+        self._db = db
+        self._on_change = on_change
+
+        # ── Header ──
+        hdr = ctk.CTkFrame(self, fg_color=C["sidebar"], corner_radius=0)
+        hdr.pack(fill="x")
+        hdr.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(hdr, text="Transactions récurrentes",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color="white").pack(side="left", padx=20, pady=14)
+        ctk.CTkButton(
+            hdr, text="＋  Ajouter", width=120, height=34,
+            command=self._add_new,
+        ).pack(side="right", padx=12, pady=10)
+
+        # ── Footer ──
+        footer = ctk.CTkFrame(self, fg_color=C["card"], corner_radius=0,
+                               border_width=1, border_color=C["border"])
+        footer.pack(fill="x", side="bottom")
+        ctk.CTkButton(footer, text="Fermer", width=110, height=38,
+                      fg_color=C["light"], text_color=C["text"],
+                      hover_color=C["border"],
+                      command=self.destroy).pack(side="right", padx=12, pady=10)
+
+        # ── Corps scrollable ──
+        self._scroll = ctk.CTkScrollableFrame(self, fg_color=C["bg"], corner_radius=0)
+        self._scroll.pack(fill="both", expand=True)
+        self._scroll.grid_columnconfigure(0, weight=1)
+        self._render()
+
+    def _render(self):
+        for w in self._scroll.winfo_children():
+            w.destroy()
+        rows = self._db.get_recurring_transactions()
+        if not rows:
+            ctk.CTkLabel(self._scroll,
+                         text="Aucune transaction récurrente.\nCliquez ＋ Ajouter pour commencer.",
+                         font=ctk.CTkFont(size=13), text_color=C["muted"],
+                         justify="center").grid(row=0, column=0, pady=60)
+            return
+
+        for i, r in enumerate(rows):
+            bg = C["card"] if i % 2 == 0 else C["light"]
+            row_f = ctk.CTkFrame(self._scroll, fg_color=bg, corner_radius=6)
+            row_f.grid(row=i, column=0, sticky="ew", padx=8, pady=3)
+            row_f.grid_columnconfigure(2, weight=1)
+
+            # Badge type
+            is_exp = r["type"] == "expense"
+            badge_text = "💸 Dépense" if is_exp else "💰 Revenu"
+            badge_color = C.get("red_soft", "#FDECEA") if is_exp else C.get("green_soft", "#E8F5E9")
+            badge_fg = C["red"] if is_exp else C["green"]
+            ctk.CTkLabel(row_f, text=badge_text, font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=badge_fg, fg_color=badge_color,
+                         corner_radius=4, width=90).grid(
+                row=0, column=0, padx=(12, 6), pady=12)
+
+            # Libellé + catégorie/source
+            sub = r["cat_name"] or r["source"] or r["payee"] or ""
+            label_text = r["label"] + (f"\n{sub}" if sub else "")
+            ctk.CTkLabel(row_f, text=label_text,
+                         font=ctk.CTkFont(size=12),
+                         text_color=C["text"],
+                         justify="left", anchor="w").grid(
+                row=0, column=2, padx=8, pady=12, sticky="w")
+
+            # Montant
+            ctk.CTkLabel(row_f, text=f"{r['amount']:,.2f} €",
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=C["text"]).grid(row=0, column=3, padx=8)
+
+            # Toggle actif
+            active_var = ctk.BooleanVar(value=bool(r["active"]))
+            rec_id = r["id"]
+
+            def _toggle(v=active_var, rid=rec_id, row_data=dict(r)):
+                self._db.update_recurring(
+                    rid, row_data["label"], row_data["amount"], row_data["type"],
+                    row_data["category_id"], row_data["source"] or "",
+                    row_data["payee"] or "", 1 if v.get() else 0,
+                )
+                if self._on_change:
+                    self._on_change()
+
+            ctk.CTkSwitch(row_f, text="", variable=active_var,
+                          command=_toggle, width=46).grid(row=0, column=4, padx=6)
+
+            # Boutons édition / suppression
+            btn_f = ctk.CTkFrame(row_f, fg_color="transparent")
+            btn_f.grid(row=0, column=5, padx=8)
+
+            def _edit(row_data=dict(r)):
+                self._open_edit(row_data)
+
+            def _del(rid=rec_id):
+                self._db.delete_recurring(rid)
+                if self._on_change:
+                    self._on_change()
+                self._render()
+
+            ctk.CTkButton(btn_f, text="✏", width=34, height=30,
+                          fg_color=C["primary"],
+                          font=ctk.CTkFont(size=12),
+                          command=_edit).pack(side="left", padx=2)
+            ctk.CTkButton(btn_f, text="🗑", width=34, height=30,
+                          fg_color=C["red"],
+                          font=ctk.CTkFont(size=12),
+                          command=_del).pack(side="left", padx=2)
+
+    def _get_cats(self):
+        return [{"id": c["id"], "name": c["name"]}
+                for c in self._db.get_categories()]
+
+    def _add_new(self):
+        RecurringEditDialog(self, self._get_cats(), on_save=self._save_new)
+
+    def _open_edit(self, row_data: dict):
+        RecurringEditDialog(self, self._get_cats(), initial=row_data,
+                            on_save=lambda d: self._save_edit(row_data["id"], d))
+
+    def _save_new(self, data: dict):
+        self._db.add_recurring(
+            data["label"], data["amount"], data["type"],
+            data.get("category_id"), data.get("source", ""), data.get("payee", ""),
+        )
+        if self._on_change:
+            self._on_change()
+        self._render()
+
+    def _save_edit(self, rec_id: int, data: dict):
+        self._db.update_recurring(
+            rec_id, data["label"], data["amount"], data["type"],
+            data.get("category_id"), data.get("source", ""),
+            data.get("payee", ""), 1,
+        )
+        if self._on_change:
+            self._on_change()
+        self._render()
+
+
+# ──────────────────────────────────────────────────────────
+#  Dialogue: Appliquer les récurrentes du mois
+# ──────────────────────────────────────────────────────────
+class RecurringApplyDialog(ctk.CTkToplevel):
+    """
+    Affiche les transactions récurrentes en attente pour un mois donné.
+    L'utilisateur peut cocher/décocher chaque ligne et ajuster les montants
+    avant de valider.
+    """
+
+    def __init__(self, parent, db, year: int, month: int,
+                 month_label: str, on_applied=None):
+        super().__init__(parent)
+        self.title(f"📅 Récurrentes — {month_label}")
+        self.geometry("660x520")
+        self.resizable(False, False)
+        self.grab_set()
+        self.focus_force()
+
+        self._db = db
+        self._year = year
+        self._month = month
+        self._on_applied = on_applied
+        self._rows: list[dict] = []  # état UI de chaque ligne
+
+        # ── Header ──
+        hdr = ctk.CTkFrame(self, fg_color=C["sidebar"], corner_radius=0)
+        hdr.pack(fill="x")
+        ctk.CTkLabel(hdr, text=f"Transactions récurrentes — {month_label}",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color="white").pack(anchor="w", padx=20, pady=14)
+
+        # ── Footer ──
+        footer = ctk.CTkFrame(self, fg_color=C["card"], corner_radius=0,
+                               border_width=1, border_color=C["border"])
+        footer.pack(fill="x", side="bottom")
+        ctk.CTkButton(footer, text="Annuler", width=110, height=38,
+                      fg_color=C["light"], text_color=C["text"],
+                      hover_color=C["border"],
+                      command=self.destroy).pack(side="right", padx=8, pady=10)
+        self._apply_btn = ctk.CTkButton(
+            footer, text="✓  Appliquer la sélection",
+            width=190, height=38,
+            command=self._on_apply,
+        )
+        self._apply_btn.pack(side="right", padx=(0, 4), pady=10)
+
+        # ── Corps ──
+        pending = db.get_pending_recurring(year, month)
+
+        if not pending:
+            ctk.CTkLabel(self,
+                         text="✅  Toutes les récurrentes ont déjà été appliquées\npour ce mois.",
+                         font=ctk.CTkFont(size=14), text_color=C["muted"],
+                         justify="center").pack(expand=True)
+            self._apply_btn.configure(state="disabled")
+            return
+
+        intro = ctk.CTkLabel(
+            self,
+            text=(f"{len(pending)} transaction(s) à appliquer ce mois-ci.\n"
+                  "Ajustez les montants si nécessaire, décochez ce que vous voulez ignorer."),
+            font=ctk.CTkFont(size=12), text_color=C["muted"], justify="left",
+        )
+        intro.pack(anchor="w", padx=20, pady=(10, 0))
+
+        scroll = ctk.CTkScrollableFrame(self, fg_color=C["bg"], corner_radius=0)
+        scroll.pack(fill="both", expand=True, padx=0, pady=8)
+        scroll.grid_columnconfigure(2, weight=1)
+
+        # En-tête colonnes
+        for col, txt in enumerate(["", "Type", "Libellé", "Montant (€)"]):
+            ctk.CTkLabel(scroll, text=txt,
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=C["muted"]).grid(
+                row=0, column=col, padx=(12 if col == 0 else 6, 6),
+                pady=(8, 4), sticky="w")
+
+        for i, rec in enumerate(pending):
+            row_idx = i + 1
+            bg = C["card"] if i % 2 == 0 else C["light"]
+
+            row_f = ctk.CTkFrame(scroll, fg_color=bg, corner_radius=4)
+            row_f.grid(row=row_idx, column=0, columnspan=4,
+                       sticky="ew", padx=8, pady=2)
+            row_f.grid_columnconfigure(2, weight=1)
+
+            # Checkbox sélection
+            checked = ctk.BooleanVar(value=True)
+            chk = ctk.CTkCheckBox(row_f, text="", variable=checked,
+                                   width=28, height=28)
+            chk.grid(row=0, column=0, padx=(10, 4), pady=10)
+
+            # Badge type
+            is_exp = rec["type"] == "expense"
+            badge_text = "💸 Dép." if is_exp else "💰 Rev."
+            badge_clr = C["red"] if is_exp else C["green"]
+            ctk.CTkLabel(row_f, text=badge_text,
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=badge_clr, width=62).grid(
+                row=0, column=1, padx=4)
+
+            # Libellé
+            sub = rec["cat_name"] or rec["source"] or rec["payee"] or ""
+            full_label = rec["label"] + (f"  •  {sub}" if sub else "")
+            ctk.CTkLabel(row_f, text=full_label,
+                         font=ctk.CTkFont(size=12), text_color=C["text"],
+                         anchor="w").grid(row=0, column=2, padx=8, sticky="w")
+
+            # Montant éditable
+            amt_entry = ctk.CTkEntry(row_f, width=110, height=34,
+                                      font=ctk.CTkFont(size=13))
+            amt_entry.insert(0, f"{rec['amount']:.2f}")
+            amt_entry.grid(row=0, column=3, padx=(4, 12), pady=10)
+
+            self._rows.append({
+                "rec_id": rec["id"],
+                "checked": checked,
+                "amount_entry": amt_entry,
+                "default_amount": rec["amount"],
+            })
+
+    def _on_apply(self):
+        applied = 0
+        errors = []
+        for row in self._rows:
+            if not row["checked"].get():
+                continue
+            raw = row["amount_entry"].get().replace(",", ".").strip()
+            try:
+                amount = float(raw)
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                row["amount_entry"].configure(border_color=C["red"])
+                errors.append(row["rec_id"])
+                continue
+            row["amount_entry"].configure(border_color=C["border"])
+            self._db.apply_recurring(row["rec_id"], self._year, self._month, amount)
+            applied += 1
+
+        if errors:
+            return  # ne ferme pas si des montants sont invalides
+
+        if self._on_applied:
+            self._on_applied(applied)
+        self.destroy()
