@@ -1,8 +1,9 @@
-# 💰 Finance Tracker
+# 💜 Fintrack
 
 > Application desktop Windows pour suivre ses finances personnelles — **locale, sécurisée, open source.**  
 > Synchronisation Supabase optionnelle pour le multi-appareils.
 
+![Version](https://img.shields.io/badge/Version-1.1.0-4F46E5)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-22C55E)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows)
@@ -22,9 +23,10 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 
 ### Suivi du patrimoine
 - Portefeuille multi-actifs : Bourse/ETF/PEA, Immobilier, Crypto, Or, Livrets…
+- **Compte / Épargne** : saisie adaptée (solde + total versé → intérêts gagnés calculés automatiquement)
 - Évolution historique de la valeur nette
 - Analyse de diversification (score Herfindahl)
-- Transactions (achats / ventes) par actif
+- Transactions (achats / ventes) par actif avec calcul CMUP
 
 ### Analyses & visualisation
 - Graphiques interactifs (camembert, barres, courbes) avec survol souris
@@ -36,7 +38,8 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 - **Budget mensuel** — fixez des plafonds par catégorie
 - **Objectifs d'épargne** — suivi de progression avec date cible
 - **Projection financière** — simulation à N ans avec taux de rendement
-- **Recommandations automatiques** — alertes sur les dépassements
+- **Recommandations IA** — analyse automatique par Gemini, rendu Markdown natif
+- **Analyse IA on-demand** — bouton "Analyser ce scénario avec l'IA" sur la page Projection
 - **Historique** — vue consolidée sur plusieurs mois
 
 ### Exports & rapports
@@ -56,6 +59,7 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 - 🔐 **Accès par mot de passe** + question secrète + session 30 jours
 - 👋 **Écran de bienvenue** au premier lancement : choix Nouveau compte ou Restauration Supabase
 - 🌙 Mode sombre / clair
+- 👤 **Profil IA** configurable dans Paramètres → section IA (personnalise les analyses)
 - Import depuis **Notion** (ZIP export)
 
 ---
@@ -69,11 +73,11 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 | **Budget mensuel** | Plafonds par catégorie avec barre de progression et alertes |
 | **Objectifs d'épargne** | Cartes de suivi avec jauge de progression et date cible |
 | **Analyses détaillées** | Graphiques évolutifs multi-mois, répartition, top enseignes |
-| **Patrimoine & Investissements** | Vue consolidée, évolution, transactions, diversification |
-| **Projection** | Simulation à long terme avec taux de rendement paramétrable |
+| **Patrimoine & Investissements** | Vue consolidée, évolution, transactions, diversification, intérêts livrets |
+| **Projection** | Simulation à long terme + analyse IA on-demand |
 | **Historique** | Vue agrégée sur l'ensemble des mois saisis |
-| **Recommandations** | Alertes automatiques et suggestions d'optimisation |
-| **Paramètres** | SMTP, catégories, PDF, export fiscal, sécurité, Supabase, mode sombre |
+| **Recommandations** | Alertes automatiques et suggestions d'optimisation par IA |
+| **Paramètres** | SMTP, catégories, PDF, export fiscal, sécurité, Supabase, IA, mode sombre |
 
 ---
 
@@ -81,9 +85,9 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 
 ### Option A — Exécutable Windows (recommandé)
 
-1. Téléchargez la dernière release : **`FinanceTracker-vX.Y.Z-windows.zip`**
+1. Téléchargez la dernière release : **`Fintrack-vX.Y.Z-windows.zip`**
 2. Décompressez le dossier
-3. Lancez **`Finance Tracker.exe`**
+3. Lancez **`Fintrack.exe`**
 4. Créez votre mot de passe au premier lancement
 
 > ⚠️ Windows peut afficher "Application inconnue" — cliquez *Informations complémentaires* → *Exécuter quand même*
@@ -94,8 +98,8 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 
 ```bash
 # 1. Cloner le dépôt
-git clone https://github.com/MoussaOudihat/finance-tracker.git
-cd finance-tracker
+git clone https://github.com/MoussaOudihat/fintrack.git
+cd fintrack
 
 # 2. (Optionnel) Créer un environnement virtuel
 python -m venv venv
@@ -115,6 +119,7 @@ python main.py
 | `customtkinter` | Interface graphique moderne (thème light/dark) |
 | `matplotlib` | Graphiques interactifs |
 | `openpyxl` | Import/export Excel |
+| `google-genai` | Analyse IA via Gemini (recommandations, projection) |
 | `supabase` | Synchronisation cloud optionnelle |
 
 ### Optionnel
@@ -131,9 +136,28 @@ pip install reportlab    # Génération de rapports PDF
 2. **Créez votre mot de passe** et votre question secrète
 3. **Chaque mois** : saisissez vos revenus → dépenses → épargne
 4. **Suivi patrimoine** : ajoutez vos actifs dans *Patrimoine & Investissements*
+   - Pour un **Livret A / Bourso+** : type "Compte / Épargne" → renseignez le solde actuel et le total versé → les intérêts gagnés s'affichent automatiquement
+   - Pour des **actions / ETF / crypto** : renseignez la valeur actuelle et le prix d'achat total
 5. **Analyse** : explorez les graphiques dans *Analyses détaillées*
+6. **IA** : configurez votre profil dans *Paramètres → IA* pour des recommandations personnalisées
 
-> 💡 La base de données SQLite est dans `data/finance_tracker.db` — pensez à la sauvegarder régulièrement (ou activez Supabase pour un backup automatique).
+> 💡 La base de données SQLite est dans `data/fintrack.db` — pensez à la sauvegarder régulièrement (ou activez Supabase pour un backup automatique).
+
+---
+
+## 🤖 Fonctionnalité IA
+
+Fintrack intègre **Gemini** (Google AI) pour l'analyse de vos finances. Optimisé pour le tier gratuit (faible consommation de tokens).
+
+### Configuration
+
+Dans **Paramètres → IA** :
+1. Entrez votre clé API Gemini (gratuite sur [aistudio.google.com](https://aistudio.google.com))
+2. Renseignez votre **profil** (ex : "Couple 30 ans, CDI, propriétaires, 2 enfants") pour personnaliser les analyses
+
+### Ce que l'IA peut faire
+- **Recommandations mensuelles** : analyse revenus/dépenses/épargne et suggère des optimisations
+- **Analyse de projection** : évalue le réalisme d'un scénario d'épargne à long terme et propose des leviers
 
 ---
 
@@ -163,27 +187,27 @@ Dans votre projet Supabase → **Settings → API** :
 
 ## 🗺️ Roadmap
 
-### ✅ v1.0 — Actuel
+### ✅ v1.1 — Actuel
 - [x] Saisie revenus / dépenses / épargne
 - [x] Tableau de bord avec filtres interactifs
-- [x] Patrimoine multi-actifs avec transactions
+- [x] Patrimoine multi-actifs avec transactions (CMUP)
+- [x] Compte / Épargne : suivi solde + intérêts gagnés
 - [x] Budget mensuel par catégorie
 - [x] Objectifs d'épargne avec progression
 - [x] Analyses graphiques (évolution, répartition, top enseignes)
-- [x] Projection financière à long terme
-- [x] Recommandations automatiques
+- [x] Projection financière à long terme + analyse IA on-demand
+- [x] Recommandations IA mensuelles (Gemini, rendu Markdown)
 - [x] Mode sombre / clair
 - [x] Authentification par mot de passe + session persistante
 - [x] Export PDF, CSV, fiscal
 - [x] Envoi par email SMTP
 - [x] Synchronisation Supabase PostgreSQL (multi-appareils)
-- [x] Écran bienvenue + restauration depuis Supabase au premier lancement
+- [x] Transactions récurrentes (préchargement mensuel)
 
 ### 🔜 Prochaines améliorations
+- [ ] Alertes dépassement budget (notifications en temps réel)
 - [ ] Import automatique de relevés bancaires (OFX/CSV banque)
 - [ ] Notifications Windows (rappel de saisie mensuelle)
-- [ ] Thèmes de couleurs personnalisables
-- [ ] Graphique en chandelier pour l'évolution patrimoniale
 - [ ] Multi-devise (€, $, £…)
 
 ### 💡 Idées futures
@@ -197,7 +221,7 @@ Dans votre projet Supabase → **Settings → API** :
 Les contributions sont les bienvenues !
 
 ### Signaler un bug
-1. Vérifiez que le bug n'est pas déjà [reporté](https://github.com/MoussaOudihat/finance-tracker/issues)
+1. Vérifiez que le bug n'est pas déjà [reporté](https://github.com/MoussaOudihat/fintrack/issues)
 2. Ouvrez une **Issue** avec : description, étapes pour reproduire, version Python et OS, message d'erreur complet
 
 ### Proposer une fonctionnalité
@@ -207,7 +231,7 @@ Ouvrez une **Issue** avec le label `enhancement`.
 
 ```bash
 # 1. Forker le repo sur GitHub
-git clone https://github.com/VOTRE_USERNAME/finance-tracker.git
+git clone https://github.com/VOTRE_USERNAME/fintrack.git
 
 # 2. Créer une branche feature depuis develop
 git checkout develop
@@ -231,28 +255,34 @@ ui:       amélioration visuelle
 perf:     optimisation de performance
 docs:     documentation
 refactor: refactoring sans changement de comportement
+release:  préparation d'une release
 ```
 
 ### Structure du projet
 ```
-finance-tracker/
+fintrack/
 ├── main.py              # Point d'entrée
 ├── auth.py              # Authentification (hash, sessions)
 ├── config.py            # Constantes, palette de couleurs
 ├── database.py          # Toutes les opérations SQLite
 ├── sync_supabase.py     # Synchronisation Supabase PostgreSQL
 ├── supabase_schema.sql  # Schéma SQL à exécuter dans Supabase
+├── utils_ai.py          # Intégration Gemini (recommandations, projection)
 ├── utils_pdf.py         # Génération de rapports PDF
 ├── utils_email.py       # Envoi d'emails SMTP
 ├── utils_taxes.py       # Export fiscal
+├── generate_icon.py     # Générateur d'icône Fintrack (Pillow)
+├── fintrack.ico         # Icône application
 ├── requirements.txt
 ├── Finance Tracker.spec # Configuration PyInstaller
+├── VERSION              # Version courante (ex : 1.1.0)
+├── CHANGELOG.md
 ├── data/                # Base de données locale (non versionnée)
 └── ui/
     ├── app.py           # Fenêtre principale + navigation
     ├── login.py         # Écran d'authentification + bienvenue
-    ├── components.py    # Widgets réutilisables
-    ├── dialogs.py       # Boîtes de dialogue
+    ├── components.py    # Widgets réutilisables (cards, tables, render_ai_text…)
+    ├── dialogs.py       # Boîtes de dialogue (actifs, dépenses, récurrentes…)
     └── pages/
         ├── dashboard.py
         ├── revenues.py

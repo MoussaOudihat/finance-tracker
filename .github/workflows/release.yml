@@ -33,7 +33,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller reportlab
+          pip install pyinstaller reportlab bcrypt
+
+      - name: Write version to VERSION file
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          Set-Content -Path "VERSION" -Value $version -NoNewline
+          Write-Host "✅ VERSION = $version"
 
       - name: Build executable with PyInstaller
         run: |
@@ -42,9 +48,9 @@ jobs:
 
       - name: Verify build output
         run: |
-          if (Test-Path "dist\Finance Tracker\Finance Tracker.exe") {
-            $size = (Get-Item "dist\Finance Tracker\Finance Tracker.exe").Length / 1MB
-            Write-Host "✅ Finance Tracker.exe — $([math]::Round($size, 1)) MB"
+          if (Test-Path "dist\Fintrack\Fintrack.exe") {
+            $size = (Get-Item "dist\Fintrack\Fintrack.exe").Length / 1MB
+            Write-Host "✅ Fintrack.exe — $([math]::Round($size, 1)) MB"
           } else {
             Write-Host "❌ Exe non trouvé"
             exit 1
@@ -53,8 +59,8 @@ jobs:
       - name: Create ZIP archive
         run: |
           $version = "${{ github.ref_name }}"
-          $zipName = "FinanceTracker-$version-windows.zip"
-          Compress-Archive -Path "dist\Finance Tracker" -DestinationPath $zipName
+          $zipName = "Fintrack-$version-windows.zip"
+          Compress-Archive -Path "dist\Fintrack" -DestinationPath $zipName
           Write-Host "✅ Archive créée : $zipName"
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
@@ -92,10 +98,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Finance Tracker ${{ github.ref_name }}"
+          name: "Fintrack ${{ github.ref_name }}"
           tag_name: ${{ github.ref_name }}
           body: |
-            ## 💰 Finance Tracker ${{ github.ref_name }}
+            ## 💜 Fintrack ${{ github.ref_name }}
 
             Application desktop Windows de suivi financier personnel — locale, open source, sans cloud.
 
@@ -103,7 +109,7 @@ jobs:
 
             1. Téléchargez **`${{ env.ZIP_NAME }}`** ci-dessous
             2. Décompressez le dossier
-            3. Lancez **`Finance Tracker.exe`**
+            3. Lancez **`Fintrack.exe`**
             4. Créez votre mot de passe au premier lancement
 
             > ⚠️ Windows peut afficher "Application inconnue" — cliquez *Informations complémentaires* → *Exécuter quand même*

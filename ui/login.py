@@ -39,7 +39,7 @@ class LoginApp(ctk.CTk):
         self.db           = db
         self.auth_success = False
 
-        self.title("Finance Tracker — Connexion")
+        self.title("Fintrack — Connexion")
         self.resizable(False, False)
         self.configure(fg_color=C["sidebar"])
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -86,7 +86,7 @@ class LoginApp(ctk.CTk):
         hdr.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(hdr,
-                     text="💰  Finance Tracker",
+                     text="  Fintrack",
                      font=ctk.CTkFont(size=26, weight="bold"),
                      text_color="white").grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(hdr,
