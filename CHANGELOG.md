@@ -6,6 +6,36 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.1.0] — 2026-05-03
+
+### Ajouté
+- 🎨 **Rebranding complet** : Finance Tracker → **Fintrack** (titre, sidebar, login, email, PDF, .spec)
+- 🖼️ **Icône & identité visuelle** : nouveau logo indigo généré via Pillow (16/32/48/64/128/256 px), schéma de couleurs indigo (`#4F46E5`) appliqué à toute l'interface
+- ✨ **Analyse IA projection on-demand** : bouton "Analyser ce scénario avec l'IA" sur la page Projection — déclenche une analyse en thread background, affiche le résultat sans bloquer l'UI, bouton "Relancer" pour forcer une nouvelle analyse
+- 💬 **Rendu Markdown pour les réponses IA** : composant `render_ai_text()` dans `ui/components.py` — formatage natif des titres (`###`), **gras**, • puces et → actions avec `tk.Text` et tags colorés
+- 🏦 **Compte/Épargne — saisie adaptative** : le formulaire d'ajout d'actif détecte automatiquement le type "Compte / Épargne" et affiche *Solde actuel* + *Total versé* (facultatif) au lieu des champs investissement (quantité × prix)
+- 💰 **Suivi des intérêts** : colonne "Intérêts gagnés" dans le tableau Patrimoine pour les comptes (= solde − total versé), remplace "Plus-value" non pertinente ; intitulé "Total versé" remplace "Prix achat"
+- 👤 **Profil IA déplacé dans Paramètres** : le champ de contexte utilisateur (profil) est maintenant dans Paramètres → section IA, plus accessible et persistant entre les sessions
+
+### Corrigé
+- 🐛 **Recommandations 1 mois** : condition `len(summary) < 2` remplacée par `not summary` — les données d'un seul mois s'affichaient comme "pas assez de données"
+- 🐛 **Colonnes Patrimoine pour comptes** : "Prix achat" et "Plus-value" affichaient des valeurs trompeuses (égale au solde) pour les livrets/comptes épargne — maintenant affichent "—" ou intérêts réels
+- 🐛 **Bouton Transactions désactivé pour les comptes** : le bouton 📋 est maintenant `state=disabled` pour les actifs de type "Compte / Épargne" (sans objet)
+
+### Amélioré
+- ⚡ **Économie de tokens Gemini (free tier)** : modèle `gemini-2.5-flash-lite`, `thinking_budget=0`, prompts compressés format `clé=valeur`, `max_output_tokens=500` — réduction d'environ 65% des tokens en entrée
+- 🎯 **Tooltip mise à jour Patrimoine** : "Mettre à jour le solde" pour les comptes, "Mettre à jour la valeur" pour les investissements
+- 📋 **Labels colonne adaptatifs** : quand le filtre "Compte / Épargne" est actif, les en-têtes du tableau deviennent "Solde actuel / Total versé / Intérêts gagnés"
+
+### Technique
+- `ui/components.py` : nouveau composant `render_ai_text(parent, text, bg_color)` — parser Markdown-like inline avec regex pour le gras
+- `ui/dialogs.py` — `AssetDialog` : méthode `_on_type_change()` masque/affiche les champs selon le type ; `QuickValueUpdateDialog` accepte un paramètre `label` ("solde" vs "valeur")
+- `utils_ai.py` : ajout de `get_projection_advice()` + template `_PROJECTION_USER_TEMPLATE` compact
+- `generate_icon.py` : script standalone Pillow pour générer `fintrack.ico` multi-résolutions
+- `Finance Tracker.spec` → nom `Fintrack`, `icon='fintrack.ico'`, `hiddenimports` enrichis (`google.genai`, `utils_ai`)
+
+---
+
 ## [1.0.2] — 2026-05-01
 
 ### Ajouté

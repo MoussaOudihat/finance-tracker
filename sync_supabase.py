@@ -14,6 +14,7 @@ import sqlite3
 import threading
 import datetime
 from typing import Optional
+from logger import log
 
 # ── Ordre d'insertion (respecte les FK) ─────────────────────
 PUSH_ORDER = [
@@ -39,6 +40,12 @@ SETTINGS_EXCLUDE = {
     "dark_mode",
     "email_address",
     "smtp_password",
+    "ai_api_key",    # clé API IA — jamais synchronisée (sensible)
+    "ai_provider",   # lié à la clé, exclu par cohérence
+    # cache IA local (volumeux, propre à chaque machine)
+    "ai_cache_1m_result", "ai_cache_1m_ts",
+    "ai_cache_3m_result", "ai_cache_3m_ts",
+    "ai_cache_6m_result", "ai_cache_6m_ts",
 }
 
 SYNC_TS_KEY = "last_supabase_sync"
@@ -114,9 +121,19 @@ class SupabaseSync:
             return False, f"⚠️  Pull échoué : {e}"
 
     def _do_pull(self):
-        # Backup local avant écrasement
+        # Backup local AVANT tout écrasement.
+        # On vérifie que la copie a réussi avant de toucher aux données locales.
+        bak_path = self._db_path + ".bak"
         if self._db_path and os.path.exists(self._db_path):
-            shutil.copy2(self._db_path, self._db_path + ".bak")
+            try:
+                shutil.copy2(self._db_path, bak_path)
+                if not os.path.exists(bak_path):
+                    raise OSError("fichier .bak introuvable après copie")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Backup échoué — pull annulé pour protéger vos données locales. "
+                    f"Cause : {exc}"
+                ) from exc
 
         con = sqlite3.connect(self._db_path)
         con.execute("PRAGMA foreign_keys=OFF")
@@ -134,8 +151,8 @@ class SupabaseSync:
         for table in DELETE_ORDER:
             try:
                 con.execute(f"DELETE FROM {table}")
-            except Exception:
-                pass
+            except sqlite3.OperationalError as e:
+                log.warning("Pull — impossible de vider la table %s : %s", table, e)
         con.execute("DELETE FROM app_settings")
 
         # Remettre les clés sensibles
@@ -160,7 +177,7 @@ class SupabaseSync:
                         [row[c] for c in cols],
                     )
             except Exception:
-                pass
+                log.warning("Pull — erreur lors du remplissage de la table %s", table, exc_info=True)
 
         # Sync app_settings distants (hors clés sensibles)
         try:
@@ -172,7 +189,7 @@ class SupabaseSync:
                         (row["key"], row["value"]),
                     )
         except Exception:
-            pass
+            log.warning("Pull — erreur sync app_settings distants", exc_info=True)
 
         con.execute("PRAGMA foreign_keys=ON")
         con.commit()
@@ -223,7 +240,7 @@ class SupabaseSync:
                     try:
                         self._client.table(table).delete().gt("id", 0).execute()
                     except Exception:
-                        pass
+                        log.warning("Push — impossible de vider la table distante %s", table, exc_info=True)
 
                 # app_settings : supprimer uniquement les clés non-sensibles
                 try:
@@ -239,7 +256,7 @@ class SupabaseSync:
                                 .execute()
                             )
                 except Exception:
-                    pass
+                    log.warning("Push — erreur nettoyage app_settings distants", exc_info=True)
 
                 # ── 2. Insérer les données locales (ordre FK) ──────────────
                 for table in PUSH_ORDER:

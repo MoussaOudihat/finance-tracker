@@ -14,7 +14,7 @@ import matplotlib.ticker as mticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE
+from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE, FILTER_ALL_TYPES
 from ui.components import make_card, Tooltip
 from ui.dialogs import (AssetDialog, QuickValueUpdateDialog,
                         AssetEvolutionDialog, AssetTransactionsDialog)
@@ -39,7 +39,7 @@ _TYPE_ACCENT = {
 class PatrimoinePage:
     def render(self, container: ctk.CTkFrame, app):
         db       = app.db
-        type_f   = getattr(app, "pat_type_filter",   "Tous types")
+        type_f   = getattr(app, "pat_type_filter",   FILTER_ALL_TYPES)
         period_f = getattr(app, "pat_period_filter",  "Tout")
 
         container.grid_columnconfigure(0, weight=1)
@@ -58,7 +58,7 @@ class PatrimoinePage:
                      font=ctk.CTkFont(size=18)).grid(row=0, column=1, padx=(14, 14))
 
         # Filtre type d'actif
-        type_labels     = ["Tous types"] + [lbl for lbl, _ in ASSET_TYPES]
+        type_labels     = [FILTER_ALL_TYPES] + [lbl for lbl, _ in ASSET_TYPES]
         type_lbl_to_key = {lbl: key for lbl, key in ASSET_TYPES}
         type_var        = ctk.StringVar(value=type_f)
 
@@ -74,11 +74,11 @@ class PatrimoinePage:
                           height=28, width=160,
                           fg_color=C["primary"], button_color=C["primary"],
                           command=on_type_change).pack(side="left")
-        if type_f != "Tous types":
+        if type_f != FILTER_ALL_TYPES:
             ctk.CTkButton(tf, text="✕", height=28, width=30,
                           fg_color="#FEE2E2", text_color=C["red"],
                           hover_color="#FECACA",
-                          command=lambda: (setattr(app, "pat_type_filter", "Tous types"),
+                          command=lambda: (setattr(app, "pat_type_filter", FILTER_ALL_TYPES),
                                            app._go("patrimoine"))
                           ).pack(side="left", padx=(4, 0))
 
@@ -127,7 +127,7 @@ class PatrimoinePage:
                     a_dict["value"] = st["sale_proceeds"]
             all_assets.append(a_dict)
 
-        if type_f != "Tous types":
+        if type_f != FILTER_ALL_TYPES:
             type_key = type_lbl_to_key.get(type_f)
             assets   = [a for a in all_assets if a["asset_type"] == type_key]
         else:
@@ -205,7 +205,7 @@ class PatrimoinePage:
         lc.grid(row=2, column=0, padx=(0, 8), sticky="nsew")
 
         lc_title = "Portefeuille — valeurs actuelles"
-        if type_f != "Tous types":
+        if type_f != FILTER_ALL_TYPES:
             lc_title += f"  ·  {type_f}"
         ctk.CTkLabel(lc, text=lc_title,
                      font=ctk.CTkFont(size=14, weight="bold"),
@@ -215,7 +215,14 @@ class PatrimoinePage:
             hdr = ctk.CTkFrame(lc, fg_color=C["light"], corner_radius=6)
             hdr.pack(fill="x", padx=12, pady=(0, 4))
             hdr.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
-            for i, h in enumerate(["Nom", "Valeur act.", "Prix achat", "Plus-value", "Var. précéd."]):
+            # Labels de colonnes adaptés au type filtré
+            only_comptes = (type_f != FILTER_ALL_TYPES and
+                            type_lbl_to_key.get(type_f) == "compte")
+            col_labels = ["Nom", "Solde actuel" if only_comptes else "Valeur act.",
+                          "Total versé" if only_comptes else "Prix achat",
+                          "Intérêts gagnés" if only_comptes else "Plus-value",
+                          "Var. précéd."]
+            for i, h in enumerate(col_labels):
                 ctk.CTkLabel(hdr, text=h, font=ctk.CTkFont(size=10, weight="bold"),
                              text_color=C["muted"]).grid(
                     row=0, column=i, padx=10, pady=6, sticky="w")
@@ -249,14 +256,14 @@ class PatrimoinePage:
                                border_width=1, border_color="#93C5FD")
             tf2.pack(fill="x", padx=12, pady=(10, 4))
             total_txt = f"Total sélection : {total:,.2f} €"
-            if type_f != "Tous types" and total_all > 0:
+            if type_f != FILTER_ALL_TYPES and total_all > 0:
                 pct = total / total_all * 100
                 total_txt += f"  ({pct:.0f}% du patrimoine total)"
             ctk.CTkLabel(tf2, text=total_txt,
                          font=ctk.CTkFont(size=15, weight="bold"),
                          text_color=C["primary"]).pack(side="right", padx=16, pady=9)
 
-            if type_f != "Tous types":
+            if type_f != FILTER_ALL_TYPES:
                 ctk.CTkLabel(lc,
                              text=f"Patrimoine total (tous types) : {total_all:,.2f} €",
                              font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(
@@ -268,13 +275,15 @@ class PatrimoinePage:
                 clr     = C["green"] if pnl >= 0 else C["red"]
                 pf2 = ctk.CTkFrame(lc, fg_color="transparent")
                 pf2.pack(anchor="e", padx=12, pady=(0, 10))
+                pnl_label = ("Intérêts gagnés totaux" if only_comptes
+                             else "Plus-value totale")
                 ctk.CTkLabel(pf2,
-                             text=f"Plus-value totale : {pnl:+,.2f} €  ({pnl_pct:+.1f} %)",
+                             text=f"{pnl_label} : {pnl:+,.2f} €  ({pnl_pct:+.1f} %)",
                              font=ctk.CTkFont(size=13, weight="bold"),
                              text_color=clr).pack()
         else:
             msg = (f"Aucun actif de type « {type_f} »."
-                   if type_f != "Tous types"
+                   if type_f != FILTER_ALL_TYPES
                    else "Aucun actif enregistré.\nCliquez sur ＋ pour commencer.")
             ctk.CTkLabel(lc, text=msg, text_color=C["muted"],
                          justify="center").pack(expand=True, pady=40)
@@ -287,7 +296,7 @@ class PatrimoinePage:
         # ── Positions clôturées (archive des ventes) ─────────────
         closed = db.get_closed_positions()
         # Filtrage par type si actif
-        if type_f != "Tous types":
+        if type_f != FILTER_ALL_TYPES:
             type_key = type_lbl_to_key.get(type_f)
             closed = [c for c in closed if c["asset_type"] == type_key]
         if closed:
@@ -418,12 +427,33 @@ def _asset_row(parent, asset, db, app):
     ctk.CTkLabel(row_f, text=f"{value:,.2f} €",
                  font=ctk.CTkFont(size=12, weight="bold"),
                  text_color=C["primary"]).grid(row=0, column=1, padx=10, pady=8, sticky="w")
-    ctk.CTkLabel(row_f, text=f"{cost_basis:,.2f} €" if cost_basis else "—",
-                 font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
+
+    is_compte_type = (asset["asset_type"] == "compte")
+
+    # Colonne 2 : Prix d'achat (invest.) ou Total versé (compte)
+    if is_compte_type:
+        col2_text  = f"{cost_basis:,.2f} €" if cost_basis else "—"
+        col2_color = C["muted"]
+    else:
+        col2_text  = f"{cost_basis:,.2f} €" if cost_basis else "—"
+        col2_color = C["muted"]
+    ctk.CTkLabel(row_f, text=col2_text,
+                 font=ctk.CTkFont(size=11), text_color=col2_color).grid(
         row=0, column=2, padx=10, pady=8, sticky="w")
 
-    pnl_text  = _fmt_pnl(pnl, pnl_pct)
-    pnl_color = C["green"] if (pnl or 0) >= 0 else C["red"]
+    # Colonne 3 : Intérêts gagnés (compte) ou Plus-value (invest.)
+    if is_compte_type:
+        if cost_basis and cost_basis > 0:
+            interets = value - cost_basis
+            sign = "+" if interets >= 0 else ""
+            pnl_text  = f"{sign}{interets:,.0f} €"
+            pnl_color = C["green"] if interets >= 0 else C["red"]
+        else:
+            pnl_text  = "—"
+            pnl_color = C["muted"]
+    else:
+        pnl_text  = _fmt_pnl(pnl, pnl_pct)
+        pnl_color = C["green"] if (pnl or 0) >= 0 else C["red"]
     ctk.CTkLabel(row_f, text=pnl_text,
                  font=ctk.CTkFont(size=11), text_color=pnl_color,
                  justify="left").grid(row=0, column=3, padx=10, pady=8, sticky="w")
@@ -452,7 +482,8 @@ def _asset_row(parent, asset, db, app):
             on_save=lambda v: (
                 db.update_asset_value(asset["id"], v),
                 app._go("patrimoine"),
-            )
+            ),
+            label="solde" if is_compte_type else "valeur",
         )
 
     def show_evolution():
@@ -474,16 +505,17 @@ def _asset_row(parent, asset, db, app):
                                hover_color="#DCFCE7",
                                command=quick_update)
     btn_update.pack(side="left", padx=(0, 2))
-    Tooltip(btn_update, "Mettre à jour la valeur")
+    Tooltip(btn_update, "Mettre à jour le solde" if is_compte_type else "Mettre à jour la valeur")
 
     has_trans = asset["asset_type"] in _TRANSACTION_TYPES
     btn_trans = ctk.CTkButton(btns, text="📋", width=30, height=26,
                               fg_color="#FFF7ED" if has_trans else "#F8FAFC",
                               text_color="#F97316" if has_trans else C["muted"],
                               hover_color="#FFEDD5",
+                              state="normal" if has_trans else "disabled",
                               command=show_transactions)
     btn_trans.pack(side="left", padx=(0, 2))
-    Tooltip(btn_trans, "Transactions" if has_trans else "Aucune transaction")
+    Tooltip(btn_trans, "Transactions" if has_trans else "Non applicable (compte / épargne)")
 
     btn_evol = ctk.CTkButton(btns, text="📊", width=30, height=26,
                              fg_color="#F5F3FF", text_color="#8B5CF6",
@@ -774,7 +806,7 @@ def _style_ax(ax):
 # ─────────────────────────────────────────────────────────────
 #  Graphiques patrimoine
 # ─────────────────────────────────────────────────────────────
-def _render_patrimoine_charts(card, db, app, type_filter="Tous types",
+def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
                                type_lbl_to_key=None, period_filter="Tout"):
 
     hdr = ctk.CTkFrame(card, fg_color="transparent")
@@ -795,7 +827,7 @@ def _render_patrimoine_charts(card, db, app, type_filter="Tous types",
 
     def _filter_title(base):
         parts = [base]
-        if type_filter != "Tous types":
+        if type_filter != FILTER_ALL_TYPES:
             parts.append(type_filter)
         if period_filter != "Tout":
             parts.append(period_filter)
@@ -806,7 +838,7 @@ def _render_patrimoine_charts(card, db, app, type_filter="Tous types",
     # ╚══════════════════════════════════════════════════════════╝
     ev_tab = tabs.tab("📈  Évolution")
 
-    if type_filter != "Tous types" and type_lbl_to_key:
+    if type_filter != FILTER_ALL_TYPES and type_lbl_to_key:
         type_key        = type_lbl_to_key[type_filter]
         history_raw     = db.get_patrimoine_history_by_type(type_key)
         history_raw     = [h for h in history_raw if h["total_value"] > 0]
@@ -952,7 +984,7 @@ def _render_patrimoine_charts(card, db, app, type_filter="Tous types",
     pie_tab = tabs.tab("🥧  Répartition")
     by_type = db.get_assets_by_type_current()
 
-    if type_filter != "Tous types" and type_lbl_to_key:
+    if type_filter != FILTER_ALL_TYPES and type_lbl_to_key:
         type_key  = type_lbl_to_key.get(type_filter)
         all_a     = db.get_assets_current()
         pie_rows  = [{"label": a["asset_name"], "value": a["value"]}
@@ -1064,7 +1096,7 @@ def _render_patrimoine_charts(card, db, app, type_filter="Tous types",
     bar_tab = tabs.tab("📊  Par actif")
     all_assets_cur = db.get_assets_current()
 
-    if type_filter != "Tous types" and type_lbl_to_key:
+    if type_filter != FILTER_ALL_TYPES and type_lbl_to_key:
         type_key_b = type_lbl_to_key[type_filter]
         bar_assets = [a for a in all_assets_cur if a["asset_type"] == type_key_b]
     else:
