@@ -142,6 +142,18 @@ class Database:
                 last_applied_year  INTEGER DEFAULT 0,
                 last_applied_month INTEGER DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS liabilities (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                year             INTEGER NOT NULL,
+                month            INTEGER NOT NULL,
+                liability_type   TEXT    NOT NULL DEFAULT 'autre',
+                liability_name   TEXT    NOT NULL,
+                remaining_capital REAL   NOT NULL DEFAULT 0,
+                monthly_payment  REAL    NOT NULL DEFAULT 0,
+                end_date         TEXT    DEFAULT '',
+                notes            TEXT    DEFAULT '',
+                UNIQUE(year, month, liability_name)
+            );
 
             -- Index simples
             CREATE INDEX IF NOT EXISTS idx_expenses_month       ON expenses(month_id);
@@ -172,6 +184,8 @@ class Database:
             "ALTER TABLE asset_transactions ADD COLUMN reinvested INTEGER DEFAULT 0",
             # Optionnel : référence vers l'actif dans lequel le cash a été réinvesti
             "ALTER TABLE asset_transactions ADD COLUMN reinvested_into TEXT DEFAULT ''",
+            # Clôture de mois : 0 = ouvert, 1 = clôturé (saisie verrouillée)
+            "ALTER TABLE months ADD COLUMN closed INTEGER DEFAULT 0",
         ]
         for stmt in migrations:
             try:
@@ -1072,6 +1086,25 @@ class Database:
             (year, month),
         ).fetchall()
 
+    def get_category_budget_status(self, year: int, month: int, category_name: str):
+        """Retourne (budget, actual) pour une catégorie, ou None si pas de budget."""
+        row = self.con.execute(
+            "SELECT amount FROM budgets WHERE year=? AND month=? AND category=?",
+            (year, month, category_name)
+        ).fetchone()
+        if not row:
+            return None
+        mid = self.month_id(year, month, create=False)
+        if not mid:
+            return (row["amount"], 0.0)
+        actual = self.con.execute(
+            """SELECT COALESCE(SUM(e.amount),0) as total
+               FROM expenses e JOIN categories c ON e.category_id=c.id
+               WHERE e.month_id=? AND c.name=?""",
+            (mid, category_name)
+        ).fetchone()["total"]
+        return (row["amount"], actual)
+
     def get_budget_vs_actual(self, year: int, month: int) -> list:
         """
         Retourne une liste de dicts comparant budget et réalisé par catégorie.
@@ -1214,6 +1247,15 @@ class Database:
         self.con.commit()
         self._invalidate()
 
+    def get_all_payees(self) -> list:
+        """Retourne tous les enseignes distincts triés par fréquence d'utilisation."""
+        rows = self.con.execute(
+            "SELECT payee FROM expenses "
+            "WHERE payee IS NOT NULL AND payee != '' "
+            "GROUP BY UPPER(payee) ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        return [r["payee"] for r in rows]
+
     # ──────────────────────────────────────────
     #  TRANSACTIONS RÉCURRENTES
     # ──────────────────────────────────────────
@@ -1273,6 +1315,131 @@ class Database:
         """Supprime une transaction récurrente."""
         self.con.execute(
             "DELETE FROM recurring_transactions WHERE id=?", (rec_id,)
+        )
+        self.con.commit()
+        self._invalidate()
+
+    # ──────────────────────────────────────────
+    #  PASSIFS / DETTES
+    # ──────────────────────────────────────────
+    def get_liabilities_current(self) -> list:
+        """Retourne le dernier snapshot de chaque passif (toutes périodes confondues)."""
+        return self.con.execute("""
+            SELECT l.*
+            FROM liabilities l
+            INNER JOIN (
+                SELECT liability_name, MAX(year * 12 + month) AS maxym
+                FROM liabilities
+                GROUP BY liability_name
+            ) latest ON l.liability_name = latest.liability_name
+                     AND l.year * 12 + l.month = latest.maxym
+            ORDER BY l.liability_type, l.liability_name
+        """).fetchall()
+
+    def get_liabilities(self, year: int, month: int) -> list:
+        """Retourne les passifs pour un mois donné."""
+        return self.con.execute(
+            "SELECT * FROM liabilities WHERE year=? AND month=? ORDER BY liability_type, liability_name",
+            (year, month)
+        ).fetchall()
+
+    def add_or_update_liability(self, year: int, month: int,
+                                liability_type: str, liability_name: str,
+                                remaining_capital: float, monthly_payment: float,
+                                end_date: str = "", notes: str = "") -> int:
+        """Insère ou met à jour un passif pour un mois donné."""
+        cur = self.con.execute("""
+            INSERT INTO liabilities
+                (year, month, liability_type, liability_name,
+                 remaining_capital, monthly_payment, end_date, notes)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(year, month, liability_name) DO UPDATE SET
+                liability_type    = excluded.liability_type,
+                remaining_capital = excluded.remaining_capital,
+                monthly_payment   = excluded.monthly_payment,
+                end_date          = excluded.end_date,
+                notes             = excluded.notes
+        """, (year, month, liability_type, liability_name,
+              remaining_capital, monthly_payment, end_date, notes))
+        self.con.commit()
+        self._invalidate()
+        return cur.lastrowid
+
+    def update_liability_capital(self, liability_name: str, year: int, month: int,
+                                  remaining_capital: float):
+        """Met à jour uniquement le capital restant dû pour un passif au mois courant.
+        Copie d'abord le dernier snapshot si le mois n'existe pas encore."""
+        existing = self.con.execute(
+            "SELECT * FROM liabilities WHERE liability_name=? AND year=? AND month=?",
+            (liability_name, year, month)
+        ).fetchone()
+        if existing:
+            self.con.execute(
+                "UPDATE liabilities SET remaining_capital=? WHERE liability_name=? AND year=? AND month=?",
+                (remaining_capital, liability_name, year, month)
+            )
+        else:
+            # Copier le dernier snapshot et créer une nouvelle entrée pour ce mois
+            last = self.con.execute("""
+                SELECT * FROM liabilities WHERE liability_name=?
+                ORDER BY year DESC, month DESC LIMIT 1
+            """, (liability_name,)).fetchone()
+            if last:
+                self.con.execute("""
+                    INSERT OR IGNORE INTO liabilities
+                        (year, month, liability_type, liability_name,
+                         remaining_capital, monthly_payment, end_date, notes)
+                    VALUES (?,?,?,?,?,?,?,?)
+                """, (year, month, last["liability_type"], liability_name,
+                      remaining_capital, last["monthly_payment"],
+                      last["end_date"], last["notes"]))
+        self.con.commit()
+        self._invalidate()
+
+    def delete_liability(self, liability_name: str):
+        """Supprime tous les snapshots d'un passif (suppression définitive)."""
+        self.con.execute(
+            "DELETE FROM liabilities WHERE liability_name=?", (liability_name,)
+        )
+        self.con.commit()
+        self._invalidate()
+
+    def get_total_liabilities(self) -> float:
+        """Somme du capital restant dû sur tous les passifs (snapshot courant)."""
+        rows = self.get_liabilities_current()
+        return sum(r["remaining_capital"] for r in rows)
+
+    # ──────────────────────────────────────────
+    #  CLÔTURE DE MOIS
+    # ──────────────────────────────────────────
+    def is_month_closed(self, year: int, month: int) -> bool:
+        """Retourne True si le mois (year, month) a été clôturé."""
+        row = self.con.execute(
+            "SELECT closed FROM months WHERE year=? AND month=?", (year, month)
+        ).fetchone()
+        return bool(row and row["closed"])
+
+    def close_month(self, year: int, month: int):
+        """
+        Clôture le mois : crée l'entrée si elle n'existe pas,
+        puis positionne closed=1.
+        """
+        self.con.execute(
+            "INSERT OR IGNORE INTO months(year, month, closed) VALUES(?,?,0)",
+            (year, month),
+        )
+        self.con.execute(
+            "UPDATE months SET closed=1 WHERE year=? AND month=?",
+            (year, month),
+        )
+        self.con.commit()
+        self._invalidate()
+
+    def reopen_month(self, year: int, month: int):
+        """Ré-ouvre un mois clôturé (utile depuis les Paramètres ou en cas d'erreur)."""
+        self.con.execute(
+            "UPDATE months SET closed=0 WHERE year=? AND month=?",
+            (year, month),
         )
         self.con.commit()
         self._invalidate()

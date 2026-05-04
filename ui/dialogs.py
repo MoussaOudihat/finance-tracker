@@ -1,6 +1,9 @@
 """
 ui/dialogs.py — Fenêtres modales d'édition
 """
+import os
+import threading
+import tkinter as tk
 import customtkinter as ctk
 from config import C, ASSET_TYPES, MONTHS_FR
 
@@ -1368,3 +1371,631 @@ class RecurringApplyDialog(ctk.CTkToplevel):
         if self._on_applied:
             self._on_applied(applied)
         self.destroy()
+
+
+# ──────────────────────────────────────────────────────────
+#  Dialogue: Passif / Dette
+# ──────────────────────────────────────────────────────────
+class LiabilityDialog(_BaseDialog):
+    """Dialogue d'ajout ou de modification d'un passif (dette)."""
+
+    def __init__(self, parent, initial: dict = None, on_save=None):
+        from config import LIABILITY_TYPES
+        is_edit = initial is not None
+        super().__init__(parent,
+                         "✏  Modifier le passif" if is_edit else "＋  Ajouter un passif",
+                         width=500, height=440)
+        self._on_save_cb = on_save
+        self._is_edit    = is_edit
+        init = initial or {}
+
+        self._type_keys = {label: key for label, key in LIABILITY_TYPES}
+        type_labels     = [label for label, _ in LIABILITY_TYPES]
+        init_key        = init.get("liability_type", "autre")
+        init_label      = next((l for l, k in LIABILITY_TYPES if k == init_key), type_labels[0])
+
+        # ── body à 2 colonnes ────────────────────────────────
+        self.body.grid_columnconfigure((0, 1), weight=1)
+
+        # Row 0-1 : Type (colonne 0) + Nom (colonne 1)
+        ctk.CTkLabel(self.body, text="Type de dette *",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=0, column=0, padx=(20, 8), pady=(16, 2), sticky="w")
+        self._type_var = ctk.StringVar(value=init_label)
+        ctk.CTkOptionMenu(self.body, values=type_labels, variable=self._type_var,
+                          height=38, font=ctk.CTkFont(size=13)).grid(
+            row=1, column=0, padx=(20, 8), sticky="ew")
+
+        ctk.CTkLabel(self.body, text="Nom du passif *",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=0, column=1, padx=(8, 20), pady=(16, 2), sticky="w")
+        self._name = ctk.CTkEntry(self.body,
+                                   placeholder_text="Ex : Prêt Cetelem, Crédit auto…",
+                                   height=38, font=ctk.CTkFont(size=13),
+                                   state="disabled" if is_edit else "normal")
+        self._name.grid(row=1, column=1, padx=(8, 20), sticky="ew")
+        if init.get("liability_name"):
+            self._name.configure(state="normal")
+            self._name.insert(0, init["liability_name"])
+            if is_edit:
+                self._name.configure(state="disabled")
+
+        # Row 2-3 : Capital restant dû (col 0) + Mensualité (col 1)
+        ctk.CTkLabel(self.body, text="Capital restant dû (€) *",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=2, column=0, padx=(20, 8), pady=(14, 2), sticky="w")
+        self._capital = ctk.CTkEntry(self.body, placeholder_text="Ex : 12 000",
+                                     height=38, font=ctk.CTkFont(size=13))
+        self._capital.grid(row=3, column=0, padx=(20, 8), sticky="ew")
+        if init.get("remaining_capital") is not None and init["remaining_capital"] != "":
+            self._capital.insert(0, str(init["remaining_capital"]))
+
+        ctk.CTkLabel(self.body, text="Mensualité (€)",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=2, column=1, padx=(8, 20), pady=(14, 2), sticky="w")
+        self._monthly = ctk.CTkEntry(self.body, placeholder_text="Ex : 250",
+                                     height=38, font=ctk.CTkFont(size=13))
+        self._monthly.grid(row=3, column=1, padx=(8, 20), sticky="ew")
+        if init.get("monthly_payment"):
+            self._monthly.insert(0, str(init["monthly_payment"]))
+
+        # Row 4-5 : Date de fin (pleine largeur)
+        ctk.CTkLabel(self.body, text="Date de fin (MM/AAAA)",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=4, column=0, columnspan=2, padx=20, pady=(14, 2), sticky="w")
+        self._end_date = ctk.CTkEntry(self.body, placeholder_text="Ex : 06/2029",
+                                      height=38, font=ctk.CTkFont(size=13))
+        self._end_date.grid(row=5, column=0, columnspan=2, padx=20, sticky="ew")
+        if init.get("end_date"):
+            self._end_date.insert(0, init["end_date"])
+
+        # Row 6-7 : Notes
+        ctk.CTkLabel(self.body, text="Notes",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=6, column=0, columnspan=2, padx=20, pady=(14, 2), sticky="w")
+        self._notes = ctk.CTkEntry(self.body, placeholder_text="Optionnel",
+                                   height=38, font=ctk.CTkFont(size=13))
+        self._notes.grid(row=7, column=0, columnspan=2, padx=20, pady=(0, 16), sticky="ew")
+        if init.get("notes"):
+            self._notes.insert(0, init["notes"])
+
+        self._capital.focus()
+
+    def _on_save(self):
+        # Nom : récupéré même si disabled
+        name = (self._name.get() if not self._is_edit
+                else self._name.cget("placeholder_text")).strip()
+        # En mode édition le nom est stocké dans le champ (on réactive brièvement)
+        if self._is_edit:
+            self._name.configure(state="normal")
+            name = self._name.get().strip()
+            self._name.configure(state="disabled")
+
+        if not name:
+            return
+
+        capital_raw = self._capital.get().replace(",", ".").replace(" ", "").replace(" ", "")
+        try:
+            capital = float(capital_raw)
+        except ValueError:
+            self._capital.configure(border_color=C["red"])
+            return
+        if capital < 0:
+            self._capital.configure(border_color=C["red"])
+            return
+        self._capital.configure(border_color=C["border"])
+
+        monthly_raw = self._monthly.get().replace(",", ".").replace(" ", "").strip()
+        try:
+            monthly = float(monthly_raw) if monthly_raw else 0.0
+        except ValueError:
+            monthly = 0.0
+
+        if self._on_save_cb:
+            self._on_save_cb({
+                "liability_type":    self._type_keys.get(self._type_var.get(), "autre"),
+                "liability_name":    name,
+                "remaining_capital": capital,
+                "monthly_payment":   monthly,
+                "end_date":          self._end_date.get().strip(),
+                "notes":             self._notes.get().strip(),
+            })
+        self.destroy()
+
+
+# ──────────────────────────────────────────────────────────
+#  Dialogue: Clôture de mois guidée (wizard 4 étapes)
+# ──────────────────────────────────────────────────────────
+class MonthCloseDialog(ctk.CTkToplevel):
+    """
+    Assistant de clôture de mois — wizard 4 étapes :
+      1. Bilan / vérification de la saisie
+      2. Actifs — rappel de mise à jour
+      3. Rapport PDF
+      4. Résumé final
+    """
+
+    _STEPS = [
+        ("📋", "Bilan"),
+        ("💰", "Actifs"),
+        ("📄", "Rapport PDF"),
+        ("✅", "Résumé"),
+    ]
+
+    def __init__(self, parent, db, app, year: int, month: int,
+                 on_close=None):
+        super().__init__(parent)
+        self._db       = db
+        self._app      = app
+        self._year     = year
+        self._month    = month
+        self._on_close = on_close
+        self._step     = 0          # étape courante (0-based)
+        self._pdf_path = None       # chemin du PDF généré
+
+        month_label = f"{MONTHS_FR[month - 1]} {year}"
+        self.title(f"Clôture du mois — {month_label}")
+        self.geometry("780x540")
+        self.resizable(False, False)
+        self.grab_set()
+        self.focus_force()
+
+        # ── Layout principal ─────────────────────────────
+        self._outer = ctk.CTkFrame(self, fg_color=C["bg"], corner_radius=0)
+        self._outer.pack(fill="both", expand=True)
+        self._outer.grid_columnconfigure(1, weight=1)
+        self._outer.grid_rowconfigure(0, weight=1)
+
+        # ── Panneau gauche : stepper ─────────────────────
+        self._side = ctk.CTkFrame(self._outer, fg_color=C["sidebar"],
+                                   corner_radius=0, width=180)
+        self._side.grid(row=0, column=0, sticky="nsew")
+        self._side.grid_propagate(False)
+
+        ctk.CTkLabel(self._side,
+                     text=f"🗓  {month_label}",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color="#A5B4FC").pack(anchor="w", padx=18, pady=(22, 18))
+
+        self._step_labels = []
+        for i, (icon, label) in enumerate(self._STEPS):
+            f = ctk.CTkFrame(self._side, fg_color="transparent", corner_radius=8)
+            f.pack(fill="x", padx=10, pady=2)
+            lbl = ctk.CTkLabel(f, text=f"  {icon}  {label}",
+                               font=ctk.CTkFont(size=12),
+                               text_color="#94A3B8", anchor="w",
+                               height=36)
+            lbl.pack(fill="x", padx=4)
+            self._step_labels.append((f, lbl))
+
+        # ── Panneau droit : contenu ──────────────────────
+        right = ctk.CTkFrame(self._outer, fg_color="transparent", corner_radius=0)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_rowconfigure(0, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+
+        self._content = ctk.CTkScrollableFrame(right, fg_color=C["bg"],
+                                                corner_radius=0)
+        self._content.grid(row=0, column=0, sticky="nsew")
+        self._content.grid_columnconfigure(0, weight=1)
+
+        # ── Footer : navigation ──────────────────────────
+        footer = ctk.CTkFrame(self._outer, fg_color=C["card"], corner_radius=0,
+                               border_width=1, border_color=C["border"])
+        footer.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+        self._prev_btn = ctk.CTkButton(
+            footer, text="← Précédent", width=130, height=38,
+            fg_color=C["light"], text_color=C["text"],
+            hover_color=C["border"], command=self._prev,
+        )
+        self._prev_btn.pack(side="left", padx=12, pady=10)
+
+        self._next_btn = ctk.CTkButton(
+            footer, text="Suivant →", width=140, height=38,
+            command=self._next,
+        )
+        self._next_btn.pack(side="right", padx=12, pady=10)
+
+        ctk.CTkButton(
+            footer, text="Fermer", width=100, height=38,
+            fg_color=C["light"], text_color=C["muted"],
+            hover_color=C["border"], command=self._close,
+        ).pack(side="right", padx=(0, 6), pady=10)
+
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<Escape>", lambda _: self._close())
+        self._render()
+
+    # ── Navigation ────────────────────────────────────────
+    def _prev(self):
+        if self._step > 0:
+            self._step -= 1
+            self._render()
+
+    def _next(self):
+        if self._step < len(self._STEPS) - 1:
+            self._step += 1
+            self._render()
+        else:
+            self._close()
+
+    def _close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        cb = self._on_close
+        self.destroy()
+        if cb:
+            cb()
+
+    # ── Rendu général ─────────────────────────────────────
+    def _render(self):
+        # Vider le contenu
+        for w in self._content.winfo_children():
+            w.destroy()
+
+        # Mettre à jour le stepper
+        for i, (f, lbl) in enumerate(self._step_labels):
+            if i < self._step:
+                f.configure(fg_color="transparent")
+                lbl.configure(text_color="#A5B4FC",
+                              font=ctk.CTkFont(size=12))
+            elif i == self._step:
+                f.configure(fg_color=C["sidebar2"])
+                lbl.configure(text_color="white",
+                              font=ctk.CTkFont(size=12, weight="bold"))
+            else:
+                f.configure(fg_color="transparent")
+                lbl.configure(text_color="#475569",
+                              font=ctk.CTkFont(size=12))
+
+        # Bouton Précédent
+        self._prev_btn.configure(state="normal" if self._step > 0 else "disabled")
+
+        # Bouton Suivant / Terminer
+        if self._step == len(self._STEPS) - 1:
+            self._next_btn.configure(text="✓  Terminer", fg_color=C["green"])
+        else:
+            self._next_btn.configure(text="Suivant →", fg_color=C["primary"])
+
+        # Dispatcher par étape
+        [self._step_bilan,
+         self._step_actifs,
+         self._step_rapport,
+         self._step_resume][self._step]()
+
+    # ──────────────────────────────────────────────────────
+    #  Étape 1 — Bilan / vérification de la saisie
+    # ──────────────────────────────────────────────────────
+    def _step_bilan(self):
+        y, m, db = self._year, self._month, self._db
+        rev  = sum(r["amount"] for r in db.get_revenues(y, m))
+        exp  = sum(r["amount"] for r in db.get_expenses(y, m))
+        sav  = sum(r["amount"] for r in db.get_savings(y, m))
+        rec  = db.get_pending_recurring(y, m)
+
+        ctk.CTkLabel(self._content,
+                     text="📋  Vérification de la saisie",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=24, pady=(20, 4))
+        ctk.CTkLabel(self._content,
+                     text="Contrôlez que toutes les données du mois sont bien renseignées.",
+                     font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(
+            anchor="w", padx=24, pady=(0, 16))
+
+        checks = [
+            (rev > 0,    "Revenus saisis",         f"{rev:,.2f} €" if rev else "Aucun revenu"),
+            (exp > 0,    "Dépenses saisies",        f"{exp:,.2f} €" if exp else "Aucune dépense"),
+            (sav > 0,    "Épargne saisie",          f"{sav:,.2f} €" if sav else "Aucun versement"),
+            (len(rec) == 0, "Récurrentes appliquées",
+             "Tout appliqué ✓" if not rec else f"{len(rec)} en attente"),
+        ]
+
+        for ok, label, detail in checks:
+            row = ctk.CTkFrame(self._content,
+                               fg_color="#F0FDF4" if ok else "#FFF7ED",
+                               corner_radius=10,
+                               border_width=1,
+                               border_color="#86EFAC" if ok else "#FED7AA")
+            row.pack(fill="x", padx=24, pady=4)
+            row.grid_columnconfigure(1, weight=1)
+
+            icon = "✅" if ok else "⚠️"
+            ctk.CTkLabel(row, text=icon, font=ctk.CTkFont(size=18),
+                         width=40).grid(row=0, column=0, padx=(12, 4), pady=12)
+            ctk.CTkLabel(row, text=label,
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=C["text"]).grid(row=0, column=1, sticky="w", pady=12)
+            ctk.CTkLabel(row, text=detail,
+                         font=ctk.CTkFont(size=12),
+                         text_color=C["green"] if ok else "#B45309").grid(
+                row=0, column=2, padx=16, pady=12)
+
+        # Si des récurrentes sont en attente → bouton direct
+        if rec:
+            def _open_rec():
+                from ui.dialogs import RecurringApplyDialog
+                month_label = f"{MONTHS_FR[m - 1]} {y}"
+                RecurringApplyDialog(
+                    self, db, y, m, month_label,
+                    on_applied=lambda n: self._render(),
+                )
+            ctk.CTkButton(
+                self._content,
+                text=f"📅  Appliquer les {len(rec)} récurrente(s) en attente",
+                height=36, fg_color=C["primary"],
+                command=_open_rec,
+            ).pack(anchor="w", padx=24, pady=(12, 0))
+
+        # Bilan résumé
+        bilan = rev - exp
+        sep = ctk.CTkFrame(self._content, fg_color=C["border"], height=1)
+        sep.pack(fill="x", padx=24, pady=(20, 12))
+
+        summary = ctk.CTkFrame(self._content, fg_color=C["card"],
+                                corner_radius=10, border_width=1,
+                                border_color=C["border"])
+        summary.pack(fill="x", padx=24, pady=(0, 20))
+        summary.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        kpis = [
+            ("Revenus",  f"{rev:,.0f} €",   C["green"]),
+            ("Dépenses", f"{exp:,.0f} €",   C["red"]),
+            ("Épargne",  f"{sav:,.0f} €",   C["blue"]),
+            ("Bilan",    f"{bilan:+,.0f} €", C["green"] if bilan >= 0 else C["red"]),
+        ]
+        for i, (t, v, clr) in enumerate(kpis):
+            f = ctk.CTkFrame(summary, fg_color="transparent")
+            f.grid(row=0, column=i, padx=16, pady=14, sticky="ew")
+            ctk.CTkLabel(f, text=t, font=ctk.CTkFont(size=10),
+                         text_color=C["muted"]).pack(anchor="w")
+            ctk.CTkLabel(f, text=v, font=ctk.CTkFont(size=16, weight="bold"),
+                         text_color=clr).pack(anchor="w")
+
+    # ──────────────────────────────────────────────────────
+    #  Étape 2 — Actifs : rappel de mise à jour
+    # ──────────────────────────────────────────────────────
+    def _step_actifs(self):
+        y, m, db = self._year, self._month, self._db
+        all_assets = db.get_assets_current()
+        stale      = [a for a in all_assets
+                      if a["year"] != y or a["month"] != m]
+        up_to_date = [a for a in all_assets
+                      if a["year"] == y and a["month"] == m]
+
+        ctk.CTkLabel(self._content,
+                     text="💰  Mise à jour des actifs",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=24, pady=(20, 4))
+
+        if not stale:
+            ctk.CTkLabel(self._content,
+                         text="✅  Tous vos actifs ont été mis à jour ce mois-ci.",
+                         font=ctk.CTkFont(size=13), text_color=C["green"]).pack(
+                anchor="w", padx=24, pady=(0, 12))
+        else:
+            ctk.CTkLabel(self._content,
+                         text=f"{len(stale)} actif(s) n'ont pas été mis à jour ce mois-ci ↓",
+                         font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(
+                anchor="w", padx=24, pady=(0, 12))
+
+            for asset in stale:
+                last = f"{MONTHS_FR[asset['month']-1][:3]}. {asset['year']}"
+                row = ctk.CTkFrame(self._content, fg_color=C["card"],
+                                   corner_radius=10, border_width=1,
+                                   border_color="#FED7AA")
+                row.pack(fill="x", padx=24, pady=3)
+                row.grid_columnconfigure(1, weight=1)
+
+                ctk.CTkLabel(row, text="⚠️", font=ctk.CTkFont(size=16),
+                             width=36).grid(row=0, column=0, padx=(10, 4), pady=10)
+                inner = ctk.CTkFrame(row, fg_color="transparent")
+                inner.grid(row=0, column=1, sticky="w", pady=10)
+                ctk.CTkLabel(inner, text=asset["asset_name"],
+                             font=ctk.CTkFont(size=12, weight="bold"),
+                             text_color=C["text"]).pack(anchor="w")
+                ctk.CTkLabel(inner,
+                             text=f"Dernière valeur : {asset['value']:,.2f} €  ·  {last}",
+                             font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(anchor="w")
+
+                def _update(a=asset):
+                    from ui.dialogs import QuickValueUpdateDialog
+                    is_compte = (a["asset_type"] == "compte")
+                    QuickValueUpdateDialog(
+                        self, a["asset_name"], a["value"],
+                        on_save=lambda v, aid=a["id"]: (
+                            db.update_asset_value(aid, v),
+                            self._render(),
+                        ),
+                        label="solde" if is_compte else "valeur",
+                    )
+                ctk.CTkButton(row, text="💰  Mettre à jour", width=140, height=32,
+                              fg_color="#F0FDF4", text_color=C["green"],
+                              hover_color="#DCFCE7",
+                              command=_update).grid(row=0, column=2, padx=12, pady=10)
+
+        if up_to_date:
+            sep = ctk.CTkFrame(self._content, fg_color=C["border"], height=1)
+            sep.pack(fill="x", padx=24, pady=(14, 10))
+            ctk.CTkLabel(self._content,
+                         text=f"✅  {len(up_to_date)} actif(s) déjà à jour ce mois-ci",
+                         font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(
+                anchor="w", padx=24, pady=(0, 16))
+
+    # ──────────────────────────────────────────────────────
+    #  Étape 3 — Rapport PDF
+    # ──────────────────────────────────────────────────────
+    def _step_rapport(self):
+        y, m = self._year, self._month
+        month_label = f"{MONTHS_FR[m - 1]}_{y}"
+
+        ctk.CTkLabel(self._content,
+                     text="📄  Générer le rapport PDF",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=24, pady=(20, 4))
+        ctk.CTkLabel(self._content,
+                     text="Exportez un résumé complet du mois en PDF (revenus, dépenses, épargne, patrimoine).",
+                     font=ctk.CTkFont(size=12), text_color=C["muted"],
+                     wraplength=520, justify="left").pack(anchor="w", padx=24, pady=(0, 20))
+
+        # Carte principale
+        card = ctk.CTkFrame(self._content, fg_color=C["card"], corner_radius=12,
+                            border_width=1, border_color=C["border"])
+        card.pack(fill="x", padx=24, pady=(0, 16))
+        card.grid_columnconfigure(0, weight=1)
+
+        # Nom de fichier
+        ctk.CTkLabel(card, text="Nom du fichier",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=0, column=0, padx=20, pady=(16, 4), sticky="w")
+        default_name = f"Fintrack_{month_label}.pdf"
+        name_var = tk.StringVar(value=default_name)
+        ctk.CTkEntry(card, textvariable=name_var, height=36,
+                     font=ctk.CTkFont(size=13)).grid(
+            row=1, column=0, padx=20, pady=(0, 14), sticky="ew")
+
+        # Statut
+        status_lbl = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=12),
+                                   text_color=C["muted"])
+        status_lbl.grid(row=2, column=0, padx=20, pady=(0, 6), sticky="w")
+
+        if self._pdf_path and os.path.exists(self._pdf_path):
+            status_lbl.configure(
+                text=f"✅  Rapport généré : {os.path.basename(self._pdf_path)}",
+                text_color=C["green"])
+
+        def _generate():
+            import tkinter.filedialog as fd
+            fname = name_var.get().strip() or default_name
+            if not fname.endswith(".pdf"):
+                fname += ".pdf"
+            dest = fd.asksaveasfilename(
+                parent=self,
+                title="Enregistrer le rapport PDF",
+                initialfile=fname,
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+            )
+            if not dest:
+                return
+
+            status_lbl.configure(text="⏳  Génération en cours…", text_color=C["muted"])
+            gen_btn.configure(state="disabled")
+
+            def _worker():
+                try:
+                    from utils_pdf import generate_monthly_report
+                    generate_monthly_report(self._db, y, m, dest)
+                    self._pdf_path = dest
+                    self.after(0, lambda: (
+                        status_lbl.configure(
+                            text=f"✅  Rapport enregistré : {os.path.basename(dest)}",
+                            text_color=C["green"]),
+                        gen_btn.configure(state="normal"),
+                    ))
+                except Exception as e:
+                    self.after(0, lambda: (
+                        status_lbl.configure(
+                            text=f"❌  Erreur : {e}",
+                            text_color=C["red"]),
+                        gen_btn.configure(state="normal"),
+                    ))
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        gen_btn = ctk.CTkButton(
+            card, text="📄  Générer et enregistrer le PDF",
+            height=40, font=ctk.CTkFont(size=13, weight="bold"),
+            command=_generate,
+        )
+        gen_btn.grid(row=3, column=0, padx=20, pady=(0, 20), sticky="ew")
+
+        # Info : étape facultative
+        ctk.CTkLabel(self._content,
+                     text="ℹ️  Cette étape est facultative. Vous pouvez également générer le PDF\n"
+                          "à tout moment depuis Paramètres → Rapport PDF.",
+                     font=ctk.CTkFont(size=11), text_color=C["muted"],
+                     justify="left").pack(anchor="w", padx=24, pady=(0, 16))
+
+    # ──────────────────────────────────────────────────────
+    #  Étape 4 — Résumé final
+    # ──────────────────────────────────────────────────────
+    def _step_resume(self):
+        y, m, db = self._year, self._month, self._db
+
+        # ── Verrouiller définitivement le mois ──────────────
+        db.close_month(y, m)
+
+        rev  = sum(r["amount"] for r in db.get_revenues(y, m))
+        exp  = sum(r["amount"] for r in db.get_expenses(y, m))
+        sav  = sum(r["amount"] for r in db.get_savings(y, m))
+        bilan = rev - exp
+        total_pat = sum(a["value"] for a in db.get_assets_current())
+        month_label = f"{MONTHS_FR[m - 1]} {y}"
+
+        ctk.CTkLabel(self._content,
+                     text=f"✅  Clôture de {month_label}",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=24, pady=(20, 4))
+        ctk.CTkLabel(self._content,
+                     text="Voici le récapitulatif définitif du mois.",
+                     font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(
+            anchor="w", padx=24, pady=(0, 16))
+
+        # KPIs principaux
+        kpi_card_f = ctk.CTkFrame(self._content, fg_color=C["card"],
+                                   corner_radius=12, border_width=1,
+                                   border_color=C["border"])
+        kpi_card_f.pack(fill="x", padx=24, pady=(0, 12))
+        kpi_card_f.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        kpis = [
+            ("💶 Revenus",  f"{rev:,.2f} €",   C["green"]),
+            ("💸 Dépenses", f"{exp:,.2f} €",   C["red"]),
+            ("🏦 Épargne",  f"{sav:,.2f} €",   C["blue"]),
+            ("⚖️ Bilan",   f"{bilan:+,.2f} €", C["green"] if bilan >= 0 else C["red"]),
+        ]
+        for i, (t, v, clr) in enumerate(kpis):
+            f = ctk.CTkFrame(kpi_card_f, fg_color="transparent")
+            f.grid(row=0, column=i, padx=16, pady=16, sticky="ew")
+            ctk.CTkLabel(f, text=t, font=ctk.CTkFont(size=11),
+                         text_color=C["muted"]).pack(anchor="w")
+            ctk.CTkLabel(f, text=v,
+                         font=ctk.CTkFont(size=15, weight="bold"),
+                         text_color=clr).pack(anchor="w", pady=(2, 0))
+
+        # Patrimoine total
+        pat_f = ctk.CTkFrame(self._content, fg_color="#EFF6FF",
+                              corner_radius=10, border_width=1,
+                              border_color="#93C5FD")
+        pat_f.pack(fill="x", padx=24, pady=(0, 16))
+        ctk.CTkLabel(pat_f,
+                     text=f"📈  Patrimoine total :  {total_pat:,.2f} €",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=C["primary"]).pack(side="left", padx=20, pady=14)
+
+        if self._pdf_path and os.path.exists(self._pdf_path):
+            ctk.CTkLabel(self._content,
+                         text=f"📄  Rapport PDF : {os.path.basename(self._pdf_path)}",
+                         font=ctk.CTkFont(size=11), text_color=C["green"]).pack(
+                anchor="w", padx=24, pady=(0, 8))
+
+        # Message de félicitations
+        congrats = ctk.CTkFrame(self._content, fg_color="#F0FDF4",
+                                 corner_radius=10, border_width=1,
+                                 border_color="#86EFAC")
+        congrats.pack(fill="x", padx=24, pady=(4, 20))
+        ctk.CTkLabel(congrats,
+                     text="🎉  Mois clôturé avec succès ! Bonne continuation pour le mois prochain.",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color="#15803D",
+                     wraplength=480, justify="left").pack(
+            anchor="w", padx=16, pady=14)
