@@ -50,6 +50,18 @@ class SavingsEntryPage:
         list_f.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         list_f.grid_columnconfigure((0, 1, 2), weight=1)
 
+        # ── Bandeau clôture ──────────────────────────────────
+        is_closed = db.is_month_closed(y, m)
+        if is_closed:
+            lock_band = ctk.CTkFrame(card, fg_color="#FEF3C7", corner_radius=10,
+                                     border_width=1, border_color="#FCD34D")
+            lock_band.grid(row=1, column=0, sticky="ew", padx=6, pady=(2, 6))
+            ctk.CTkLabel(lock_band,
+                         text="🔒  Ce mois a été clôturé — la saisie est verrouillée.",
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color="#92400E").pack(anchor="w", padx=16, pady=12)
+            return
+
         # ── Inline add ───────────────────────────────────────
         band = ctk.CTkFrame(card, fg_color="#EFF6FF", corner_radius=10)
         band.grid(row=1, column=0, sticky="ew", padx=6, pady=(2, 6))

@@ -14,10 +14,11 @@ import matplotlib.ticker as mticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE, FILTER_ALL_TYPES
+from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE, FILTER_ALL_TYPES, LIABILITY_LABEL
 from ui.components import make_card, Tooltip
 from ui.dialogs import (AssetDialog, QuickValueUpdateDialog,
-                        AssetEvolutionDialog, AssetTransactionsDialog)
+                        AssetEvolutionDialog, AssetTransactionsDialog,
+                        LiabilityDialog)
 
 # Types d'actifs pour lesquels le bouton transactions est particulièrement utile
 _TRANSACTION_TYPES = {"bourse", "crypto", "or_metaux"}
@@ -301,6 +302,174 @@ class PatrimoinePage:
             closed = [c for c in closed if c["asset_type"] == type_key]
         if closed:
             _render_closed_positions(scroll, closed, db, app, row=3)
+
+        # ── Passifs & Valeur nette ────────────────────────────────
+        _render_liabilities(scroll, db, app, row=4, total_actifs=total_all)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Section Passifs / Valeur nette
+# ─────────────────────────────────────────────────────────────
+def _render_liabilities(parent, db, app, row: int, total_actifs: float):
+    import datetime as _dt
+    today    = _dt.date.today()
+    passifs  = db.get_liabilities_current()
+    total_p  = sum(p["remaining_capital"] for p in passifs)
+    valeur_nette = total_actifs - total_p
+
+    card = make_card(parent)
+    card.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 4))
+
+    # ── Header ──────────────────────────────────────────────
+    hdr = ctk.CTkFrame(card, fg_color="transparent")
+    hdr.pack(fill="x", padx=16, pady=(14, 4))
+    hdr.grid_columnconfigure(1, weight=1)
+
+    ctk.CTkLabel(hdr, text="💳  Passifs & Valeur nette",
+                 font=ctk.CTkFont(size=14, weight="bold"),
+                 text_color=C["text"]).grid(row=0, column=0, sticky="w")
+
+    def open_add():
+        LiabilityDialog(app, on_save=lambda d: (
+            db.add_or_update_liability(
+                today.year, today.month,
+                d["liability_type"], d["liability_name"],
+                d["remaining_capital"], d["monthly_payment"],
+                d["end_date"], d["notes"],
+            ),
+            app._go("patrimoine"),
+        ))
+
+    ctk.CTkButton(hdr, text="＋  Ajouter une dette", height=30, width=160,
+                  font=ctk.CTkFont(size=12),
+                  command=open_add).grid(row=0, column=2, sticky="e")
+
+    # ── Bandeau valeur nette ─────────────────────────────────
+    vn_color = C["green"] if valeur_nette >= 0 else C["red"]
+    vn_bg    = "#F0FDF4" if valeur_nette >= 0 else "#FEF2F2"
+    vn_brd   = "#86EFAC" if valeur_nette >= 0 else "#FCA5A5"
+    sign     = "+" if valeur_nette >= 0 else ""
+
+    vn_band = ctk.CTkFrame(card, fg_color=vn_bg, corner_radius=8,
+                            border_width=1, border_color=vn_brd)
+    vn_band.pack(fill="x", padx=16, pady=(2, 10))
+    vn_band.grid_columnconfigure(1, weight=1)
+
+    ctk.CTkLabel(vn_band,
+                 text=f"⚖️  Valeur nette (actifs − dettes) :  {sign}{valeur_nette:,.2f} €",
+                 font=ctk.CTkFont(size=14, weight="bold"),
+                 text_color=vn_color).grid(row=0, column=0, padx=16, pady=12, sticky="w")
+
+    sub = (f"Actifs : {total_actifs:,.0f} €   −   Passifs : {total_p:,.0f} €")
+    ctk.CTkLabel(vn_band, text=sub,
+                 font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
+        row=0, column=2, padx=16, pady=12, sticky="e")
+
+    # ── Table passifs ────────────────────────────────────────
+    if not passifs:
+        ctk.CTkLabel(card, text="Aucune dette enregistrée.",
+                     text_color=C["muted"]).pack(pady=(0, 16))
+        return
+
+    # En-tête colonnes
+    hdr_f = ctk.CTkFrame(card, fg_color=C["light"], corner_radius=6)
+    hdr_f.pack(fill="x", padx=12, pady=(0, 4))
+    hdr_f.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
+    for col_i, lbl in enumerate(
+        ["Nom", "Type", "Capital restant", "Mensualité", "Fin", ""]
+    ):
+        ctk.CTkLabel(hdr_f, text=lbl,
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color=C["muted"]).grid(
+            row=0, column=col_i, padx=10, pady=6, sticky="w")
+
+    # Lignes
+    for idx, p in enumerate(passifs):
+        bg = C["card"] if idx % 2 == 0 else C["light"]
+        row_f = ctk.CTkFrame(card, fg_color=bg, corner_radius=6)
+        row_f.pack(fill="x", padx=12, pady=1)
+        row_f.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
+
+        ctk.CTkLabel(row_f, text=p["liability_name"],
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=0, padx=10, pady=8, sticky="w")
+
+        type_lbl = LIABILITY_LABEL.get(p["liability_type"], p["liability_type"].capitalize())
+        ctk.CTkLabel(row_f, text=type_lbl,
+                     font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
+            row=0, column=1, padx=10, pady=8, sticky="w")
+
+        ctk.CTkLabel(row_f, text=f"{p['remaining_capital']:,.2f} €",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["red"]).grid(row=0, column=2, padx=10, pady=8, sticky="w")
+
+        monthly_txt = f"{p['monthly_payment']:,.0f} €/mois" if p["monthly_payment"] else "—"
+        ctk.CTkLabel(row_f, text=monthly_txt,
+                     font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
+            row=0, column=3, padx=10, pady=8, sticky="w")
+
+        ctk.CTkLabel(row_f, text=p["end_date"] or "—",
+                     font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
+            row=0, column=4, padx=10, pady=8, sticky="w")
+
+        # Boutons
+        btns = ctk.CTkFrame(row_f, fg_color="transparent")
+        btns.grid(row=0, column=5, padx=6, pady=4, sticky="e")
+
+        def _update_capital(liability=p):
+            QuickValueUpdateDialog(
+                app, liability["liability_name"], liability["remaining_capital"],
+                on_save=lambda v: (
+                    db.update_liability_capital(
+                        liability["liability_name"], today.year, today.month, v
+                    ),
+                    app._go("patrimoine"),
+                ),
+                label="capital restant",
+            )
+
+        btn_upd = ctk.CTkButton(btns, text="💰", width=30, height=26,
+                                fg_color="#FFF7ED", text_color=C["amber"],
+                                hover_color="#FFEDD5",
+                                command=_update_capital)
+        btn_upd.pack(side="left", padx=(0, 2))
+        Tooltip(btn_upd, "Mettre à jour le capital restant")
+
+        def _edit(liability=p):
+            LiabilityDialog(app, initial=dict(liability), on_save=lambda d: (
+                db.add_or_update_liability(
+                    today.year, today.month,
+                    d["liability_type"], d["liability_name"],
+                    d["remaining_capital"], d["monthly_payment"],
+                    d["end_date"], d["notes"],
+                ),
+                app._go("patrimoine"),
+            ))
+
+        btn_edit = ctk.CTkButton(btns, text="✏", width=30, height=26,
+                                 fg_color=C["light"], text_color=C["muted"],
+                                 hover_color=C["border"],
+                                 command=_edit)
+        btn_edit.pack(side="left", padx=(0, 2))
+        Tooltip(btn_edit, "Modifier")
+
+        def _delete(name=p["liability_name"]):
+            db.delete_liability(name)
+            app._go("patrimoine")
+
+        btn_del = ctk.CTkButton(btns, text="✕", width=30, height=26,
+                                fg_color="#FEE2E2", text_color=C["red"],
+                                hover_color="#FECACA",
+                                command=_delete)
+        btn_del.pack(side="left")
+        Tooltip(btn_del, "Supprimer")
+
+    # ── Total passifs ────────────────────────────────────────
+    foot = ctk.CTkFrame(card, fg_color="transparent")
+    foot.pack(anchor="e", padx=16, pady=(6, 14))
+    ctk.CTkLabel(foot, text=f"Total dettes : {total_p:,.2f} €",
+                 font=ctk.CTkFont(size=13, weight="bold"),
+                 text_color=C["red"]).pack()
 
 
 # ─────────────────────────────────────────────────────────────
