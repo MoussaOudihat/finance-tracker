@@ -18,7 +18,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import customtkinter as ctk
 from config import C, MONTHS_FR, PALETTE, ASSET_LABEL, FILTER_ALL_CATS, FILTER_ALL_PAYEES
 from ui.components import kpi_card, make_card, filter_dropdown, month_selector
-from ui.dialogs import RecurringApplyDialog, RecurringManagerDialog
+from ui.dialogs import RecurringApplyDialog, RecurringManagerDialog, MonthCloseDialog
 
 
 class DashboardPage:
@@ -62,21 +62,49 @@ class DashboardPage:
                 on_applied=lambda n: app._go("dashboard"),
             )
 
+        btn_frame = ctk.CTkFrame(hdr, fg_color="transparent")
+        btn_frame.grid(row=0, column=1, padx=(20, 8), sticky="w")
+
         ctk.CTkButton(
-            hdr, text=rec_label, height=32, width=170,
+            btn_frame, text=rec_label, height=32, width=170,
             fg_color=rec_color, text_color=rec_txtclr,
             hover_color=C.get("primary_hover", C["primary"]),
             font=ctk.CTkFont(size=12, weight="bold"),
             command=_open_recurring_apply,
-        ).grid(row=0, column=1, padx=(20, 8), sticky="w")
+        ).grid(row=0, column=0, padx=(0, 8))
+
+        is_closed = db.is_month_closed(y, m)
+
+        def _open_month_close():
+            if is_closed:
+                return  # Mois déjà clôturé, ne rien faire
+            MonthCloseDialog(
+                app, db, app, y, m,
+                on_close=lambda: app._go("dashboard"),
+            )
+
+        close_lbl   = "🔒  Mois clôturé" if is_closed else "🗓  Clôturer le mois"
+        close_color = "#D1FAE5" if is_closed else C["light"]
+        close_txt   = "#065F46" if is_closed else C["text"]
+
+        ctk.CTkButton(
+            btn_frame, text=close_lbl, height=32, width=170,
+            fg_color=close_color, text_color=close_txt,
+            hover_color=close_color,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=_open_month_close,
+        ).grid(row=0, column=1, padx=(0, 0))
 
         # ── Données statiques (non filtrées) ─────────────────
-        rev_data = db.get_revenues(y, m)
-        sav_data = db.get_savings(y, m)
-        pat_data = db.get_assets(y, m)
-        total_rev = sum(r["amount"] for r in rev_data)
-        total_sav = sum(r["amount"] for r in sav_data)
-        total_pat = sum(r["value"]  for r in pat_data)
+        rev_data     = db.get_revenues(y, m)
+        sav_data     = db.get_savings(y, m)
+        pat_data     = db.get_assets(y, m)          # pour le mini-patrimoine du mois
+        pat_current  = db.get_assets_current()      # pour la valeur nette (snapshot courant)
+        total_rev    = sum(r["amount"] for r in rev_data)
+        total_sav    = sum(r["amount"] for r in sav_data)
+        total_pat    = sum(r["value"]  for r in pat_current)
+        total_dettes = db.get_total_liabilities()
+        valeur_nette = total_pat - total_dettes
 
         # ── KPI holder (row=1) ───────────────────────────────
         kpi_holder = ctk.CTkFrame(scroll, fg_color="transparent")
@@ -98,12 +126,40 @@ class DashboardPage:
                 kpi_card(kpi_holder, t, v, clr, ico).grid(
                     row=0, column=col, padx=6, pady=6, sticky="ew")
 
-        # ── Barre de filtres (row=2) ──────────────────────────
+        # ── Bande Valeur nette (row=2) ───────────────────────
+        vn_color = C["green"] if valeur_nette >= 0 else C["red"]
+        vn_bg    = "#F0FDF4" if valeur_nette >= 0 else "#FEF2F2"
+        vn_brd   = "#86EFAC" if valeur_nette >= 0 else "#FCA5A5"
+        sign     = "+" if valeur_nette >= 0 else ""
+
+        vn_band = ctk.CTkFrame(scroll, fg_color=vn_bg, corner_radius=10,
+                                border_width=1, border_color=vn_brd)
+        vn_band.grid(row=2, column=0, columnspan=4, sticky="ew",
+                     padx=6, pady=(0, 8))
+        vn_band.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(vn_band,
+                     text=f"⚖️  Valeur nette",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=vn_color).grid(row=0, column=0, padx=16, pady=10, sticky="w")
+        ctk.CTkLabel(vn_band,
+                     text=f"{sign}{valeur_nette:,.2f} €",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=vn_color).grid(row=0, column=1, padx=8, pady=10, sticky="w")
+
+        sub_txt = (f"Actifs {total_pat:,.0f} €  −  Dettes {total_dettes:,.0f} €"
+                   if total_dettes > 0
+                   else f"Patrimoine total : {total_pat:,.0f} €  ·  Aucune dette enregistrée")
+        ctk.CTkLabel(vn_band, text=sub_txt,
+                     font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
+            row=0, column=2, padx=16, pady=10, sticky="e")
+
+        # ── Barre de filtres (row=3) ──────────────────────────
         cats   = [FILTER_ALL_CATS] + [c["name"] for c in db.get_categories()]
         payees = [FILTER_ALL_PAYEES]  + db.get_payees(y, m)
 
         fb = make_card(scroll, corner_radius=10)
-        fb.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 4))
+        fb.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 4))
         fi = ctk.CTkFrame(fb, fg_color="transparent")
         fi.pack(anchor="w", padx=16, pady=8)
 
@@ -146,9 +202,9 @@ class DashboardPage:
                 effacer_holder["btn"].destroy()
                 effacer_holder["btn"] = None
 
-        # ── Zone graphiques (row=3) ───────────────────────────
+        # ── Zone graphiques (row=4) ───────────────────────────
         charts = ctk.CTkFrame(scroll, fg_color="transparent")
-        charts.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        charts.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         charts.grid_columnconfigure((0, 1), weight=1)
 
         pie_card = _chart_card(charts, "Dépenses par catégorie  💡 clic = filtre", 0, 0)
@@ -206,7 +262,7 @@ class DashboardPage:
         _sync_effacer()
         _redraw_charts()
 
-        # ── Épargne par compte (row=4) ────────────────────────
+        # ── Épargne par compte (row=5) ────────────────────────
         if sav_data:
             by_account: dict[str, float] = {}
             for r in sav_data:
@@ -214,7 +270,7 @@ class DashboardPage:
                 by_account[acc] = by_account.get(acc, 0.0) + r["amount"]
 
             sc = make_card(scroll)
-            sc.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+            sc.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(12, 0))
 
             sh = ctk.CTkFrame(sc, fg_color="transparent")
             sh.pack(fill="x", padx=16, pady=(14, 6))
@@ -243,10 +299,10 @@ class DashboardPage:
                              font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(
                     anchor="w", padx=12, pady=(0, 8))
 
-        # ── Mini patrimoine (row=5) ───────────────────────────
+        # ── Mini patrimoine (row=6) ───────────────────────────
         if pat_data:
             pc = make_card(scroll)
-            pc.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+            pc.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(12, 0))
             ph = ctk.CTkFrame(pc, fg_color="transparent")
             ph.pack(fill="x", padx=16, pady=(14, 6))
             ctk.CTkLabel(ph, text="📊  Patrimoine ce mois",
