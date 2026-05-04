@@ -3,7 +3,7 @@
 > Application desktop Windows pour suivre ses finances personnelles — **locale, sécurisée, open source.**  
 > Synchronisation Supabase optionnelle pour le multi-appareils.
 
-![Version](https://img.shields.io/badge/Version-1.1.0-4F46E5)
+![Version](https://img.shields.io/badge/Version-1.2.0-4F46E5)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-22C55E)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows)
@@ -187,7 +187,14 @@ Dans votre projet Supabase → **Settings → API** :
 
 ## 🗺️ Roadmap
 
-### ✅ v1.1 — Actuel
+### ✅ v1.2 — Actuel
+- [x] Import / export Excel par page (Dépenses et Revenus)
+- [x] Template Excel avec liste déroulante de catégories
+- [x] Autocomplétion sur le champ Enseigne (suggestions basées sur l'historique)
+- [x] Visualisation en lecture seule des mois clôturés
+- [x] Fonctionnalité Excel activable depuis les Paramètres
+
+### ✅ v1.1
 - [x] Saisie revenus / dépenses / épargne
 - [x] Tableau de bord avec filtres interactifs
 - [x] Patrimoine multi-actifs avec transactions (CMUP)
