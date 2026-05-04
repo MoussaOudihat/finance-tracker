@@ -20,7 +20,7 @@ else:
 # ── Version lue depuis le fichier VERSION (écrit par le CI au moment de la release) ──
 try:
     with open(os.path.join(_BUNDLE_DIR, "VERSION"), encoding="utf-8") as _vf:
-        APP_VERSION = _vf.read().strip()
+        APP_VERSION = _vf.read().strip() or "dev"
 except Exception:
     APP_VERSION = "dev"
 
@@ -47,6 +47,13 @@ ASSET_TYPES = [
     ("Autre",               "autre"),
 ]
 ASSET_LABEL = {key: label for label, key in ASSET_TYPES}
+
+LIABILITY_TYPES = [
+    ("Prêt voiture",     "voiture"),
+    ("Prêt conso/perso", "conso"),
+    ("Autre",            "autre"),
+]
+LIABILITY_LABEL = {key: label for label, key in LIABILITY_TYPES}
 
 # ── Valeurs des filtres "Tout afficher" ──────────────────────
 # Centralisées ici pour éviter les typos qui cassent le reset silencieusement.

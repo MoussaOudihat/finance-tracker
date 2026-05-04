@@ -171,6 +171,44 @@ class SettingsPage:
                       command=gen_tax,
                       font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(8, 0))
 
+        # ── Toggle saisie Excel ───────────────────────────────
+        excel_sep = ctk.CTkFrame(rc, fg_color="#E2E8F0", height=1)
+        excel_sep.pack(fill="x", padx=16, pady=4)
+
+        excel_sec = ctk.CTkFrame(rc, fg_color=C["light"], corner_radius=8)
+        excel_sec.pack(fill="x", padx=16, pady=(0, 16))
+        excel_inner = ctk.CTkFrame(excel_sec, fg_color="transparent")
+        excel_inner.pack(fill="x", padx=14, pady=10)
+
+        excel_var = ctk.BooleanVar(value=db.get_setting("excel_import_enabled", "0") == "1")
+
+        excel_hdr = ctk.CTkFrame(excel_inner, fg_color="transparent")
+        excel_hdr.pack(fill="x")
+
+        ctk.CTkLabel(excel_hdr,
+                     text="📊  Saisie via template Excel",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=C["text"]).pack(side="left")
+
+        def _toggle_excel():
+            db.set_setting("excel_import_enabled", "1" if excel_var.get() else "0")
+            show_toast(app, "✅  Réglage Excel sauvegardé")
+
+        ctk.CTkSwitch(excel_hdr, text="",
+                      variable=excel_var,
+                      command=_toggle_excel,
+                      onvalue=True, offvalue=False).pack(side="right")
+
+        ctk.CTkLabel(excel_inner,
+                     text=(
+                         "Activez pour afficher les boutons « Télécharger le template » et\n"
+                         "« Importer » dans l'en-tête du tableau de bord (mois non clôturés).\n"
+                         "Workflow : téléchargez le template → remplissez → importez."
+                     ),
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["muted"],
+                     justify="left").pack(anchor="w", pady=(4, 0))
+
         # ══════════════════════════════════════════════════════
         #  2. EMAIL SMTP
         # ══════════════════════════════════════════════════════

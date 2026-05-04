@@ -354,6 +354,12 @@ class App(ctk.CTk):
 
     def _render_page(self, page_cls, container):
         """Rend la page dans le container donné (appelé en différé)."""
+        # Vérifie que le container n'a pas déjà été détruit par un _go() concurrent
+        try:
+            if not container.winfo_exists():
+                return
+        except Exception:
+            return
         # Supprimer le placeholder avant de rendre la vraie page
         for w in container.winfo_children():
             w.destroy()
