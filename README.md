@@ -3,7 +3,7 @@
 > Application desktop Windows pour suivre ses finances personnelles — **locale, sécurisée, open source.**  
 > Synchronisation Supabase optionnelle pour le multi-appareils.
 
-![Version](https://img.shields.io/badge/Version-1.2.0-4F46E5)
+![Version](https://img.shields.io/badge/Version-1.2.1-4F46E5)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-22C55E)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows)
@@ -47,6 +47,11 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 - Export **CSV** complet
 - Export fiscal (plus-values, dons, formation)
 - Envoi par **email SMTP** (résumé mensuel)
+
+### Maintenance & récupération
+- **`reset_auth.py`** — récupération des identifiants (username oublié, mot de passe perdu, compte bloqué) sans toucher aux données
+- **`supabase_migration.sql`** — mise à jour du schéma Supabase existant vers la dernière version
+- **`supabase_schema.sql`** — schéma complet pour une nouvelle installation Supabase
 
 ### Synchronisation Supabase (optionnel)
 - ☁️ Sync multi-appareils via **Supabase PostgreSQL** (tables réelles, pas Storage)

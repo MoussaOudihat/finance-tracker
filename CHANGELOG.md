@@ -6,6 +6,27 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.2.1] — 2026-05-12
+
+### Corrigé
+- 🔐 **Login scrollable** : la fenêtre de connexion utilise maintenant un `CTkScrollableFrame` — tout le contenu est accessible sur les petits écrans, la hauteur est redimensionnable
+- 🔐 **Récupération & restauration scrollables** : même correctif sur les vues "Mot de passe oublié" et "Restaurer depuis Supabase"
+- ☁️ **Crash "Cannot operate on a closed database"** : la connexion SQLite n'est plus fermée après une restauration Supabase — `main.py` conserve une référence valide pour le sync au démarrage
+- 💾 **Données protégées à la création de compte** : `_show_category_setup` ne s'exécute plus si la base contient déjà des données (évite l'écrasement des catégories et dépenses existantes lors d'une reconnexion)
+- ☁️ **Restauration Supabase → redirect correcte** : après un pull Supabase, si aucun compte local n'existe (auth jamais synchronisée), l'app redirige vers la création d'accès local au lieu de bloquer sur l'écran de login
+
+### Ajouté
+- 🛠️ **`reset_auth.py`** : outil de récupération autonome (double-clic ou `python reset_auth.py`) — gère 4 cas : username manquant sur données existantes, mot de passe oublié, compte bloqué, base sans auth. Ne touche jamais aux données financières
+- 📋 **`supabase_migration.sql`** : script SQL idempotent pour mettre à jour un projet Supabase existant — ajoute les tables `recurring_transactions` et `liabilities`, les colonnes `months.closed`, `assets.cost_basis`, `asset_transactions.reinvested` et `reinvested_into`
+- 📋 **`supabase_schema.sql`** mis à jour : schéma complet v1.2.1 incluant toutes les tables et colonnes actuelles
+
+### Technique
+- `ui/login.py` — `_show_login`, `_show_recovery`, `_show_existing_account` : passage en `CTkScrollableFrame` + `resizable(False, True)`
+- `ui/login.py` — `_show_existing_account._done()` : remplace `db.con.close()` + `Database()` par `db._invalidate()` pour préserver la référence partagée avec `main.py`
+- `ui/login.py` — `_show_setup._do_setup()` : vérifie `COUNT(*) FROM months` avant de lancer le setup catégories
+- `ui/login.py` — ajout de `_show_post_restore_setup()` : formulaire dédié post-restauration Supabase (username + mot de passe + question secrète)
+
+---
 ## [1.1.0] — 2026-05-03
 
 ### Ajouté
