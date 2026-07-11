@@ -6,6 +6,25 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.2.2] — 2026-07-11
+
+### Corrigé
+- 🔐 **Récupération par question secrète non protégée contre le brute-force** : le flux "mot de passe oublié" applique désormais le même verrouillage (5 tentatives) que la connexion normale
+- 🤖 **Cache d'analyse IA qui s'auto-effaçait** : `database.py` invalidait le cache IA à chaque écriture, y compris celle qui venait de l'enregistrer — chaque analyse retapait l'API payante à chaque affichage
+- 🛠️ **`reset_auth.py` désynchronisé de la politique de sécurité** : réimplémentait son propre hachage et une session fixe de 30 jours au lieu des 7 jours actuels, et ne respectait pas le verrouillage brute-force. Utilise maintenant directement `auth.py` / `database.py`
+- 💰 **Montants à 0 ou négatifs** : les formulaires dépenses/revenus/épargne rejettent maintenant la saisie invalide avant l'enregistrement au lieu de laisser remonter une erreur non gérée
+- 🧹 **Fermeture de l'application** : les rappels différés (`after()`) sont maintenant correctement annulés à la fermeture, évitant un risque de plantage si un thread d'arrière-plan (préchargement, analyse IA) était encore actif
+- 📊 **Export Excel cassé dans le build packagé** : la tentative d'installation à la volée d'`openpyxl` ne fonctionnait pas dans l'exécutable PyInstaller — le module est maintenant inclus dans le build
+- 🔑 **Appels bloquants au trousseau Windows** : mise en cache mémoire des secrets (`secrets_vault.py`) pour éviter de re-solliciter le gestionnaire d'identifiants à chaque ouverture de Paramètres
+
+### Ajouté
+- 👤 **Nom d'utilisateur affiché en haut à droite** de l'application, sur toutes les pages
+
+### Sécurité
+- 🔒 Purge d'un secret Supabase qui se trouvait accidentellement suivi dans l'historique git
+
+---
+
 ## [1.2.1] — 2026-05-12
 
 ### Corrigé

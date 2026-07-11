@@ -122,6 +122,9 @@ def _inline_revenue_row(parent, db, y, m, on_save):
         except ValueError:
             e_amount.configure(border_color=C["red"])
             return
+        if amount <= 0:
+            e_amount.configure(border_color=C["red"])
+            return
         if not source:
             e_source.configure(border_color=C["red"])
             return
@@ -226,6 +229,9 @@ def _inline_expense_row(parent, db, y, m, cat_names, cat_map, on_save):
         except ValueError:
             e_amount.configure(border_color=C["red"])
             return
+        if amount <= 0:
+            e_amount.configure(border_color=C["red"])
+            return
         cat_id = cat_map.get(cat_var.get())
         if not cat_id:
             return
@@ -314,6 +320,9 @@ def _inline_saving_row(parent, db, y, m, on_save):
         try:
             amount = float(raw)
         except ValueError:
+            e_amount.configure(border_color=C["red"])
+            return
+        if amount <= 0:
             e_amount.configure(border_color=C["red"])
             return
         db.add_saving(y, m, e_account.get().strip(), amount, e_label.get().strip())

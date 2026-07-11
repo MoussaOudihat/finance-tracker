@@ -8,6 +8,7 @@ ui/pages/recommandations.py — Recommandations personnalisées
 import threading
 import customtkinter as ctk
 from config import C, MONTHS_FR, ASSET_LABEL
+from logger import log
 from ui.components import make_card, render_ai_text
 
 
@@ -263,14 +264,23 @@ def _render_ai_card(scroll, db, app, nb_months: int,
                            width=200)
     btn_ai.pack(anchor="w", pady=(10, 0))
 
-    def _run_ai():
+    def _do_run_ai():
+        """Lance l'appel IA — appelé après acceptation du disclaimer."""
         btn_ai.configure(state="disabled", text="⏳  Analyse en cours…")
         status_lbl.configure(text="Envoi des données à l'IA…", text_color=C["muted"])
 
         def _worker():
-            summary = build_financial_summary(db, nb_months)
-            ok, text = get_ai_recommendations(
-                summary, nb_months, provider, api_key, user_context)
+            try:
+                summary = build_financial_summary(db, nb_months)
+                ok, text = get_ai_recommendations(
+                    summary, nb_months, provider, api_key, user_context)
+            except Exception as exc:
+                # Erreur réelle (API, données) ou fenêtre fermée pendant l'appel —
+                # dans les deux cas on relaie à _done : winfo_exists() ci-dessous
+                # gère silencieusement le cas fenêtre fermée, sinon l'utilisateur
+                # voit l'erreur et peut réessayer au lieu du bouton bloqué en "…".
+                log.warning("Analyse IA échouée", exc_info=True)
+                ok, text = False, str(exc)
 
             def _done():
                 if ok:
@@ -285,11 +295,78 @@ def _render_ai_card(scroll, db, app, nb_months: int,
                     status_lbl.configure(text=f"❌  {text}", text_color=C["red"])
                     btn_ai.configure(state="normal", text="🔄  Réessayer")
 
-            app.after(0, _done)
+            try:
+                if app.winfo_exists():
+                    app.after(0, _done)
+            except Exception:
+                pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _run_ai():
+        """Affiche le disclaimer RGPD puis lance l'analyse si accepté."""
+        _show_ai_disclaimer(app, _do_run_ai)
+
     btn_ai.configure(command=_run_ai)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Disclaimer RGPD — affiché avant chaque appel IA
+# ─────────────────────────────────────────────────────────────
+def _show_ai_disclaimer(app, on_accept):
+    """
+    Modal de consentement affiché AVANT chaque envoi de données à l'API IA.
+    L'utilisateur doit confirmer explicitement à chaque analyse.
+    on_accept() est appelé uniquement si l'utilisateur clique « Confirmer ».
+    """
+    dlg = ctk.CTkToplevel(app)
+    dlg.title("Consentement — données envoyées à un service externe")
+    dlg.geometry("520x320")
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    dlg.focus_force()
+
+    # ── En-tête ──────────────────────────────────────────────
+    ctk.CTkLabel(dlg,
+                 text="⚠️  Données financières envoyées à Google",
+                 font=ctk.CTkFont(size=14, weight="bold"),
+                 text_color="#B45309").pack(padx=24, pady=(20, 8))
+
+    # ── Corps ────────────────────────────────────────────────
+    msg = (
+        "Pour générer cette analyse, un résumé de vos données financières\n"
+        "(revenus moyens, dépenses par catégorie, épargne, patrimoine)\n"
+        "sera transmis à l'API Google Gemini — un service externe.\n\n"
+        "Aucune donnée d'identité ni coordonnée bancaire n'est envoyée.\n"
+        "Vos données brutes restent uniquement sur votre appareil.\n\n"
+        "Confirmez-vous l'envoi de ce résumé pour obtenir l'analyse ?"
+    )
+    ctk.CTkLabel(dlg, text=msg,
+                 font=ctk.CTkFont(size=12),
+                 text_color=C["text"],
+                 justify="left").pack(padx=24, pady=(0, 16))
+
+    # ── Boutons ──────────────────────────────────────────────
+    btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+    btn_row.pack(padx=24, pady=(0, 24))
+
+    def _accept():
+        dlg.destroy()
+        on_accept()
+
+    def _cancel():
+        dlg.destroy()
+
+    ctk.CTkButton(btn_row,
+                  text="✅  Oui, analyser",
+                  fg_color=_AI_STYLE["color"], hover_color="#6D28D9",
+                  command=_accept, width=160,
+                  font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(0, 10))
+    ctk.CTkButton(btn_row,
+                  text="✕  Annuler",
+                  fg_color=C["muted"], hover_color="#475569",
+                  command=_cancel, width=120,
+                  font=ctk.CTkFont(size=12)).pack(side="left")
 
 
 # ─────────────────────────────────────────────────────────────

@@ -274,6 +274,12 @@ def clear_cached_result(db, nb_months: int):
 #  Configuration IA
 # ─────────────────────────────────────────────────────────────
 def get_ai_config(db) -> tuple[bool, str, str]:
-    """Retourne (configured, provider, api_key)."""
-    api_key = db.get_setting("ai_api_key", "")
-    return bool(api_key), "gemini", api_key
+    """
+    Retourne (configured, provider, api_key).
+    Lit la clé depuis le trousseau OS en priorité (migration auto depuis DB).
+    """
+    from secrets_vault import get_secret
+    # Trousseau OS en priorité, fallback DB pour les vieilles configs
+    api_key  = get_secret("ai_api_key") or db.get_setting("ai_api_key", "")
+    provider = db.get_setting("ai_provider", "gemini") or "gemini"
+    return bool(api_key), provider, api_key

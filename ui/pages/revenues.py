@@ -203,6 +203,8 @@ class RevenuesPage:
                 amount = float(raw)
             except ValueError:
                 e_amount.configure(border_color=C["red"]); return
+            if amount <= 0:
+                e_amount.configure(border_color=C["red"]); return
             if not source:
                 e_source.configure(border_color=C["red"]); return
             db.add_revenue(y, m, source, amount, e_label.get().strip())

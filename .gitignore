@@ -11,6 +11,11 @@ data/*.sql
 *.xlsx
 *.xls
 
+# Secrets / identifiants (ne jamais committer)
+secret.*
+*.pem
+*.key
+
 # Dossier data entier sauf .gitkeep
 data/*
 !data/.gitkeep

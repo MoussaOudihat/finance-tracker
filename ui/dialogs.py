@@ -902,9 +902,12 @@ class AssetTransactionsDialog(ctk.CTkToplevel):
         # Pour rester safe, on ne réajuste pas la valeur en sens inverse :
         # si l'utilisateur supprime une transaction, qu'il mette la valeur
         # à jour manuellement via le bouton 💰. On recalcule juste le CMUP.
-        self._db.delete_asset_transaction(trans_id)
-        self._sync_after_transaction(trans_type=None, transacted_qty=0.0)
-        self._render_all()
+        from ui.components import confirm_delete
+        def _do():
+            self._db.delete_asset_transaction(trans_id)
+            self._sync_after_transaction(trans_type=None, transacted_qty=0.0)
+            self._render_all()
+        confirm_delete(self, _do, label="cette transaction")
 
     def _sync_cost_basis(self):
         """Conservé pour compat : ne touche que le cost_basis."""
