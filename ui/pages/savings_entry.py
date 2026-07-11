@@ -122,6 +122,8 @@ class SavingsEntryPage:
                 amount = float(raw)
             except ValueError:
                 e_amount.configure(border_color=C["red"]); return
+            if amount <= 0:
+                e_amount.configure(border_color=C["red"]); return
             db.add_saving(y, m, e_account.get().strip(), amount, e_label.get().strip())
             e_account.delete(0, "end"); e_amount.delete(0, "end"); e_label.delete(0, "end")
             e_account.configure(border_color=C["primary"])

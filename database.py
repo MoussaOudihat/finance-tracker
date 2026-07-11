@@ -33,20 +33,50 @@ class Database:
         self._cache_lock = threading.Lock()
 
     # ──────────────────────────────────────────
+    #  FERMETURE PROPRE
+    # ──────────────────────────────────────────
+    def close(self):
+        """Ferme la connexion SQLite proprement.
+        Exécute un WAL checkpoint pour consolider le journal avant fermeture,
+        évitant les fichiers .wal/-shm orphelins après un arrêt."""
+        try:
+            self.con.execute("PRAGMA wal_checkpoint(RESTART)")
+        except Exception:
+            pass
+        self.con.close()
+
+    # ──────────────────────────────────────────
     #  CACHE
     # ──────────────────────────────────────────
     def _invalidate(self):
-        """Vide le cache des requêtes (appelé après chaque écriture)."""
+        """Vide le cache des requêtes et invalide le cache IA (appelé après chaque écriture)."""
         with self._cache_lock:
             self._cache.clear()
+        # Invalider le cache IA stocké en base (analyse potentiellement obsolète)
+        try:
+            for nb in (1, 3, 6):
+                self.con.execute(
+                    "INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)",
+                    (f"ai_cache_{nb}m_result", ""),
+                )
+                self.con.execute(
+                    "INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)",
+                    (f"ai_cache_{nb}m_ts", ""),
+                )
+            self.con.commit()
+        except Exception:
+            pass  # La DB peut être fermée lors d'un _on_close — non critique
 
     def _q(self, key: str, fn):
         """Retourne le résultat depuis le cache ou exécute fn() et le met en cache.
-        Thread-safe : le lock protège lecture et écriture du dict."""
+        Thread-safe : le lock protège lecture et écriture du dict.
+        Retourne une copie de liste pour éviter la mutation du cache par l'appelant."""
         with self._cache_lock:
             if key not in self._cache:
                 self._cache[key] = fn()
-            return self._cache[key]
+            result = self._cache[key]
+        # Copie superficielle : les sqlite3.Row sont immuables, la liste est neuve
+        return list(result) if isinstance(result, list) else result
 
     # ──────────────────────────────────────────
     #  SCHEMA
@@ -241,8 +271,10 @@ class Database:
             if stmt and not stmt.startswith("--"):
                 try:
                     self.con.execute(stmt)
-                except Exception:
-                    pass
+                except sqlite3.IntegrityError as e:
+                    log.debug("Seed SQL — contrainte ignorée (doublon probable) : %s", e)
+                except Exception as e:
+                    log.warning("Seed SQL — erreur inattendue sur : %.80s | %s", stmt, e)
         self.con.commit()
 
     # ──────────────────────────────────────────
@@ -310,15 +342,35 @@ class Database:
         self.con.commit()
         self._invalidate()
 
+    def setup_categories(self, names: list):
+        """
+        Remplace toutes les catégories par la sélection de l'onboarding.
+        Appelé une seule fois à la création du compte.
+        names : liste de noms (str) choisis par l'utilisateur.
+        """
+        self.con.execute("DELETE FROM categories")
+        for name in names:
+            name = name.strip().upper()
+            if name:
+                is_def = 1 if name in DEFAULT_CATEGORIES else 0
+                self.con.execute(
+                    "INSERT OR IGNORE INTO categories(name, is_default) VALUES(?, ?)",
+                    (name, is_def),
+                )
+        self.con.commit()
+        self._invalidate()
+
     # ──────────────────────────────────────────
     #  EXPENSES
     # ──────────────────────────────────────────
     def add_expense(self, year, month, cat_id, amount, label="", payee=""):
+        if amount is None or float(amount) <= 0:
+            raise ValueError(f"Montant dépense invalide : {amount!r} (doit être > 0)")
         mid    = self.month_id(year, month)
         payee  = payee.strip().upper() if payee else ""
         self.con.execute(
             "INSERT INTO expenses(month_id, category_id, amount, label, payee) VALUES(?,?,?,?,?)",
-            (mid, cat_id, amount, label, payee),
+            (mid, cat_id, float(amount), label, payee),
         )
         self.con.commit()
         self._invalidate()
@@ -406,6 +458,29 @@ class Database:
             self._cache[ck] = result
         return result
 
+    def get_expenses_by_year(self, year: int) -> list:
+        """
+        Retourne TOUTES les dépenses de l'année avec cat + mois.
+        1 seule requête SQL — élimine le N+1 de utils_taxes.py.
+        """
+        ck = f"eby_{year}"
+        with self._cache_lock:
+            if ck in self._cache:
+                return list(self._cache[ck])
+        result = self.con.execute("""
+            SELECT e.id, c.name AS cat, c.id AS cat_id,
+                   e.amount, e.label, e.payee,
+                   mo.month AS month, mo.year AS year
+            FROM expenses e
+            JOIN categories c ON e.category_id = c.id
+            JOIN months mo ON e.month_id = mo.id
+            WHERE mo.year = ?
+            ORDER BY mo.month, c.name
+        """, (year,)).fetchall()
+        with self._cache_lock:
+            self._cache[ck] = result
+        return list(result)
+
     def get_expenses_by_payee(self, year, month, cat_filter=None) -> list:
         ck = f"ebp_{year}_{month}_{cat_filter}"
         if ck in self._cache:
@@ -447,10 +522,12 @@ class Database:
     #  REVENUES
     # ──────────────────────────────────────────
     def add_revenue(self, year, month, source, amount, label=""):
+        if amount is None or float(amount) <= 0:
+            raise ValueError(f"Montant revenu invalide : {amount!r} (doit être > 0)")
         mid = self.month_id(year, month)
         self.con.execute(
             "INSERT INTO revenues(month_id, source, amount, label) VALUES(?,?,?,?)",
-            (mid, source, amount, label),
+            (mid, source, float(amount), label),
         )
         self.con.commit()
         self._invalidate()
@@ -480,10 +557,12 @@ class Database:
     #  SAVINGS
     # ──────────────────────────────────────────
     def add_saving(self, year, month, account, amount, label=""):
+        if amount is None or float(amount) <= 0:
+            raise ValueError(f"Montant épargne invalide : {amount!r} (doit être > 0)")
         mid = self.month_id(year, month)
         self.con.execute(
             "INSERT INTO savings(month_id, account, amount, label) VALUES(?,?,?,?)",
-            (mid, account, amount, label),
+            (mid, account, float(amount), label),
         )
         self.con.commit()
         self._invalidate()
@@ -1245,7 +1324,13 @@ class Database:
             (key, value),
         )
         self.con.commit()
-        self._invalidate()
+        # Ne pas invalider le cache IA quand c'est justement lui qu'on écrit,
+        # sinon save_cached_result() efface sa propre valeur juste après l'avoir écrite.
+        if not key.startswith("ai_cache_"):
+            self._invalidate()
+        else:
+            with self._cache_lock:
+                self._cache.clear()
 
     def get_all_payees(self) -> list:
         """Retourne tous les enseignes distincts triés par fréquence d'utilisation."""

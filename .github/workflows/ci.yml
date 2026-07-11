@@ -95,8 +95,8 @@ jobs:
 
       - name: Verify output
         run: |
-          if (Test-Path "dist\Finance Tracker\Finance Tracker.exe") {
-            Write-Host "✅ Build OK — Finance Tracker.exe généré"
+          if (Test-Path "dist\Fintrack\Fintrack.exe") {
+            Write-Host "✅ Build OK — Fintrack.exe généré"
           } else {
             Write-Host "❌ Build FAILED — exe non trouvé"
             exit 1

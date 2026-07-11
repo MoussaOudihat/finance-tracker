@@ -1,11 +1,18 @@
 """
-auth.py — Gestion de l'authentification locale
+auth.py — Authentification locale Fintrack
 
-Hachage : bcrypt (si disponible) avec migration automatique depuis l'ancien SHA-256.
-Migration transparente : à la première connexion réussie avec un hash SHA-256 legacy,
-le mot de passe est automatiquement re-haché en bcrypt sans action utilisateur.
+Hachage : bcrypt (préféré) + SHA-256 legacy avec migration automatique.
+Stockage : app_settings (SQLite local).
 
-Pour installer bcrypt : python -m pip install bcrypt
+Clés utilisées :
+  auth_username            — nom d'utilisateur (en clair, pas sensible)
+  auth_password_hash       — hash bcrypt ou SHA-256 du mot de passe
+  auth_password_salt       — sel SHA-256 (vide si bcrypt)
+  auth_secret_question     — question secrète (texte)
+  auth_secret_answer_hash  — hash de la réponse
+  auth_secret_answer_salt  — sel SHA-256 (vide si bcrypt)
+  auth_session_token       — token session 30 jours
+  auth_session_expiry      — date expiration ISO
 """
 import hashlib
 import secrets
@@ -19,26 +26,25 @@ try:
     _BCRYPT_AVAILABLE = True
 except ImportError:
     _BCRYPT_AVAILABLE = False
-    log.warning("bcrypt non installé — hachage legacy SHA-256 utilisé. "
-                "Installez bcrypt : python -m pip install bcrypt")
+    log.warning("bcrypt non installé — SHA-256 utilisé. "
+                "Installez-le : pip install bcrypt")
 
-_BCRYPT_PREFIX = "bcrypt:"   # préfixe pour distinguer les hashs bcrypt des SHA-256 legacy
+_BCRYPT_PREFIX = "bcrypt:"
 
 
 # ─────────────────────────────────────────────────────────────
-#  Primitives cryptographiques — bcrypt (préféré) + SHA-256 (legacy)
+#  Primitives cryptographiques
 # ─────────────────────────────────────────────────────────────
 
 def _generate_salt() -> str:
     return secrets.token_hex(16)
 
 
-# ── Bcrypt ───────────────────────────────────────────────────
 def _bcrypt_hash(value: str) -> str:
-    """Retourne un hash bcrypt préfixé par _BCRYPT_PREFIX."""
     normalized = value.strip().lower().encode("utf-8")
-    hashed = _bcrypt.hashpw(normalized, _bcrypt.gensalt(rounds=12))
-    return _BCRYPT_PREFIX + hashed.decode("utf-8")
+    return _BCRYPT_PREFIX + _bcrypt.hashpw(
+        normalized, _bcrypt.gensalt(rounds=12)
+    ).decode("utf-8")
 
 
 def _bcrypt_verify(value: str, stored: str) -> bool:
@@ -50,97 +56,160 @@ def _bcrypt_verify(value: str, stored: str) -> bool:
         return False
 
 
-# ── SHA-256 legacy (conservé pour rétrocompatibilité) ────────
-def _hash(value: str, salt: str) -> str:
-    normalized = value.strip().lower()
-    return hashlib.sha256((normalized + salt).encode("utf-8")).hexdigest()
+def _sha_hash(value: str, salt: str) -> str:
+    return hashlib.sha256(
+        (value.strip().lower() + salt).encode("utf-8")
+    ).hexdigest()
 
 
-def _verify(value: str, stored_hash: str, salt: str) -> bool:
-    return _hash(value, salt) == stored_hash
+def _sha_verify(value: str, stored_hash: str, salt: str) -> bool:
+    return _sha_hash(value, salt) == stored_hash
 
 
 def _is_bcrypt(stored: str) -> bool:
     return stored.startswith(_BCRYPT_PREFIX)
 
 
+def _do_hash(value: str) -> tuple[str, str]:
+    """Retourne (hash, salt). Salt vide si bcrypt."""
+    if _BCRYPT_AVAILABLE:
+        return _bcrypt_hash(value), ""
+    salt = _generate_salt()
+    return _sha_hash(value, salt), salt
+
+
+def _do_verify(value: str, stored_hash: str, stored_salt: str) -> bool:
+    if _is_bcrypt(stored_hash):
+        return _BCRYPT_AVAILABLE and _bcrypt_verify(value, stored_hash)
+    return _sha_verify(value, stored_hash, stored_salt)
+
+
 # ─────────────────────────────────────────────────────────────
-#  Mot de passe
+#  USERNAME
+# ─────────────────────────────────────────────────────────────
+
+def get_username(db: Database) -> str:
+    """Retourne le nom d'utilisateur configuré, ou chaîne vide."""
+    return db.get_setting("auth_username", "")
+
+
+def verify_username(db: Database, username: str) -> bool:
+    """Vérifie que le username correspond (insensible à la casse)."""
+    stored = get_username(db)
+    if not stored:
+        return False
+    return stored.strip().lower() == username.strip().lower()
+
+
+# ─────────────────────────────────────────────────────────────
+#  MOT DE PASSE
 # ─────────────────────────────────────────────────────────────
 
 def has_password(db: Database) -> bool:
-    """Retourne True si un mot de passe a déjà été configuré."""
     return bool(db.get_setting("auth_password_hash"))
 
 
-def setup_password(db: Database, password: str,
+def setup_password(db: Database, username: str, password: str,
                    question: str, answer: str) -> None:
-    """Initialise le mot de passe + question secrète (premier lancement)."""
-    if _BCRYPT_AVAILABLE:
-        db.set_setting("auth_password_hash", _bcrypt_hash(password))
-        db.set_setting("auth_password_salt", "")          # non utilisé avec bcrypt
-        db.set_setting("auth_secret_answer_hash", _bcrypt_hash(answer))
-        db.set_setting("auth_secret_answer_salt", "")
-    else:
-        pwd_salt = _generate_salt()
-        db.set_setting("auth_password_hash", _hash(password, pwd_salt))
-        db.set_setting("auth_password_salt", pwd_salt)
-        ans_salt = _generate_salt()
-        db.set_setting("auth_secret_answer_hash", _hash(answer, ans_salt))
-        db.set_setting("auth_secret_answer_salt", ans_salt)
+    """
+    Initialise le compte au premier lancement.
+    username  : affiché à la connexion, stocké en clair
+    password  : haché (bcrypt ou SHA-256)
+    question  : texte libre de la question secrète
+    answer    : haché comme le mot de passe
+    """
+    db.set_setting("auth_username", username.strip())
+
+    h, s = _do_hash(password)
+    db.set_setting("auth_password_hash", h)
+    db.set_setting("auth_password_salt", s)
+
     db.set_setting("auth_secret_question", question.strip())
+    ah, as_ = _do_hash(answer)
+    db.set_setting("auth_secret_answer_hash", ah)
+    db.set_setting("auth_secret_answer_salt", as_)
+
+
+# ─────────────────────────────────────────────────────────────
+#  PROTECTION BRUTE-FORCE
+# ─────────────────────────────────────────────────────────────
+
+_LOCKOUT_MAX_ATTEMPTS = 5     # tentatives avant verrouillage
+_LOCKOUT_MINUTES       = 10   # durée du verrouillage
+
+
+def check_lockout(db: Database) -> tuple[bool, str]:
+    """
+    Retourne (is_locked, message).
+    is_locked=True signifie que le compte est temporairement bloqué.
+    """
+    locked_until = db.get_setting("auth_locked_until", "")
+    if not locked_until:
+        return False, ""
+    try:
+        until_dt = datetime.datetime.fromisoformat(locked_until)
+        remaining = (until_dt - datetime.datetime.now()).total_seconds()
+        if remaining > 0:
+            mins = int(remaining // 60) + 1
+            return True, f"Compte verrouillé — réessayez dans {mins} min."
+        # Verrouillage expiré — réinitialiser
+        db.set_setting("auth_locked_until", "")
+        db.set_setting("auth_failed_count", "0")
+    except ValueError:
+        db.set_setting("auth_locked_until", "")
+    return False, ""
+
+
+def record_failed_login(db: Database) -> None:
+    """Incrémente le compteur d'échecs et verrouille si seuil atteint."""
+    count = int(db.get_setting("auth_failed_count", "0")) + 1
+    db.set_setting("auth_failed_count", str(count))
+    if count >= _LOCKOUT_MAX_ATTEMPTS:
+        until = (
+            datetime.datetime.now()
+            + datetime.timedelta(minutes=_LOCKOUT_MINUTES)
+        ).isoformat()
+        db.set_setting("auth_locked_until", until)
+        log.warning("Compte verrouillé après %d tentatives échouées.", count)
+    else:
+        log.info("Tentative de connexion échouée (%d/%d).", count, _LOCKOUT_MAX_ATTEMPTS)
+
+
+def clear_failed_logins(db: Database) -> None:
+    """Réinitialise le compteur après connexion réussie."""
+    db.set_setting("auth_failed_count", "0")
+    db.set_setting("auth_locked_until", "")
 
 
 def verify_password(db: Database, password: str) -> bool:
-    """
-    Vérifie le mot de passe. Migre automatiquement les hashs SHA-256 legacy
-    vers bcrypt à la première connexion réussie.
-    """
+    """Vérifie le mot de passe. Migre SHA-256 → bcrypt si possible."""
     stored = db.get_setting("auth_password_hash")
     if not stored:
         return False
 
     if _is_bcrypt(stored):
-        # Hash bcrypt moderne
         return _BCRYPT_AVAILABLE and _bcrypt_verify(password, stored)
 
-    # ── Hash SHA-256 legacy ──────────────────────────────────
+    # SHA-256 legacy
     salt = db.get_setting("auth_password_salt", "")
-    if not _verify(password, stored, salt):
+    if not _sha_verify(password, stored, salt):
         return False
-    # Migration automatique vers bcrypt après succès
     if _BCRYPT_AVAILABLE:
-        log.info("Migration du hash mot de passe SHA-256 → bcrypt")
-        db.set_setting("auth_password_hash", _bcrypt_hash(password))
+        log.info("Migration hash mot de passe SHA-256 → bcrypt")
+        h, _ = _do_hash(password)
+        db.set_setting("auth_password_hash", h)
         db.set_setting("auth_password_salt", "")
     return True
 
 
 def change_password(db: Database, new_password: str) -> None:
-    """Change le mot de passe (appelé après vérification de la question secrète)."""
-    if _BCRYPT_AVAILABLE:
-        db.set_setting("auth_password_hash", _bcrypt_hash(new_password))
-        db.set_setting("auth_password_salt", "")
-    else:
-        pwd_salt = _generate_salt()
-        db.set_setting("auth_password_hash", _hash(new_password, pwd_salt))
-        db.set_setting("auth_password_salt", pwd_salt)
-
-
-def update_secret_question(db: Database, question: str, answer: str) -> None:
-    """Met à jour la question secrète."""
-    db.set_setting("auth_secret_question", question.strip())
-    if _BCRYPT_AVAILABLE:
-        db.set_setting("auth_secret_answer_hash", _bcrypt_hash(answer))
-        db.set_setting("auth_secret_answer_salt", "")
-    else:
-        ans_salt = _generate_salt()
-        db.set_setting("auth_secret_answer_hash", _hash(answer, ans_salt))
-        db.set_setting("auth_secret_answer_salt", ans_salt)
+    h, s = _do_hash(new_password)
+    db.set_setting("auth_password_hash", h)
+    db.set_setting("auth_password_salt", s)
 
 
 # ─────────────────────────────────────────────────────────────
-#  Question secrète
+#  QUESTION SECRÈTE
 # ─────────────────────────────────────────────────────────────
 
 def get_secret_question(db: Database) -> str:
@@ -149,47 +218,48 @@ def get_secret_question(db: Database) -> str:
 
 def verify_secret_answer(db: Database, answer: str) -> bool:
     stored = db.get_setting("auth_secret_answer_hash")
+    salt   = db.get_setting("auth_secret_answer_salt", "")
     if not stored:
         return False
-    if _is_bcrypt(stored):
-        return _BCRYPT_AVAILABLE and _bcrypt_verify(answer, stored)
-    # Legacy SHA-256
-    salt = db.get_setting("auth_secret_answer_salt", "")
-    if not _verify(answer, stored, salt):
+    if not _do_verify(answer, stored, salt):
         return False
-    # Migration vers bcrypt
-    if _BCRYPT_AVAILABLE:
-        db.set_setting("auth_secret_answer_hash", _bcrypt_hash(answer))
+    # Migration bcrypt si SHA-256 legacy
+    if not _is_bcrypt(stored) and _BCRYPT_AVAILABLE:
+        ah, _ = _do_hash(answer)
+        db.set_setting("auth_secret_answer_hash", ah)
         db.set_setting("auth_secret_answer_salt", "")
     return True
 
 
+def update_secret_question(db: Database, question: str, answer: str) -> None:
+    db.set_setting("auth_secret_question", question.strip())
+    ah, as_ = _do_hash(answer)
+    db.set_setting("auth_secret_answer_hash", ah)
+    db.set_setting("auth_secret_answer_salt", as_)
+
+
 # ─────────────────────────────────────────────────────────────
-#  Session persistante (30 jours)
+#  SESSION (7 jours)
 # ─────────────────────────────────────────────────────────────
 
-SESSION_DAYS = 30
+SESSION_DAYS = 7
 
 
 def has_valid_session(db: Database) -> bool:
-    """Retourne True si une session active existe (pas expirée)."""
     token  = db.get_setting("auth_session_token")
     expiry = db.get_setting("auth_session_expiry")
     if not token or not expiry:
         return False
     try:
-        exp = datetime.date.fromisoformat(expiry)
-        return datetime.date.today() <= exp
+        return datetime.date.today() <= datetime.date.fromisoformat(expiry)
     except ValueError:
         return False
 
 
 def create_session(db: Database) -> None:
-    """Crée une session valide pour SESSION_DAYS jours."""
-    token  = secrets.token_urlsafe(32)
     expiry = (datetime.date.today() +
-               datetime.timedelta(days=SESSION_DAYS)).isoformat()
-    db.set_setting("auth_session_token", token)
+              datetime.timedelta(days=SESSION_DAYS)).isoformat()
+    db.set_setting("auth_session_token", secrets.token_urlsafe(32))
     db.set_setting("auth_session_expiry", expiry)
 
 
@@ -199,18 +269,15 @@ def clear_session(db: Database) -> None:
 
 
 def session_expiry_label(db: Database) -> str:
-    """Retourne une chaîne lisible de la date d'expiration de session."""
     expiry = db.get_setting("auth_session_expiry")
     if not expiry:
         return ""
     try:
-        exp  = datetime.date.fromisoformat(expiry)
-        days = (exp - datetime.date.today()).days
+        days = (datetime.date.fromisoformat(expiry) - datetime.date.today()).days
         if days <= 0:
             return "Session expirée"
-        elif days == 1:
+        if days == 1:
             return "Session expire demain"
-        else:
-            return f"Session valide encore {days} jours"
+        return f"Session valide encore {days} jours"
     except ValueError:
         return ""

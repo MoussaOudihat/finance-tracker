@@ -706,11 +706,15 @@ def _asset_row(parent, asset, db, app):
         btn_reinvest.pack(side="left", padx=(0, 2))
         Tooltip(btn_reinvest, "Marquer comme réinvesti")
 
+    def _del_asset():
+        from ui.components import confirm_delete
+        confirm_delete(app, lambda: (db.delete_asset(asset["id"]), app._go("patrimoine")),
+                       label=f"« {asset.get('asset_name', 'cet actif')} »")
+
     btn_del = ctk.CTkButton(btns, text="✕", width=30, height=26,
                             fg_color="#FEE2E2", text_color=C["red"],
                             hover_color="#FECACA",
-                            command=lambda: (db.delete_asset(asset["id"]),
-                                             app._go("patrimoine")))
+                            command=_del_asset)
     btn_del.pack(side="left")
     Tooltip(btn_del, "Supprimer l'actif")
 

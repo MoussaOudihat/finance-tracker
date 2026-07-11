@@ -6,6 +6,8 @@ from PyInstaller.utils.hooks import collect_data_files
 datas = collect_data_files('customtkinter')
 datas += collect_data_files('matplotlib')
 datas += [('VERSION', '.')]          # version lue au runtime par config.py
+datas += [('fintrack_256.png', '.')]  # logo affiché dans sidebar et login
+datas += [('fintrack.ico', '.')]      # icône fenêtre / barre des tâches
 
 
 a = Analysis(
@@ -19,6 +21,7 @@ a = Analysis(
         'matplotlib.figure', 'tkinter', 'tkinter.ttk', 'sqlite3',
         'reportlab', 'reportlab.lib.pagesizes', 'reportlab.platypus',
         'reportlab.lib.styles', 'reportlab.lib.units', 'reportlab.lib.colors',
+        'openpyxl', 'openpyxl.styles',
         'smtplib', 'email.mime.multipart', 'email.mime.text', 'csv',
         # IA
         'google.genai', 'google.genai.types', 'utils_ai',

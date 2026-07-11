@@ -139,8 +139,8 @@ class ExpensesPage:
         db        = app.db
         y, m      = app.sel_year, app.sel_month
         cats      = db.get_categories()
-        cat_names = [c["name"] for c in cats]
-        cat_map   = {c["name"]: c["id"] for c in cats}
+        cat_names = [c["name"] for c in cats]   # liste mutable, mise à jour par _add_cat_inline
+        cat_map   = {c["name"]: c["id"] for c in cats}  # dict mutable
         is_closed = db.is_month_closed(y, m)
 
         container.grid_columnconfigure(0, weight=1)
@@ -245,10 +245,77 @@ class ExpensesPage:
         fields.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         cat_var = ctk.StringVar(value=cat_names[0] if cat_names else "")
-        cat_opt = ctk.CTkOptionMenu(fields, values=cat_names, variable=cat_var,
+        cat_col = ctk.CTkFrame(fields, fg_color="transparent")
+        cat_col.grid(row=0, column=0, padx=(0, 4), pady=(0, 8), sticky="ew")
+        cat_col.grid_columnconfigure(0, weight=1)
+
+        cat_opt = ctk.CTkOptionMenu(cat_col, values=cat_names, variable=cat_var,
                                      height=34, fg_color=C["primary"],
                                      button_color=C["primary"])
-        cat_opt.grid(row=0, column=0, padx=(0, 4), pady=(0, 8), sticky="ew")
+        cat_opt.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+
+        def _add_cat_inline():
+            """Ouvre un mini-popup pour créer une catégorie à la volée."""
+            popup = ctk.CTkToplevel(app)
+            popup.title("Nouvelle catégorie")
+            popup.resizable(False, False)
+            popup.grab_set()
+            popup.update_idletasks()
+            pw, ph = 320, 140
+            px = app.winfo_rootx() + (app.winfo_width() - pw) // 2
+            py = app.winfo_rooty() + (app.winfo_height() - ph) // 2
+            popup.geometry(f"{pw}x{ph}+{px}+{py}")
+
+            inner = ctk.CTkFrame(popup, fg_color=C["card"])
+            inner.pack(fill="both", expand=True, padx=1, pady=1)
+            inner.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(inner, text="Nom de la catégorie",
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color=C["muted"]).grid(
+                row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(14, 4))
+
+            entry = ctk.CTkEntry(inner, placeholder_text="Ex : ANIMAUX, SANTÉ…",
+                                 height=36, fg_color=C["light"],
+                                 border_color=C["primary"])
+            entry.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 0))
+            entry.focus()
+
+            err = ctk.CTkLabel(inner, text="", font=ctk.CTkFont(size=10),
+                               text_color=C["red"])
+            err.grid(row=2, column=0, sticky="w", padx=14)
+
+            def _confirm(event=None):
+                name = entry.get().strip().upper()
+                if not name:
+                    err.configure(text="⚠ Nom requis")
+                    return
+                if name in cat_names:
+                    cat_var.set(name)
+                    popup.destroy()
+                    return
+                db.add_category(name)
+                # Mettre à jour le menu déroulant (cat_names et cat_map sont mutables)
+                cats_new = db.get_categories()
+                cat_names.clear()
+                cat_names.extend([c["name"] for c in cats_new])
+                cat_map.update({c["name"]: c["id"] for c in cats_new})
+                cat_opt.configure(values=cat_names)
+                cat_var.set(name)
+                popup.destroy()
+
+            entry.bind("<Return>", _confirm)
+            ctk.CTkButton(inner, text="Créer", height=32,
+                          fg_color=C["primary"], hover_color=C.get("primary_hover", "#3730A3"),
+                          command=_confirm).grid(row=1, column=1, padx=(6, 14))
+
+        ctk.CTkButton(cat_col, text="＋", width=28, height=28,
+                      fg_color="transparent", text_color=C["primary"],
+                      hover_color=C["light"], border_width=1,
+                      border_color=C["primary"],
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=_add_cat_inline).grid(row=1, column=0, sticky="w",
+                                                    pady=(2, 0))
 
         all_payees = db.get_all_payees()
         e_payee  = ctk.CTkEntry(fields, placeholder_text="Enseigne (ex: Carrefour)", height=34)
@@ -339,6 +406,8 @@ class ExpensesPage:
             try:
                 amount = float(raw)
             except ValueError:
+                e_amount.configure(border_color=C["red"]); return
+            if amount <= 0:
                 e_amount.configure(border_color=C["red"]); return
             cat_id = cat_map.get(cat_var.get())
             if not cat_id:

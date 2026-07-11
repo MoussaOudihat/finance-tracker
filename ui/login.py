@@ -745,10 +745,20 @@ class LoginApp(ctk.CTk):
             # La fenêtre est scrollable, pas besoin de redimensionner
 
         def _check(event=None):
+            locked, lock_msg = Auth.check_lockout(self.db)
+            if locked:
+                err_var.set(f"🔒  {lock_msg}")
+                return
             if Auth.verify_secret_answer(self.db, ans_var.get()):
+                Auth.clear_failed_logins(self.db)
                 _show_new_pwd()
             else:
-                err_var.set("❌  Réponse incorrecte.")
+                Auth.record_failed_login(self.db)
+                locked2, lock_msg2 = Auth.check_lockout(self.db)
+                if locked2:
+                    err_var.set(f"🔒  {lock_msg2}")
+                else:
+                    err_var.set("❌  Réponse incorrecte.")
                 ans_var.set("")
                 ans_entry.focus()
 

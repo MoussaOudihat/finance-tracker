@@ -3,9 +3,12 @@ ui/app.py — Fenêtre principale, sidebar et routage des pages
 """
 from datetime import date
 import importlib
+import os
+import sys
 import threading
 
 import customtkinter as ctk
+import auth as Auth
 from config import C, DB_PATH, APP_VERSION, apply_palette, FILTER_ALL_CATS, FILTER_ALL_PAYEES, FILTER_ALL_TYPES
 from database import Database
 from ui.components import nav_button
@@ -33,6 +36,16 @@ _PAGE_MAP: dict[str, str] = {
 
 # Cache des classes déjà importées (clé page → classe)
 _PAGE_CLASS_CACHE: dict[str, type] = {}
+
+
+def _resource_path(relative: str) -> str:
+    """Résout un chemin de ressource compatible PyInstaller (sys._MEIPASS)."""
+    if getattr(sys, "frozen", False):
+        base = sys._MEIPASS
+    else:
+        # En développement, les ressources sont à la racine du projet
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, relative)
 
 
 def _load_page_class(key: str):
@@ -78,7 +91,7 @@ _NAV_ITEMS = [
 
 
 class App(ctk.CTk):
-    def __init__(self, sync=None):
+    def __init__(self, sync=None, startup_sync_msg: str = ""):
         super().__init__()
 
         # ── Sync Supabase (optionnel) ────────────────────────
@@ -115,6 +128,11 @@ class App(ctk.CTk):
         self._dash_soft_refresh = None
         self._ana_soft_refresh  = None
 
+        # Fermeture propre : IDs after() en cours + drapeau de fermeture
+        # consulté par les threads d'arrière-plan avant de toucher self.db.
+        self._after_ids: list = []
+        self._closing = False
+
         # ── Fenêtre ─────────────────────────────────────────
         self.title("Fintrack")
         self.geometry("1280x800")
@@ -130,11 +148,16 @@ class App(ctk.CTk):
             except Exception:
                 pass   # Silencieux — icône non critique
 
+        # ── Fermeture propre (évite les process zombies) ─────
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
         # ── Layout principal ─────────────────────────────────
+        # row 0 = barre supérieure (colonne contenu uniquement), row 1 = corps
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
         self._build_sidebar()
+        self._build_topbar()
         self._build_content_area()
 
         self._current_page = None
@@ -144,23 +167,70 @@ class App(ctk.CTk):
         threading.Thread(target=self._warm_cache, daemon=True).start()
 
         # ── Alertes au démarrage (légèrement différé) ────────
-        self.after(800, self._run_startup_checks)
+        self._track_after(800, self._run_startup_checks)
+
+        # ── Erreur sync au démarrage (pull) ──────────────────
+        if startup_sync_msg and startup_sync_msg.startswith("⚠️"):
+            self._track_after(1200, lambda m=startup_sync_msg: self._show_sync_error(m))
 
         # ── Auto-sync Supabase toutes les 5 minutes ──────────
         if self.sync:
             self._schedule_auto_sync()
 
     # ────────────────────────────────────────────────────────
+    #  FERMETURE PROPRE
+    # ────────────────────────────────────────────────────────
+    def _track_after(self, ms, fn):
+        """Comme self.after(), mais garde l'ID pour pouvoir l'annuler à la fermeture."""
+        after_id = self.after(ms, fn)
+        self._after_ids.append(after_id)
+        return after_id
+
+    def _on_close(self):
+        """Fermeture propre — évite les process zombies."""
+        log.info("Fermeture demandée par l'utilisateur.")
+        # Empêche les threads d'arrière-plan de relancer un after() ou de
+        # toucher self.db une fois la fermeture entamée.
+        self._closing = True
+        # Annuler les after() suivis (self.after_cancel("all") n'existe pas
+        # côté Tk — "all" ne correspond à aucun ID réel et ne fait rien).
+        for after_id in self._after_ids:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._after_ids.clear()
+        # Fermer la connexion DB proprement (avec checkpoint WAL)
+        try:
+            self.db.close()
+        except Exception:
+            pass
+        self.quit()
+        self.destroy()
+
+    # ────────────────────────────────────────────────────────
     #  PRÉ-CHARGEMENT CACHE DB
     # ────────────────────────────────────────────────────────
     def _warm_cache(self):
         """Pré-charge les requêtes fréquentes dans le cache DB en arrière-plan."""
+        # Revérifié entre chaque requête : _on_close peut fermer self.db
+        # pendant que cette boucle est en cours (thread séparé).
         try:
+            if self._closing:
+                return
             self.db.get_categories()
+            if self._closing:
+                return
             self.db.get_assets_current()
+            if self._closing:
+                return
             y, m = self.sel_year, self.sel_month
             self.db.get_expenses(y, m)
+            if self._closing:
+                return
             self.db.get_revenues(y, m)
+            if self._closing:
+                return
             self.db.monthly_summary(6)
         except Exception:
             log.warning("Préchauffage cache DB échoué", exc_info=True)
@@ -172,15 +242,66 @@ class App(ctk.CTk):
 
     def _schedule_auto_sync(self):
         """Planifie un push Supabase en arrière-plan toutes les 5 minutes."""
+        def _on_done(msg: str):
+            if msg.startswith("⚠️"):
+                log.warning("[AutoSync] %s", msg)
+                if self._closing:
+                    return
+                try:
+                    self._track_after(0, lambda m=msg: self._show_sync_error(m))
+                except Exception:
+                    pass
+
         def _do():
+            if self._closing:
+                return
             if self.sync:
-                self.sync.push(blocking=False)
+                self.sync.push(blocking=False, on_done=_on_done)
             # Replanifier seulement si la fenêtre existe encore
+            if self._closing:
+                return
             try:
-                self.after(self._AUTO_SYNC_INTERVAL_MS, _do)
+                self._track_after(self._AUTO_SYNC_INTERVAL_MS, _do)
             except Exception:
                 pass
-        self.after(self._AUTO_SYNC_INTERVAL_MS, _do)
+        self._track_after(self._AUTO_SYNC_INTERVAL_MS, _do)
+
+    # ────────────────────────────────────────────────────────
+    #  POPUP ERREUR SYNC (dismissable)
+    # ────────────────────────────────────────────────────────
+    def _show_sync_error(self, msg: str):
+        """Affiche un popup non bloquant pour informer d'un échec Supabase."""
+        import datetime
+        log.warning("[Sync] Erreur affichée à l'utilisateur : %s", msg)
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Synchronisation Supabase")
+        dlg.geometry("460x190")
+        dlg.resizable(False, False)
+        # Non bloquant : pas de grab_set → l'utilisateur peut continuer à travailler
+
+        ctk.CTkLabel(dlg, text="☁️  Erreur de synchronisation Supabase",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=C.get("amber", "#F59E0B")).pack(padx=24, pady=(18, 6))
+
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        detail = msg.replace("⚠️  ", "").replace("⚠️", "").strip()
+        ctk.CTkLabel(dlg, text=f"{ts} — {detail}",
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["muted"],
+                     wraplength=400, justify="left").pack(padx=24, pady=(0, 6))
+
+        ctk.CTkLabel(dlg,
+                     text="Vos données locales sont intactes. Vous pouvez réessayer\n"
+                          "depuis Paramètres → Synchronisation Supabase.",
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["text"],
+                     justify="left").pack(padx=24, pady=(0, 14))
+
+        ctk.CTkButton(dlg, text="Ignorer", width=120, height=32,
+                      fg_color=C["muted"], hover_color="#475569",
+                      font=ctk.CTkFont(size=12),
+                      command=dlg.destroy).pack()
 
     # ────────────────────────────────────────────────────────
     #  ALERTES AU DÉMARRAGE
@@ -232,7 +353,7 @@ class App(ctk.CTk):
     def _build_sidebar(self):
         sb = ctk.CTkFrame(self, width=220, fg_color=C["sidebar"],
                           corner_radius=0)
-        sb.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=0, rowspan=2, sticky="nsew")
         sb.grid_propagate(False)
         sb.grid_columnconfigure(0, weight=1)
         # row 0 = logo, row 1 = sep, row 2 = nav (expand), row 3 = footer
@@ -241,9 +362,28 @@ class App(ctk.CTk):
         # ── Logo ──────────────────────────────────────────────
         logo_f = ctk.CTkFrame(sb, fg_color="transparent")
         logo_f.grid(row=0, column=0, padx=16, pady=(18, 10), sticky="w")
-        ctk.CTkLabel(logo_f, text="",
-                     font=ctk.CTkFont(size=22),
-                     text_color="#A5B4FC").pack(side="left")
+
+        _logo_png = _resource_path("fintrack_256.png")
+        if os.path.isfile(_logo_png):
+            try:
+                from PIL import Image as _PILImage
+                _pil_logo = _PILImage.open(_logo_png)
+                _ctk_logo = ctk.CTkImage(
+                    light_image=_pil_logo,
+                    dark_image=_pil_logo,
+                    size=(34, 34),
+                )
+                ctk.CTkLabel(logo_f, text="", image=_ctk_logo).pack(side="left")
+            except Exception:
+                # Fallback si PIL/image indisponible
+                ctk.CTkLabel(logo_f, text="📊",
+                             font=ctk.CTkFont(size=22),
+                             text_color="#A5B4FC").pack(side="left")
+        else:
+            ctk.CTkLabel(logo_f, text="📊",
+                         font=ctk.CTkFont(size=22),
+                         text_color="#A5B4FC").pack(side="left")
+
         ctk.CTkLabel(logo_f, text=" Fintrack",
                      font=ctk.CTkFont(size=18, weight="bold"),
                      text_color="white", justify="left").pack(side="left")
@@ -300,9 +440,25 @@ class App(ctk.CTk):
     # ────────────────────────────────────────────────────────
     def _build_content_area(self):
         self._content = ctk.CTkFrame(self, fg_color=C["bg"], corner_radius=0)
-        self._content.grid(row=0, column=1, sticky="nsew")
+        self._content.grid(row=1, column=1, sticky="nsew")
         self._content.grid_columnconfigure(0, weight=1)
         self._content.grid_rowconfigure(0, weight=1)
+
+    # ────────────────────────────────────────────────────────
+    #  BARRE SUPÉRIEURE (nom d'utilisateur, coin haut-droit)
+    # ────────────────────────────────────────────────────────
+    def _build_topbar(self):
+        topbar = ctk.CTkFrame(self, height=40, fg_color=C["bg"], corner_radius=0)
+        topbar.grid(row=0, column=1, sticky="new")
+        topbar.grid_propagate(False)
+
+        username = Auth.get_username(self.db)
+        if username:
+            ctk.CTkLabel(
+                topbar, text=f"👤  {username}",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=C["muted"],
+            ).pack(side="right", padx=20, pady=10)
 
     # ────────────────────────────────────────────────────────
     #  NAVIGATION
@@ -350,7 +506,7 @@ class App(ctk.CTk):
         if page_cls:
             # Délai court : laisse l'UI peindre le placeholder (nav + fond coloré)
             # avant de lancer le rendu — plus fluide, sans flash noir.
-            self.after(8, lambda: self._render_page(page_cls, container))
+            self._track_after(8, lambda: self._render_page(page_cls, container))
 
     def _render_page(self, page_cls, container):
         """Rend la page dans le container donné (appelé en différé)."""
@@ -389,7 +545,7 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("dark" if enable else "light")
         # Recharger la page courante avec la nouvelle palette
         self.configure(fg_color=C["bg"])
-        self.after(50, lambda: self._go(self._current_page or "dashboard"))
+        self._track_after(50, lambda: None if self._closing else self._go(self._current_page or "dashboard"))
 
 
 # ─────────────────────────────────────────────────────────────
