@@ -190,15 +190,58 @@ def table_row(parent, row_idx: int, cols: list,
         Tooltip(edit_btn, "Modifier cette ligne")
 
     if on_delete:
+        def _ask_delete(fn=on_delete):
+            confirm_delete(parent, fn)
         del_btn = ctk.CTkButton(
             parent, text="✕", width=30, height=26,
             fg_color="#FEE2E2", text_color=C["red"],
-            hover_color="#FECACA", command=on_delete,
+            hover_color="#FECACA", command=_ask_delete,
         )
         del_btn.grid(row=r, column=n + 1, padx=(2, 8), pady=4)
         Tooltip(del_btn, "Supprimer cette ligne")
 
     row_bg.lower()   # fond derrière les cellules
+
+
+# ──────────────────────────────────────────────────────────
+#  Confirmation avant suppression
+# ──────────────────────────────────────────────────────────
+def confirm_delete(parent, on_confirm, label: str = "cet élément"):
+    """
+    Modal de confirmation avant toute suppression.
+    on_confirm() n'est appelé que si l'utilisateur clique « Supprimer ».
+    """
+    dlg = ctk.CTkToplevel(parent)
+    dlg.title("Confirmer la suppression")
+    dlg.geometry("360x165")
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    dlg.focus_force()
+
+    ctk.CTkLabel(dlg,
+                 text=f"Supprimer {label} ?",
+                 font=ctk.CTkFont(size=13, weight="bold"),
+                 text_color=C["text"]).pack(pady=(22, 4))
+    ctk.CTkLabel(dlg,
+                 text="Cette action est irréversible.",
+                 font=ctk.CTkFont(size=11),
+                 text_color=C["muted"]).pack(pady=(0, 18))
+
+    btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+    btn_row.pack()
+
+    def _do():
+        dlg.destroy()
+        on_confirm()
+
+    ctk.CTkButton(btn_row, text="🗑️  Supprimer", width=130, height=36,
+                  fg_color=C["red"], hover_color="#DC2626",
+                  font=ctk.CTkFont(size=12, weight="bold"),
+                  command=_do).pack(side="left", padx=(0, 8))
+    ctk.CTkButton(btn_row, text="Annuler", width=100, height=36,
+                  fg_color=C["muted"], hover_color="#475569",
+                  font=ctk.CTkFont(size=12),
+                  command=dlg.destroy).pack(side="left")
 
 
 # ──────────────────────────────────────────────────────────

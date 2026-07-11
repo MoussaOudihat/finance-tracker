@@ -59,26 +59,20 @@ def export_tax_summary(db, year: int, output_path: str) -> dict:
             tax_data["revenus_fonciers"] += annual_rental_estimate
 
     # ──────────────────────────────────────────
-    # 3. DONS DÉDUCTIBLES
+    # 3-4-6. DONS / FORMATION / RETRAITE
+    # Récupérer TOUTES les dépenses de l'année en 1 seule requête SQL
+    # (au lieu de 12 appels get_expenses séparés par section = N+1)
     # ──────────────────────────────────────────
-    # Chercher les dépenses de catégorie "DONS" sur l'année
-    months_in_year = [(year, m) for m in range(1, 13)]
-    for y, m in months_in_year:
-        expenses = db.get_expenses(y, m)
-        for exp in expenses:
-            cat_name = exp["cat"].upper() if exp["cat"] else ""
-            if cat_name == "DONS":
-                tax_data["dons_deductibles"] += exp["amount"]
-
-    # ──────────────────────────────────────────
-    # 4. FRAIS DE FORMATION
-    # ──────────────────────────────────────────
-    for y, m in months_in_year:
-        expenses = db.get_expenses(y, m)
-        for exp in expenses:
-            cat_name = exp["cat"].upper() if exp["cat"] else ""
-            if cat_name == "FORMATION":
-                tax_data["frais_formation"] += exp["amount"]
+    all_expenses_year = db.get_expenses_by_year(year)
+    for exp in all_expenses_year:
+        cat_name = exp["cat"].upper() if exp["cat"] else ""
+        amount   = exp["amount"] or 0.0
+        if cat_name == "DONS":
+            tax_data["dons_deductibles"] += amount
+        elif cat_name == "FORMATION":
+            tax_data["frais_formation"] += amount
+        elif cat_name == "RETRAITE":
+            tax_data["cotisations_retraite"] += amount
 
     # ──────────────────────────────────────────
     # 5. TOTAL REVENUS (de l'année)
@@ -87,16 +81,6 @@ def export_tax_summary(db, year: int, output_path: str) -> dict:
     for row in summary_data:
         if row["year"] == year:
             tax_data["total_revenus"] += row["rev"]
-
-    # ──────────────────────────────────────────
-    # 6. COTISATIONS ÉPARGNE RETRAITE
-    # ──────────────────────────────────────────
-    for y, m in months_in_year:
-        expenses = db.get_expenses(y, m)
-        for exp in expenses:
-            cat_name = exp["cat"].upper() if exp["cat"] else ""
-            if cat_name == "RETRAITE":
-                tax_data["cotisations_retraite"] += exp["amount"]
 
     # ──────────────────────────────────────────
     # Générer le fichier CSV

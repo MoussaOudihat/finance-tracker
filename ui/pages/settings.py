@@ -13,6 +13,7 @@ from config import C, DEFAULT_CATEGORIES, DB_PATH
 from logger import configure_log_level, LOG_LEVELS, get_log_file_path
 from ui.components import make_card, show_toast
 from ui.dialogs import RecurringManagerDialog
+from secrets_vault import get_secret, save_secret, delete_secret, keyring_available
 
 
 class SettingsPage:
@@ -228,11 +229,12 @@ class SettingsPage:
         smtp_fields.pack(fill="x", padx=20, pady=(0, 6))
         smtp_fields.grid_columnconfigure(1, weight=1)
 
-        def _smtp_row(row_i, label, key, placeholder, show=""):
+        def _smtp_row(row_i, label, key, placeholder, show="", initial_value=None):
             ctk.CTkLabel(smtp_fields, text=label, font=ctk.CTkFont(size=11),
                          text_color=C["muted"], width=130, anchor="w").grid(
                 row=row_i, column=0, sticky="w", pady=4)
-            var = ctk.StringVar(value=db.get_setting(key, ""))
+            val = initial_value if initial_value is not None else db.get_setting(key, "")
+            var = ctk.StringVar(value=val)
             entry = ctk.CTkEntry(smtp_fields, textvariable=var, height=32,
                                   placeholder_text=placeholder, show=show)
             entry.grid(row=row_i, column=1, sticky="ew", padx=(8, 0), pady=4)
@@ -241,7 +243,8 @@ class SettingsPage:
         smtp_host_var  = _smtp_row(0, "Serveur SMTP",    "smtp_host",  "smtp.gmail.com")
         smtp_port_var  = _smtp_row(1, "Port",             "smtp_port",  "587")
         smtp_user_var  = _smtp_row(2, "Email (login)",    "smtp_user",  "votre@email.com")
-        smtp_pass_var  = _smtp_row(3, "Mot de passe",     "smtp_pass",  "App password…", "●")
+        smtp_pass_var  = _smtp_row(3, "Mot de passe",     "smtp_pass",  "App password…", "●",
+                                   initial_value=get_secret("smtp_pass") or db.get_setting("smtp_pass", ""))
         smtp_to_var    = _smtp_row(4, "Destinataire",     "smtp_to",    "votre@email.com")
 
         tls_var = ctk.BooleanVar(value=db.get_setting("smtp_tls", "1") == "1")
@@ -258,7 +261,12 @@ class SettingsPage:
             db.set_setting("smtp_host", smtp_host_var.get().strip())
             db.set_setting("smtp_port", smtp_port_var.get().strip())
             db.set_setting("smtp_user", smtp_user_var.get().strip())
-            db.set_setting("smtp_pass", smtp_pass_var.get().strip())
+            # Mot de passe : trousseau OS en priorité, fallback DB si keyring indisponible
+            pwd_raw = smtp_pass_var.get().strip()
+            if not save_secret("smtp_pass", pwd_raw):
+                db.set_setting("smtp_pass", pwd_raw)  # fallback DB si keyring absent
+            else:
+                db.set_setting("smtp_pass", "")       # effacer de la DB après migration
             db.set_setting("smtp_to",   smtp_to_var.get().strip())
             db.set_setting("smtp_tls",  "1" if tls_var.get() else "0")
             smtp_status_lbl.configure(text="✅  Paramètres SMTP sauvegardés")
@@ -275,7 +283,7 @@ class SettingsPage:
             host = db.get_setting("smtp_host", "")
             port = int(db.get_setting("smtp_port", "587") or "587")
             user = db.get_setting("smtp_user", "")
-            pwd  = db.get_setting("smtp_pass", "")
+            pwd  = get_secret("smtp_pass") or db.get_setting("smtp_pass", "")
             to   = db.get_setting("smtp_to", "")
             tls  = db.get_setting("smtp_tls", "1") == "1"
 
@@ -410,7 +418,18 @@ class SettingsPage:
         if session_lbl:
             ctk.CTkLabel(sc, text=f"🔑  {session_lbl}",
                          font=ctk.CTkFont(size=11),
-                         text_color=C["muted"]).pack(anchor="w", padx=20, pady=(0, 8))
+                         text_color=C["muted"]).pack(anchor="w", padx=20, pady=(0, 4))
+
+        # ── Indicateur trousseau OS ────────────────────────────
+        if keyring_available():
+            vault_txt   = "🔐  Trousseau Windows actif — secrets chiffrés par DPAPI"
+            vault_color = C["green"]
+        else:
+            vault_txt   = "⚠️  Trousseau indisponible — secrets stockés en base (moins sécurisé)"
+            vault_color = C.get("amber", "#F59E0B")
+        ctk.CTkLabel(sc, text=vault_txt,
+                     font=ctk.CTkFont(size=11),
+                     text_color=vault_color).pack(anchor="w", padx=20, pady=(0, 10))
 
         # ── Changer le mot de passe ───────────────────────────
         pwd_sec = ctk.CTkFrame(sc, fg_color=C["light"], corner_radius=8)
@@ -593,11 +612,14 @@ class SettingsPage:
                              text_color=C["text"]).pack(side="left", padx=14, pady=7)
 
                 def make_del(c=cat):
-                    return lambda: (
-                        db.delete_category(c["id"]),
-                        refresh_cat_list(),
-                        show_toast(app, f"Catégorie supprimée"),
-                    )
+                    def _do():
+                        from ui.components import confirm_delete
+                        confirm_delete(app,
+                                       lambda: (db.delete_category(c["id"]),
+                                                refresh_cat_list(),
+                                                show_toast(app, "Catégorie supprimée")),
+                                       label=f"« {c['name']} »")
+                    return _do
                 ctk.CTkButton(row_f, text="✕", width=28, height=26,
                               fg_color="#FEE2E2", text_color=C["red"],
                               hover_color="#FECACA",
@@ -651,7 +673,7 @@ class SettingsPage:
 
         def export_csv():
             save_path = fd.asksaveasfilename(
-                              title="Exporter les données CSV",
+                title="Exporter les données CSV",
                 defaultextension=".csv",
                 filetypes=[("CSV", "*.csv")],
                 initialfile="finance_export.csv",
@@ -660,10 +682,57 @@ class SettingsPage:
                 db.export_csv(save_path)
                 show_toast(app, "Export CSV terminé !")
 
-        ctk.CTkButton(dbc, text="📤  Exporter CSV complet",
+        def export_excel():
+            try:
+                import openpyxl
+                from openpyxl.styles import Font, PatternFill, Alignment
+            except ImportError:
+                show_toast(app, "Export Excel indisponible : le module 'openpyxl' n'est pas installé (pip install openpyxl).")
+                return
+            from config import MONTHS_FR
+            save_path = fd.asksaveasfilename(
+                title="Exporter les données Excel",
+                defaultextension=".xlsx",
+                filetypes=[("Excel", "*.xlsx")],
+                initialfile="finance_export.xlsx",
+            )
+            if not save_path:
+                return
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Résumé mensuel"
+            hfill = PatternFill("solid", fgColor="1A2340")
+            hfont = Font(bold=True, color="FFFFFF", size=11)
+            for ci, h in enumerate(["Année", "Mois", "Revenus (€)", "Dépenses (€)",
+                                     "Épargne (€)", "Bilan (€)"], 1):
+                c = ws.cell(row=1, column=ci, value=h)
+                c.fill = hfill; c.font = hfont
+                c.alignment = Alignment(horizontal="center")
+            for ri, r in enumerate(reversed(list(db.monthly_summary(120))), 2):
+                bilan = r["rev"] - r["exp"]
+                ws.cell(ri, 1, r["year"])
+                ws.cell(ri, 2, MONTHS_FR[r["month"] - 1])
+                ws.cell(ri, 3, round(r["rev"], 2))
+                ws.cell(ri, 4, round(r["exp"], 2))
+                ws.cell(ri, 5, round(r["sav"], 2))
+                c = ws.cell(ri, 6, round(bilan, 2))
+                c.font = Font(color="16A34A" if bilan >= 0 else "EF4444", bold=True)
+            for col in ws.columns:
+                ws.column_dimensions[col[0].column_letter].width = (
+                    max(len(str(cell.value or "")) for cell in col) + 4)
+            wb.save(save_path)
+            show_toast(app, "✅  Export Excel terminé !")
+
+        export_btn_row = ctk.CTkFrame(dbc, fg_color="transparent")
+        export_btn_row.pack(anchor="w", padx=20, pady=(8, 16))
+        ctk.CTkButton(export_btn_row, text="📤  Exporter CSV complet",
                       height=32, font=ctk.CTkFont(size=12),
                       fg_color=C["primary"],
-                      command=export_csv).pack(anchor="w", padx=20, pady=(8, 16))
+                      command=export_csv).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(export_btn_row, text="📊  Exporter Excel",
+                      height=32, font=ctk.CTkFont(size=12),
+                      fg_color="#16A34A", hover_color="#15803D",
+                      command=export_excel).pack(side="left")
 
         # ══════════════════════════════════════════════════════
         #  6b. TRANSACTIONS RÉCURRENTES
@@ -728,7 +797,7 @@ class SettingsPage:
         ctk.CTkLabel(fields_frame, text="Clé secrète (Secret key)",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=C["muted"]).grid(row=2, column=0, sticky="w", pady=(0, 4))
-        key_var2 = ctk.StringVar(value=db.get_setting("supabase_service_key", ""))
+        key_var2 = ctk.StringVar(value=get_secret("supabase_service_key") or db.get_setting("supabase_service_key", ""))
         ctk.CTkEntry(fields_frame, textvariable=key_var2, height=36,
                      show="●", font=ctk.CTkFont(size=12),
                      fg_color=C["light"], border_color=C["border"],
@@ -764,7 +833,10 @@ class SettingsPage:
                         _set_status(msg)
                         if ok:
                             db.set_setting("supabase_url", url)
-                            db.set_setting("supabase_service_key", key)
+                            if not save_secret("supabase_service_key", key):
+                                db.set_setting("supabase_service_key", key)  # fallback DB
+                            else:
+                                db.set_setting("supabase_service_key", "")   # effacer de la DB
                             db.set_setting("db_mode", "online")
                             show_toast(app, "☁️  Mode Supabase activé")
                     app.after(0, _done)
@@ -775,7 +847,7 @@ class SettingsPage:
 
         def _sync_now():
             url = db.get_setting("supabase_url", "")
-            key = db.get_setting("supabase_service_key", "")
+            key = get_secret("supabase_service_key") or db.get_setting("supabase_service_key", "")
             if not url or not key:
                 _set_status("⚠️  Configurez d'abord Supabase.")
                 return
@@ -852,8 +924,8 @@ class SettingsPage:
                                     fg_color=C["light"], border_color=C["border"],
                                     placeholder_text="AIza… (Gemini) · sk-ant-… (Anthropic) · sk-… (OpenAI)")
         ai_key_entry.grid(row=3, column=0, sticky="ew")
-        # Pré-remplir si déjà enregistrée
-        _saved_key = db.get_setting("ai_api_key", "")
+        # Pré-remplir si déjà enregistrée (trousseau OS en priorité, fallback DB)
+        _saved_key = get_secret("ai_api_key") or db.get_setting("ai_api_key", "")
         if _saved_key:
             ai_key_entry.insert(0, _saved_key)
 
@@ -884,7 +956,10 @@ class SettingsPage:
                     def _done():
                         if ok:
                             db.set_setting("ai_provider", provider)
-                            db.set_setting("ai_api_key",  key)
+                            if not save_secret("ai_api_key", key):
+                                db.set_setting("ai_api_key", key)  # fallback DB
+                            else:
+                                db.set_setting("ai_api_key", "")   # effacer de la DB
                             _ai_set_status(
                                 f"✅  Connexion {provider.title()} OK — clé enregistrée.",
                                 C["green"])
@@ -899,6 +974,7 @@ class SettingsPage:
 
         def _ai_clear():
             db.set_setting("ai_provider", "")
+            delete_secret("ai_api_key")
             db.set_setting("ai_api_key",  "")
             ai_key_entry.delete(0, "end")
             _ai_set_status("🗑️  Clé IA supprimée.", C["muted"])
@@ -912,9 +988,36 @@ class SettingsPage:
                       fg_color=C["muted"], hover_color="#475569",
                       command=_ai_clear).pack(side="left")
 
+        # ── Reset disclaimer IA ────────────────────────────────
+        ctk.CTkFrame(aic, fg_color=C["border"], height=1).pack(
+            fill="x", padx=20, pady=(8, 8))
+
+        disclaimer_row = ctk.CTkFrame(aic, fg_color="transparent")
+        disclaimer_row.pack(fill="x", padx=20, pady=(0, 4))
+        ctk.CTkLabel(disclaimer_row,
+                     text="🔔  Affichage du disclaimer (données envoyées à Google) :",
+                     font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(side="left")
+        disclaimer_accepted = db.get_setting("ai_disclaimer_accepted", "0") == "1"
+        disclaimer_status = ctk.CTkLabel(disclaimer_row,
+                                         text="Accepté ✅" if disclaimer_accepted else "Non accepté ⬜",
+                                         font=ctk.CTkFont(size=11),
+                                         text_color=C["green"] if disclaimer_accepted else C["muted"])
+        disclaimer_status.pack(side="left", padx=(8, 0))
+
+        def _reset_disclaimer():
+            db.set_setting("ai_disclaimer_accepted", "0")
+            disclaimer_status.configure(text="Non accepté ⬜", text_color=C["muted"])
+            show_toast(app, "Disclaimer IA réinitialisé — sera affiché à la prochaine analyse")
+
+        ctk.CTkButton(aic, text="↺  Réinitialiser le disclaimer IA",
+                      height=30, width=240,
+                      font=ctk.CTkFont(size=11),
+                      fg_color=C["muted"], hover_color="#475569",
+                      command=_reset_disclaimer).pack(anchor="w", padx=20, pady=(0, 8))
+
         # ── Mon profil (contexte injecté dans le prompt IA) ───
         ctk.CTkFrame(aic, fg_color=C["border"], height=1).pack(
-            fill="x", padx=20, pady=(8, 12))
+            fill="x", padx=20, pady=(0, 12))
 
         ctk.CTkLabel(aic, text="👤  Mon profil",
                      font=ctk.CTkFont(size=13, weight="bold"),
