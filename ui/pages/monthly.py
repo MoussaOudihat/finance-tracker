@@ -6,7 +6,7 @@ FIX: tous les enfants directs de `wrap` utilisent .pack() uniquement
 """
 import customtkinter as ctk
 from config import C, MONTHS_FR
-from ui.components import make_card, table_header, table_row, total_bar, month_selector
+from ui.components import make_card, table_header, table_row, total_bar, month_selector, show_toast
 from ui.dialogs   import RevenueDialog, ExpenseDialog, SavingDialog
 
 
@@ -275,10 +275,12 @@ def _render_savings_tab(tab, app):
     for idx, r in enumerate(data):
         def make_edit(row=r):
             def _edit():
-                SavingDialog(app, initial=dict(row), on_save=lambda d: (
-                    db.update_saving(row["id"], d["account"], d["amount"], d["label"]),
-                    _refresh(),
-                ))
+                def _on_save(d):
+                    linked = db.update_saving(row["id"], d["account"], d["amount"], d["label"])
+                    if linked:
+                        show_toast(app, f"✓ Solde « {linked} » mis à jour dans Patrimoine")
+                    _refresh()
+                SavingDialog(app, initial=dict(row), on_save=_on_save)
             return _edit
         table_row(list_f, idx,
                   [(2, r["account"] or "—",   C["text"]),
@@ -287,14 +289,14 @@ def _render_savings_tab(tab, app):
                   on_edit=make_edit(),
                   on_delete=lambda rid=r["id"]: (db.delete_saving(rid), _refresh()))
 
-    _inline_saving_row(wrap, db=db, y=y, m=m, on_save=_refresh)
+    _inline_saving_row(wrap, db=db, y=y, m=m, on_save=_refresh, app=app)
 
     total = sum(r["amount"] for r in data)
     total_bar(wrap, f"Total épargne : {total:,.2f} €",
               C["blue"], "#EFF6FF", "#93C5FD")
 
 
-def _inline_saving_row(parent, db, y, m, on_save):
+def _inline_saving_row(parent, db, y, m, on_save, app=None):
     band = ctk.CTkFrame(parent, fg_color="#EFF6FF", corner_radius=10)
     band.pack(fill="x", padx=4, pady=(2, 6))
 
@@ -325,7 +327,9 @@ def _inline_saving_row(parent, db, y, m, on_save):
         if amount <= 0:
             e_amount.configure(border_color=C["red"])
             return
-        db.add_saving(y, m, e_account.get().strip(), amount, e_label.get().strip())
+        linked = db.add_saving(y, m, e_account.get().strip(), amount, e_label.get().strip())
+        if linked and app:
+            show_toast(app, f"✓ Solde « {linked} » mis à jour dans Patrimoine")
         on_save()
 
     btn_row = ctk.CTkFrame(band, fg_color="transparent")

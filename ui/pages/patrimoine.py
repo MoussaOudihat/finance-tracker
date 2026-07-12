@@ -5,6 +5,12 @@ Vue globale (pas de filtre mensuel) :
 - Affiche toujours la valeur LA PLUS RÉCENTE de chaque actif
 - La mise à jour d'une valeur crée un enregistrement pour le mois courant
   → l'historique mensuel est préservé pour les graphiques d'évolution
+
+Structure : un seul item de menu "Patrimoine", découpé en 5 sous-onglets
+internes (barre de segments) pour éviter de tout empiler sur un seul écran :
+  Vue d'ensemble | Actifs | Passifs | Clôturées | Graphiques
+Un bandeau permanent (Patrimoine total / Valeur nette / Cash en attente)
+reste visible sur tous les sous-onglets comme point de repère.
 """
 import datetime
 import matplotlib
@@ -15,7 +21,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
 from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE, FILTER_ALL_TYPES, LIABILITY_LABEL
-from ui.components import make_card, Tooltip
+from ui.components import make_card, Tooltip, table_header, table_row
 from ui.dialogs import (AssetDialog, QuickValueUpdateDialog,
                         AssetEvolutionDialog, AssetTransactionsDialog,
                         LiabilityDialog)
@@ -36,85 +42,30 @@ _TYPE_ACCENT = {
     "autre":      "#94A3B8",
 }
 
+# Sous-onglets internes de la page
+_SUBVIEWS = [
+    ("Vue d'ensemble", "overview"),
+    ("Actifs",          "actifs"),
+    ("Passifs",         "passifs"),
+    ("Clôturées",       "closes"),
+    ("Graphiques",      "graphs"),
+]
+
 
 class PatrimoinePage:
     def render(self, container: ctk.CTkFrame, app):
         db       = app.db
         type_f   = getattr(app, "pat_type_filter",   FILTER_ALL_TYPES)
         period_f = getattr(app, "pat_period_filter",  "Tout")
+        subview  = getattr(app, "pat_subview",        "overview")
 
         container.grid_columnconfigure(0, weight=1)
-        container.grid_rowconfigure(1, weight=1)
+        container.grid_rowconfigure(2, weight=1)
 
-        # ── Header ligne 1 : titre + filtre type ────────────────
-        top = ctk.CTkFrame(container, fg_color="transparent")
-        top.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 2))
-        top.grid_columnconfigure(3, weight=1)
-
-        ctk.CTkLabel(top, text="📈  Patrimoine & Investissements",
-                     font=ctk.CTkFont(size=22, weight="bold"),
-                     text_color=C["text"]).grid(row=0, column=0, sticky="w")
-
-        ctk.CTkLabel(top, text="│", text_color=C["border"],
-                     font=ctk.CTkFont(size=18)).grid(row=0, column=1, padx=(14, 14))
-
-        # Filtre type d'actif
-        type_labels     = [FILTER_ALL_TYPES] + [lbl for lbl, _ in ASSET_TYPES]
+        # ── Données communes (utilisées par le bandeau + plusieurs onglets) ──
         type_lbl_to_key = {lbl: key for lbl, key in ASSET_TYPES}
-        type_var        = ctk.StringVar(value=type_f)
 
-        def on_type_change(choice):
-            app.pat_type_filter = choice
-            app._go("patrimoine")
-
-        tf = ctk.CTkFrame(top, fg_color="transparent")
-        tf.grid(row=0, column=2, sticky="w")
-        ctk.CTkLabel(tf, text="Type :",
-                     font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(side="left", padx=(0, 5))
-        ctk.CTkOptionMenu(tf, values=type_labels, variable=type_var,
-                          height=28, width=160,
-                          fg_color=C["primary"], button_color=C["primary"],
-                          command=on_type_change).pack(side="left")
-        if type_f != FILTER_ALL_TYPES:
-            ctk.CTkButton(tf, text="✕", height=28, width=30,
-                          fg_color="#FEE2E2", text_color=C["red"],
-                          hover_color="#FECACA",
-                          command=lambda: (setattr(app, "pat_type_filter", FILTER_ALL_TYPES),
-                                           app._go("patrimoine"))
-                          ).pack(side="left", padx=(4, 0))
-
-        # ── Header ligne 2 : filtres période ────────────────────
-        pf = ctk.CTkFrame(container, fg_color="transparent")
-        pf.grid(row=0, column=0, sticky="e", padx=24, pady=(20, 2))
-
-        ctk.CTkLabel(pf, text="Période :",
-                     font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(side="left", padx=(0, 6))
-
-        for lbl, _ in _PERIODS:
-            is_active = (lbl == period_f)
-            ctk.CTkButton(
-                pf, text=lbl, height=26, width=42,
-                font=ctk.CTkFont(size=11, weight="bold" if is_active else "normal"),
-                fg_color=C["primary"] if is_active else C["light"],
-                text_color="white" if is_active else C["muted"],
-                hover_color="#2A5BD9" if is_active else "#E2E8F0",
-                corner_radius=6,
-                command=lambda l=lbl: (setattr(app, "pat_period_filter", l),
-                                       app._go("patrimoine")),
-            ).pack(side="left", padx=2)
-
-        # ── Scroll ──────────────────────────────────────────────
-        scroll = ctk.CTkScrollableFrame(container, fg_color=C["bg"])
-        scroll.grid(row=1, column=0, sticky="nsew", padx=24, pady=(4, 16))
-        scroll.grid_columnconfigure((0, 1), weight=1)
-
-        # ── Récupération des actifs ──────────────────────────────
         all_assets_raw = db.get_assets_current()
-
-        # ── Calcul de la "valeur effective" de chaque actif :
-        #    - position 'vendu' + cash réinvesti  → 0 (sortie du patrimoine)
-        #    - position 'vendu' + cash en attente → sale_proceeds (cash dispo)
-        #    - sinon                              → value stockée
         all_assets = []
         for a in all_assets_raw:
             a_dict = dict(a)
@@ -122,9 +73,7 @@ class PatrimoinePage:
                 st = db.get_position_status(a["asset_name"])
                 if st["status"] == "vendu":
                     if st["all_reinvested"]:
-                        # Cash sorti du patrimoine → exclu de la liste active
                         continue
-                    # Cash en attente → la valeur effective est le produit de vente
                     a_dict["value"] = st["sale_proceeds"]
             all_assets.append(a_dict)
 
@@ -141,191 +90,335 @@ class PatrimoinePage:
         pnl_total    = total_all - total_cb_all if total_cb_all else None
         pnl_pct_all  = (pnl_total / total_cb_all * 100) if total_cb_all else None
 
-        # Liquidités = compte + épargne
-        liquidites = sum(a["value"] for a in all_assets if a["asset_type"] == "compte")
-
-        # Cash issu des ventes non encore réinvesti
+        liquidites   = sum(a["value"] for a in all_assets if a["asset_type"] == "compte")
         cash_pending = db.get_cash_pending_total()
 
-        # ── KPI CARDS PATRIMOINE ─────────────────────────────────
-        kpi_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        kpi_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
-        # 5 colonnes maintenant (avec Cash en attente)
-        kpi_row.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+        passifs      = db.get_liabilities_current()
+        total_p      = sum(p["remaining_capital"] for p in passifs)
+        valeur_nette = total_all - total_p
 
-        _kpi_pat(kpi_row, 0, "💰  Patrimoine total",
+        # ── Ligne 0 : titre + barre de sous-onglets ─────────────
+        top = ctk.CTkFrame(container, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 8))
+        top.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(top, text="📈  Patrimoine & Investissements",
+                     font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color=C["text"]).grid(row=0, column=0, sticky="w")
+
+        subview_label_to_key = dict(_SUBVIEWS)
+        subview_key_to_label = {k: lbl for lbl, k in _SUBVIEWS}
+        subview_var = ctk.StringVar(value=subview_key_to_label.get(subview, "Vue d'ensemble"))
+
+        def on_subview_change(choice):
+            app.pat_subview = subview_label_to_key[choice]
+            app._go("patrimoine")
+
+        ctk.CTkSegmentedButton(
+            top, values=[lbl for lbl, _ in _SUBVIEWS], variable=subview_var,
+            command=on_subview_change,
+            font=ctk.CTkFont(size=12),
+            fg_color=C["light"], selected_color=C["primary"],
+            selected_hover_color=C["primary"], unselected_color=C["light"],
+        ).grid(row=0, column=2, sticky="e")
+
+        # ── Ligne 1 : bandeau permanent (3 KPIs) ────────────────
+        strip = ctk.CTkFrame(container, fg_color="transparent")
+        strip.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 12))
+        strip.grid_columnconfigure((0, 1, 2), weight=1)
+
+        _kpi_pat(strip, 0, "💰  Patrimoine total",
                  f"{total_all:,.0f} €", C["primary"], "#EFF6FF", "#DBEAFE")
-        if pnl_total is not None:
-            pnl_color = C["green"] if pnl_total >= 0 else C["red"]
-            pnl_bg    = "#F0FDF4" if pnl_total >= 0 else "#FEF2F2"
-            pnl_brd   = "#86EFAC" if pnl_total >= 0 else "#FCA5A5"
-            sign      = "+" if pnl_total >= 0 else ""
-            _kpi_pat(kpi_row, 1, "📊  Plus-value latente",
-                     f"{sign}{pnl_total:,.0f} €  ({sign}{pnl_pct_all:.1f}%)",
-                     pnl_color, pnl_bg, pnl_brd)
-        else:
-            _kpi_pat(kpi_row, 1, "📊  Investi total",
-                     f"{total_cb_all:,.0f} €" if total_cb_all else "—",
-                     C["amber"], "#FFFBEB", "#FDE68A")
 
-        _kpi_pat(kpi_row, 2, "🏦  Liquidités",
-                 f"{liquidites:,.0f} €", C["blue"], "#EFF6FF", "#BFDBFE")
+        vn_color = C["green"] if valeur_nette >= 0 else C["red"]
+        vn_bg    = "#F0FDF4" if valeur_nette >= 0 else "#FEF2F2"
+        vn_brd   = "#86EFAC" if valeur_nette >= 0 else "#FCA5A5"
+        vn_sign  = "+" if valeur_nette >= 0 else ""
+        _kpi_pat(strip, 1, "⚖️  Valeur nette (actifs − dettes)",
+                 f"{vn_sign}{valeur_nette:,.0f} €", vn_color, vn_bg, vn_brd)
 
-        # KPI Cash en attente — toujours visible, met en valeur si > 0
         cash_color = "#047857" if cash_pending > 0 else C["muted"]
         cash_bg    = "#ECFDF5" if cash_pending > 0 else "#F8FAFC"
         cash_brd   = "#A7F3D0" if cash_pending > 0 else "#E2E8F0"
-        _kpi_pat(kpi_row, 3, "💵  Cash en attente",
+        _kpi_pat(strip, 2, "💵  Cash en attente",
                  f"{cash_pending:,.0f} €" if cash_pending > 0 else "—",
                  cash_color, cash_bg, cash_brd)
 
-        nb_types = len({a["asset_type"] for a in all_assets})
-        nb_actifs = len(all_assets)
-        _kpi_pat(kpi_row, 4, "🗂️  Actifs suivis",
-                 f"{nb_actifs} actif{'s' if nb_actifs > 1 else ''}  ·  {nb_types} type{'s' if nb_types > 1 else ''}",
-                 "#8B5CF6", "#F5F3FF", "#DDD6FE")
+        # ── Ligne 2 : corps scrollable, délégué au sous-onglet actif ──
+        scroll = ctk.CTkScrollableFrame(container, fg_color=C["bg"])
+        scroll.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 16))
+        scroll.grid_columnconfigure(0, weight=1)
 
-        # ── Bouton ajout ─────────────────────────────────────────
-        def open_add():
-            today = datetime.date.today()
-            AssetDialog(app, on_save=lambda d: (
-                db.upsert_asset(today.year, today.month,
-                                d["asset_type"], d["asset_name"],
-                                d["value"], d["cost_basis"], d["notes"]),
-                app._go("patrimoine"),
-            ))
-
-        add_f = ctk.CTkFrame(scroll, fg_color="transparent")
-        add_f.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        ctk.CTkButton(add_f, text="＋  Ajouter / Mettre à jour un actif",
-                      height=36, command=open_add,
-                      font=ctk.CTkFont(size=13)).pack(side="left")
-
-        # ── Liste actifs ─────────────────────────────────────────
-        lc = make_card(scroll)
-        lc.grid(row=2, column=0, padx=(0, 8), sticky="nsew")
-
-        lc_title = "Portefeuille — valeurs actuelles"
-        if type_f != FILTER_ALL_TYPES:
-            lc_title += f"  ·  {type_f}"
-        ctk.CTkLabel(lc, text=lc_title,
-                     font=ctk.CTkFont(size=14, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=16, pady=(14, 6))
-
-        if assets:
-            hdr = ctk.CTkFrame(lc, fg_color=C["light"], corner_radius=6)
-            hdr.pack(fill="x", padx=12, pady=(0, 4))
-            hdr.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
-            # Labels de colonnes adaptés au type filtré
-            only_comptes = (type_f != FILTER_ALL_TYPES and
-                            type_lbl_to_key.get(type_f) == "compte")
-            col_labels = ["Nom", "Solde actuel" if only_comptes else "Valeur act.",
-                          "Total versé" if only_comptes else "Prix achat",
-                          "Intérêts gagnés" if only_comptes else "Plus-value",
-                          "Var. précéd."]
-            for i, h in enumerate(col_labels):
-                ctk.CTkLabel(hdr, text=h, font=ctk.CTkFont(size=10, weight="bold"),
-                             text_color=C["muted"]).grid(
-                    row=0, column=i, padx=10, pady=6, sticky="w")
-
-            cur_type = None
-            for asset in assets:
-                if asset["asset_type"] != cur_type:
-                    cur_type = asset["asset_type"]
-                    accent = _TYPE_ACCENT.get(cur_type, C["primary"])
-                    type_hdr = ctk.CTkFrame(lc, fg_color="#F8FAFC",
-                                            corner_radius=6,
-                                            border_width=0)
-                    type_hdr.pack(fill="x", padx=12, pady=(8, 2))
-                    # Bande colorée à gauche
-                    ctk.CTkFrame(type_hdr, width=4, fg_color=accent,
-                                 corner_radius=4).pack(side="left", fill="y", padx=(0, 8), pady=4)
-                    ctk.CTkLabel(type_hdr,
-                                 text=f"{ASSET_LABEL.get(cur_type, cur_type)}",
-                                 font=ctk.CTkFont(size=11, weight="bold"),
-                                 text_color=accent).pack(side="left", padx=4, pady=5)
-                    # Sous-total du type
-                    type_total = sum(a["value"] for a in assets if a["asset_type"] == cur_type)
-                    ctk.CTkLabel(type_hdr,
-                                 text=f"{type_total:,.0f} €",
-                                 font=ctk.CTkFont(size=11, weight="bold"),
-                                 text_color=accent).pack(side="right", padx=12, pady=5)
-                _asset_row(lc, asset, db, app)
-
-            # Total
-            tf2 = ctk.CTkFrame(lc, fg_color="#EFF6FF", corner_radius=8,
-                               border_width=1, border_color="#93C5FD")
-            tf2.pack(fill="x", padx=12, pady=(10, 4))
-            total_txt = f"Total sélection : {total:,.2f} €"
-            if type_f != FILTER_ALL_TYPES and total_all > 0:
-                pct = total / total_all * 100
-                total_txt += f"  ({pct:.0f}% du patrimoine total)"
-            ctk.CTkLabel(tf2, text=total_txt,
-                         font=ctk.CTkFont(size=15, weight="bold"),
-                         text_color=C["primary"]).pack(side="right", padx=16, pady=9)
-
-            if type_f != FILTER_ALL_TYPES:
-                ctk.CTkLabel(lc,
-                             text=f"Patrimoine total (tous types) : {total_all:,.2f} €",
-                             font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(
-                    anchor="e", padx=16, pady=(0, 6))
-
-            if total_cb:
-                pnl     = total - total_cb
-                pnl_pct = pnl / total_cb * 100
-                clr     = C["green"] if pnl >= 0 else C["red"]
-                pf2 = ctk.CTkFrame(lc, fg_color="transparent")
-                pf2.pack(anchor="e", padx=12, pady=(0, 10))
-                pnl_label = ("Intérêts gagnés totaux" if only_comptes
-                             else "Plus-value totale")
-                ctk.CTkLabel(pf2,
-                             text=f"{pnl_label} : {pnl:+,.2f} €  ({pnl_pct:+.1f} %)",
-                             font=ctk.CTkFont(size=13, weight="bold"),
-                             text_color=clr).pack()
+        if subview == "actifs":
+            _render_actifs(scroll, db, app, type_f, type_lbl_to_key,
+                           all_assets, assets, total_all, total, total_cb)
+        elif subview == "passifs":
+            _render_passifs(scroll, db, app, passifs, total_p)
+        elif subview == "closes":
+            _render_closes(scroll, db, app, type_f, type_lbl_to_key)
+        elif subview == "graphs":
+            _render_graphs_subview(scroll, db, app, type_f, type_lbl_to_key, period_f)
         else:
-            msg = (f"Aucun actif de type « {type_f} »."
-                   if type_f != FILTER_ALL_TYPES
-                   else "Aucun actif enregistré.\nCliquez sur ＋ pour commencer.")
-            ctk.CTkLabel(lc, text=msg, text_color=C["muted"],
-                         justify="center").pack(expand=True, pady=40)
+            _render_overview(scroll, db, app, all_assets, total_all,
+                             total_cb_all, pnl_total, pnl_pct_all,
+                             liquidites, cash_pending)
 
-        # ── Graphiques ───────────────────────────────────────────
-        rc = make_card(scroll)
-        rc.grid(row=2, column=1, padx=(8, 0), sticky="nsew")
-        _render_patrimoine_charts(rc, db, app, type_f, type_lbl_to_key, period_f)
 
-        # ── Positions clôturées (archive des ventes) ─────────────
-        closed = db.get_closed_positions()
-        # Filtrage par type si actif
+# ─────────────────────────────────────────────────────────────
+#  Sous-onglet : Vue d'ensemble
+# ─────────────────────────────────────────────────────────────
+def _render_overview(scroll, db, app, all_assets, total_all, total_cb_all,
+                     pnl_total, pnl_pct_all, liquidites, cash_pending):
+    kpi_row = ctk.CTkFrame(scroll, fg_color="transparent")
+    kpi_row.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+    kpi_row.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+
+    _kpi_pat(kpi_row, 0, "💰  Patrimoine total",
+             f"{total_all:,.0f} €", C["primary"], "#EFF6FF", "#DBEAFE")
+    if pnl_total is not None:
+        pnl_color = C["green"] if pnl_total >= 0 else C["red"]
+        pnl_bg    = "#F0FDF4" if pnl_total >= 0 else "#FEF2F2"
+        pnl_brd   = "#86EFAC" if pnl_total >= 0 else "#FCA5A5"
+        sign      = "+" if pnl_total >= 0 else ""
+        _kpi_pat(kpi_row, 1, "📊  Plus-value latente",
+                 f"{sign}{pnl_total:,.0f} €  ({sign}{pnl_pct_all:.1f}%)",
+                 pnl_color, pnl_bg, pnl_brd)
+    else:
+        _kpi_pat(kpi_row, 1, "📊  Investi total",
+                 f"{total_cb_all:,.0f} €" if total_cb_all else "—",
+                 C["amber"], "#FFFBEB", "#FDE68A")
+
+    _kpi_pat(kpi_row, 2, "🏦  Liquidités",
+             f"{liquidites:,.0f} €", C["blue"], "#EFF6FF", "#BFDBFE")
+
+    cash_color = "#047857" if cash_pending > 0 else C["muted"]
+    cash_bg    = "#ECFDF5" if cash_pending > 0 else "#F8FAFC"
+    cash_brd   = "#A7F3D0" if cash_pending > 0 else "#E2E8F0"
+    _kpi_pat(kpi_row, 3, "💵  Cash en attente",
+             f"{cash_pending:,.0f} €" if cash_pending > 0 else "—",
+             cash_color, cash_bg, cash_brd)
+
+    nb_types  = len({a["asset_type"] for a in all_assets})
+    nb_actifs = len(all_assets)
+    _kpi_pat(kpi_row, 4, "🗂️  Actifs suivis",
+             f"{nb_actifs} actif{'s' if nb_actifs > 1 else ''}  ·  {nb_types} type{'s' if nb_types > 1 else ''}",
+             "#8B5CF6", "#F5F3FF", "#DDD6FE")
+
+    def open_add():
+        today = datetime.date.today()
+        AssetDialog(app, on_save=lambda d: (
+            db.upsert_asset(today.year, today.month,
+                            d["asset_type"], d["asset_name"],
+                            d["value"], d["cost_basis"], d["notes"]),
+            app._go("patrimoine"),
+        ))
+
+    add_f = ctk.CTkFrame(scroll, fg_color="transparent")
+    add_f.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+    ctk.CTkButton(add_f, text="＋  Ajouter / Mettre à jour un actif",
+                  height=36, command=open_add,
+                  font=ctk.CTkFont(size=13)).pack(side="left")
+
+    ev_card = make_card(scroll)
+    ev_card.grid(row=2, column=0, sticky="nsew")
+    hdr = ctk.CTkFrame(ev_card, fg_color="transparent")
+    hdr.pack(fill="x", padx=16, pady=(14, 0))
+    ctk.CTkLabel(hdr, text="Évolution du patrimoine",
+                 font=ctk.CTkFont(size=14, weight="bold"),
+                 text_color=C["text"]).pack(anchor="w")
+
+    history = db.get_patrimoine_history()
+    if len(history) >= 2:
+        _render_single_evolution_chart(ev_card, app, history)
+    elif len(history) == 1:
+        p = history[0]
+        ctk.CTkLabel(ev_card,
+                     text=(f"📌  1 enregistrement — {MONTHS_FR[p['month']-1]} {p['year']} : "
+                           f"{p['total_value']:,.0f} €\n\n"
+                           f"Mettez à jour vos actifs sur plusieurs mois pour voir l'évolution."),
+                     text_color=C["muted"], justify="center",
+                     font=ctk.CTkFont(size=12)).pack(expand=True, pady=40)
+    else:
+        ctk.CTkLabel(ev_card, text="Aucune donnée pour le moment.\nAjoutez un actif pour commencer.",
+                     text_color=C["muted"], justify="center",
+                     font=ctk.CTkFont(size=12)).pack(expand=True, pady=55)
+
+
+def _render_single_evolution_chart(card, app, history):
+    """Graphique d'évolution simple (sans filtre type/période) pour la Vue d'ensemble."""
+    def _build_fig(fw, fh):
+        pts    = list(history)
+        labels = [f"{MONTHS_FR[p['month']-1][:3]} {str(p['year'])[2:]}" for p in pts]
+        x      = list(range(len(pts)))
+        vals   = [p["total_value"] for p in pts]
+        bases  = [p["total_basis"]  for p in pts]
+
+        fig, ax = plt.subplots(figsize=(fw, fh))
+        fig.patch.set_facecolor(C["card"])
+        _style_ax(ax)
+        ax.fill_between(x, vals, alpha=0.13, color=C["primary"])
+        ax.plot(x, vals, color=C["primary"], lw=2.8, marker="o", ms=6, label="Valeur", zorder=3)
+        if any(b for b in bases):
+            ax.plot(x, bases, color=C["amber"], lw=2, ls="--", marker="s", ms=4, label="Investi", zorder=3)
+        ax.set_title("Évolution du patrimoine", fontsize=10, color="#475569", pad=8, loc="left")
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(_fmt_euros))
+        _smart_xticks(ax, labels, x)
+        ax.legend(fontsize=8.5, frameon=False, loc="upper left")
+        fig.tight_layout(pad=1.6)
+        return fig, None
+
+    fig, _ = _build_fig(11.0, 4.2)
+    cv = FigureCanvasTkAgg(fig, card)
+    cv.draw_idle()
+    cv.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=(4, 12))
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Sous-onglet : Actifs
+# ─────────────────────────────────────────────────────────────
+def _render_actifs(scroll, db, app, type_f, type_lbl_to_key,
+                   all_assets, assets, total_all, total, total_cb):
+    # ── Filtre type + bouton ajout ───────────────────────────
+    top = ctk.CTkFrame(scroll, fg_color="transparent")
+    top.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    top.grid_columnconfigure(1, weight=1)
+
+    type_labels = [FILTER_ALL_TYPES] + [lbl for lbl, _ in ASSET_TYPES]
+    type_var    = ctk.StringVar(value=type_f)
+
+    def on_type_change(choice):
+        app.pat_type_filter = choice
+        app._go("patrimoine")
+
+    tf = ctk.CTkFrame(top, fg_color="transparent")
+    tf.grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(tf, text="Type :",
+                 font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(side="left", padx=(0, 5))
+    ctk.CTkOptionMenu(tf, values=type_labels, variable=type_var,
+                      height=28, width=180,
+                      fg_color=C["primary"], button_color=C["primary"],
+                      command=on_type_change).pack(side="left")
+    if type_f != FILTER_ALL_TYPES:
+        ctk.CTkButton(tf, text="✕", height=28, width=30,
+                      fg_color="#FEE2E2", text_color=C["red"],
+                      hover_color="#FECACA",
+                      command=lambda: (setattr(app, "pat_type_filter", FILTER_ALL_TYPES),
+                                       app._go("patrimoine"))
+                      ).pack(side="left", padx=(4, 0))
+
+    def open_add():
+        today = datetime.date.today()
+        AssetDialog(app, on_save=lambda d: (
+            db.upsert_asset(today.year, today.month,
+                            d["asset_type"], d["asset_name"],
+                            d["value"], d["cost_basis"], d["notes"]),
+            app._go("patrimoine"),
+        ))
+
+    ctk.CTkButton(top, text="＋  Ajouter / Mettre à jour un actif",
+                  height=32, command=open_add,
+                  font=ctk.CTkFont(size=12)).grid(row=0, column=2, sticky="e")
+
+    # ── Liste actifs ─────────────────────────────────────────
+    lc = make_card(scroll)
+    lc.grid(row=1, column=0, sticky="nsew")
+
+    lc_title = "Portefeuille — valeurs actuelles"
+    if type_f != FILTER_ALL_TYPES:
+        lc_title += f"  ·  {type_f}"
+    ctk.CTkLabel(lc, text=lc_title,
+                 font=ctk.CTkFont(size=14, weight="bold"),
+                 text_color=C["text"]).pack(anchor="w", padx=16, pady=(14, 6))
+
+    if assets:
+        hdr = ctk.CTkFrame(lc, fg_color=C["light"], corner_radius=6)
+        hdr.pack(fill="x", padx=12, pady=(0, 4))
+        hdr.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+        only_comptes = (type_f != FILTER_ALL_TYPES and
+                        type_lbl_to_key.get(type_f) == "compte")
+        col_labels = ["Nom", "Solde actuel" if only_comptes else "Valeur act.",
+                      "Total versé" if only_comptes else "Prix achat",
+                      "Intérêts gagnés" if only_comptes else "Plus-value",
+                      "Var. précéd."]
+        for i, h in enumerate(col_labels):
+            ctk.CTkLabel(hdr, text=h, font=ctk.CTkFont(size=10, weight="bold"),
+                         text_color=C["muted"]).grid(
+                row=0, column=i, padx=10, pady=6, sticky="w")
+
+        cur_type = None
+        for asset in assets:
+            if asset["asset_type"] != cur_type:
+                cur_type = asset["asset_type"]
+                accent = _TYPE_ACCENT.get(cur_type, C["primary"])
+                type_hdr = ctk.CTkFrame(lc, fg_color="#F8FAFC", corner_radius=6)
+                type_hdr.pack(fill="x", padx=12, pady=(8, 2))
+                # height=1 : évite la taille par défaut 200px de CTkFrame qui
+                # gonflerait tout le bandeau type_hdr (fill="y" l'étirera ensuite).
+                ctk.CTkFrame(type_hdr, width=4, height=1, fg_color=accent,
+                             corner_radius=4).pack(side="left", fill="y", padx=(0, 8), pady=4)
+                ctk.CTkLabel(type_hdr,
+                             text=f"{ASSET_LABEL.get(cur_type, cur_type)}",
+                             font=ctk.CTkFont(size=11, weight="bold"),
+                             text_color=accent).pack(side="left", padx=4, pady=5)
+                type_total = sum(a["value"] for a in assets if a["asset_type"] == cur_type)
+                ctk.CTkLabel(type_hdr,
+                             text=f"{type_total:,.0f} €",
+                             font=ctk.CTkFont(size=11, weight="bold"),
+                             text_color=accent).pack(side="right", padx=12, pady=5)
+            _asset_row(lc, asset, db, app)
+
+        tf2 = ctk.CTkFrame(lc, fg_color="#EFF6FF", corner_radius=8,
+                           border_width=1, border_color="#93C5FD")
+        tf2.pack(fill="x", padx=12, pady=(10, 4))
+        total_txt = f"Total sélection : {total:,.2f} €"
+        if type_f != FILTER_ALL_TYPES and total_all > 0:
+            pct = total / total_all * 100
+            total_txt += f"  ({pct:.0f}% du patrimoine total)"
+        ctk.CTkLabel(tf2, text=total_txt,
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=C["primary"]).pack(side="right", padx=16, pady=9)
+
         if type_f != FILTER_ALL_TYPES:
-            type_key = type_lbl_to_key.get(type_f)
-            closed = [c for c in closed if c["asset_type"] == type_key]
-        if closed:
-            _render_closed_positions(scroll, closed, db, app, row=3)
+            ctk.CTkLabel(lc,
+                         text=f"Patrimoine total (tous types) : {total_all:,.2f} €",
+                         font=ctk.CTkFont(size=12), text_color=C["muted"]).pack(
+                anchor="e", padx=16, pady=(0, 6))
 
-        # ── Passifs & Valeur nette ────────────────────────────────
-        _render_liabilities(scroll, db, app, row=4, total_actifs=total_all)
+        if total_cb:
+            pnl     = total - total_cb
+            pnl_pct = pnl / total_cb * 100
+            clr     = C["green"] if pnl >= 0 else C["red"]
+            pf2 = ctk.CTkFrame(lc, fg_color="transparent")
+            pf2.pack(anchor="e", padx=12, pady=(0, 10))
+            pnl_label = ("Intérêts gagnés totaux" if only_comptes
+                         else "Plus-value totale")
+            ctk.CTkLabel(pf2,
+                         text=f"{pnl_label} : {pnl:+,.2f} €  ({pnl_pct:+.1f} %)",
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=clr).pack()
+    else:
+        msg = (f"Aucun actif de type « {type_f} »."
+               if type_f != FILTER_ALL_TYPES
+               else "Aucun actif enregistré.\nCliquez sur ＋ pour commencer.")
+        ctk.CTkLabel(lc, text=msg, text_color=C["muted"],
+                     justify="center").pack(expand=True, pady=40)
 
 
 # ─────────────────────────────────────────────────────────────
-#  Section Passifs / Valeur nette
+#  Sous-onglet : Passifs
 # ─────────────────────────────────────────────────────────────
-def _render_liabilities(parent, db, app, row: int, total_actifs: float):
-    import datetime as _dt
-    today    = _dt.date.today()
-    passifs  = db.get_liabilities_current()
-    total_p  = sum(p["remaining_capital"] for p in passifs)
-    valeur_nette = total_actifs - total_p
+def _render_passifs(scroll, db, app, passifs, total_p):
+    today = datetime.date.today()
 
-    card = make_card(parent)
-    card.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 4))
+    card = make_card(scroll)
+    card.grid(row=0, column=0, sticky="nsew")
 
-    # ── Header ──────────────────────────────────────────────
     hdr = ctk.CTkFrame(card, fg_color="transparent")
     hdr.pack(fill="x", padx=16, pady=(14, 4))
     hdr.grid_columnconfigure(1, weight=1)
 
-    ctk.CTkLabel(hdr, text="💳  Passifs & Valeur nette",
+    ctk.CTkLabel(hdr, text="💳  Passifs (dettes)",
                  font=ctk.CTkFont(size=14, weight="bold"),
                  text_color=C["text"]).grid(row=0, column=0, sticky="w")
 
@@ -344,77 +437,19 @@ def _render_liabilities(parent, db, app, row: int, total_actifs: float):
                   font=ctk.CTkFont(size=12),
                   command=open_add).grid(row=0, column=2, sticky="e")
 
-    # ── Bandeau valeur nette ─────────────────────────────────
-    vn_color = C["green"] if valeur_nette >= 0 else C["red"]
-    vn_bg    = "#F0FDF4" if valeur_nette >= 0 else "#FEF2F2"
-    vn_brd   = "#86EFAC" if valeur_nette >= 0 else "#FCA5A5"
-    sign     = "+" if valeur_nette >= 0 else ""
-
-    vn_band = ctk.CTkFrame(card, fg_color=vn_bg, corner_radius=8,
-                            border_width=1, border_color=vn_brd)
-    vn_band.pack(fill="x", padx=16, pady=(2, 10))
-    vn_band.grid_columnconfigure(1, weight=1)
-
-    ctk.CTkLabel(vn_band,
-                 text=f"⚖️  Valeur nette (actifs − dettes) :  {sign}{valeur_nette:,.2f} €",
-                 font=ctk.CTkFont(size=14, weight="bold"),
-                 text_color=vn_color).grid(row=0, column=0, padx=16, pady=12, sticky="w")
-
-    sub = (f"Actifs : {total_actifs:,.0f} €   −   Passifs : {total_p:,.0f} €")
-    ctk.CTkLabel(vn_band, text=sub,
-                 font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
-        row=0, column=2, padx=16, pady=12, sticky="e")
-
-    # ── Table passifs ────────────────────────────────────────
     if not passifs:
         ctk.CTkLabel(card, text="Aucune dette enregistrée.",
-                     text_color=C["muted"]).pack(pady=(0, 16))
+                     text_color=C["muted"]).pack(pady=(10, 20))
         return
 
-    # En-tête colonnes
-    hdr_f = ctk.CTkFrame(card, fg_color=C["light"], corner_radius=6)
-    hdr_f.pack(fill="x", padx=12, pady=(0, 4))
-    hdr_f.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
-    for col_i, lbl in enumerate(
-        ["Nom", "Type", "Capital restant", "Mensualité", "Fin", ""]
-    ):
-        ctk.CTkLabel(hdr_f, text=lbl,
-                     font=ctk.CTkFont(size=10, weight="bold"),
-                     text_color=C["muted"]).grid(
-            row=0, column=col_i, padx=10, pady=6, sticky="w")
+    table_f = ctk.CTkFrame(card, fg_color="transparent")
+    table_f.pack(fill="x", padx=12, pady=(4, 4))
+    table_header(table_f, [(2, "Nom"), (1, "Type"), (1, "Capital restant"),
+                          (1, "Mensualité"), (1, "Fin")], extra_button_cols=1)
 
-    # Lignes
     for idx, p in enumerate(passifs):
-        bg = C["card"] if idx % 2 == 0 else C["light"]
-        row_f = ctk.CTkFrame(card, fg_color=bg, corner_radius=6)
-        row_f.pack(fill="x", padx=12, pady=1)
-        row_f.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
-
-        ctk.CTkLabel(row_f, text=p["liability_name"],
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=C["text"]).grid(row=0, column=0, padx=10, pady=8, sticky="w")
-
         type_lbl = LIABILITY_LABEL.get(p["liability_type"], p["liability_type"].capitalize())
-        ctk.CTkLabel(row_f, text=type_lbl,
-                     font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
-            row=0, column=1, padx=10, pady=8, sticky="w")
-
-        ctk.CTkLabel(row_f, text=f"{p['remaining_capital']:,.2f} €",
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=C["red"]).grid(row=0, column=2, padx=10, pady=8, sticky="w")
-
         monthly_txt = f"{p['monthly_payment']:,.0f} €/mois" if p["monthly_payment"] else "—"
-        ctk.CTkLabel(row_f, text=monthly_txt,
-                     font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
-            row=0, column=3, padx=10, pady=8, sticky="w")
-
-        ctk.CTkLabel(row_f, text=p["end_date"] or "—",
-                     font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
-            row=0, column=4, padx=10, pady=8, sticky="w")
-
-        # Boutons
-        btns = ctk.CTkFrame(row_f, fg_color="transparent")
-        btns.grid(row=0, column=5, padx=6, pady=4, sticky="e")
 
         def _update_capital(liability=p):
             QuickValueUpdateDialog(
@@ -428,13 +463,6 @@ def _render_liabilities(parent, db, app, row: int, total_actifs: float):
                 label="capital restant",
             )
 
-        btn_upd = ctk.CTkButton(btns, text="💰", width=30, height=26,
-                                fg_color="#FFF7ED", text_color=C["amber"],
-                                hover_color="#FFEDD5",
-                                command=_update_capital)
-        btn_upd.pack(side="left", padx=(0, 2))
-        Tooltip(btn_upd, "Mettre à jour le capital restant")
-
         def _edit(liability=p):
             LiabilityDialog(app, initial=dict(liability), on_save=lambda d: (
                 db.add_or_update_liability(
@@ -446,30 +474,203 @@ def _render_liabilities(parent, db, app, row: int, total_actifs: float):
                 app._go("patrimoine"),
             ))
 
-        btn_edit = ctk.CTkButton(btns, text="✏", width=30, height=26,
-                                 fg_color=C["light"], text_color=C["muted"],
-                                 hover_color=C["border"],
-                                 command=_edit)
-        btn_edit.pack(side="left", padx=(0, 2))
-        Tooltip(btn_edit, "Modifier")
-
         def _delete(name=p["liability_name"]):
             db.delete_liability(name)
             app._go("patrimoine")
 
-        btn_del = ctk.CTkButton(btns, text="✕", width=30, height=26,
-                                fg_color="#FEE2E2", text_color=C["red"],
-                                hover_color="#FECACA",
-                                command=_delete)
-        btn_del.pack(side="left")
-        Tooltip(btn_del, "Supprimer")
+        table_row(
+            table_f, idx,
+            [(2, p["liability_name"], C["text"]),
+             (1, type_lbl,            C["muted"]),
+             (1, f"{p['remaining_capital']:,.2f} €", C["red"]),
+             (1, monthly_txt,         C["muted"]),
+             (1, p["end_date"] or "—", C["muted"])],
+            on_edit=_edit, on_delete=_delete,
+            extra_buttons=[("💰", "Mettre à jour le capital restant", _update_capital)],
+            delete_label=f"« {p['liability_name']} »",
+        )
 
-    # ── Total passifs ────────────────────────────────────────
     foot = ctk.CTkFrame(card, fg_color="transparent")
-    foot.pack(anchor="e", padx=16, pady=(6, 14))
+    foot.pack(anchor="e", padx=16, pady=(10, 14))
     ctk.CTkLabel(foot, text=f"Total dettes : {total_p:,.2f} €",
                  font=ctk.CTkFont(size=13, weight="bold"),
                  text_color=C["red"]).pack()
+
+
+# ─────────────────────────────────────────────────────────────
+#  Sous-onglet : Positions clôturées
+# ─────────────────────────────────────────────────────────────
+def _render_closes(scroll, db, app, type_f, type_lbl_to_key):
+    closed = db.get_closed_positions()
+    if type_f != FILTER_ALL_TYPES:
+        type_key = type_lbl_to_key.get(type_f)
+        closed = [c for c in closed if c["asset_type"] == type_key]
+
+    card = make_card(scroll)
+    card.grid(row=0, column=0, sticky="nsew")
+
+    hdr = ctk.CTkFrame(card, fg_color="transparent")
+    hdr.pack(fill="x", padx=16, pady=(14, 4))
+
+    if not closed:
+        ctk.CTkLabel(hdr, text="💼  Positions clôturées",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=C["text"]).pack(side="left")
+        ctk.CTkLabel(card, text="Aucune position clôturée pour le moment.",
+                     text_color=C["muted"]).pack(pady=(10, 20))
+        return
+
+    nb_pending = sum(1 for c in closed if not c["all_reinvested"])
+    total_pnl  = sum(c["realized_pnl"] for c in closed)
+    pnl_clr    = C["green"] if total_pnl >= 0 else C["red"]
+    pnl_sign   = "+" if total_pnl >= 0 else ""
+
+    ctk.CTkLabel(
+        hdr,
+        text=f"💼  Positions clôturées  ·  {len(closed)} position{'s' if len(closed) > 1 else ''}",
+        font=ctk.CTkFont(size=14, weight="bold"),
+        text_color=C["text"],
+    ).pack(side="left")
+    if nb_pending:
+        _badge(hdr, f"{nb_pending} cash en attente", "#ECFDF5", "#047857")
+    ctk.CTkLabel(hdr,
+                 text=f"P&L total réalisé : {pnl_sign}{total_pnl:,.0f} €",
+                 font=ctk.CTkFont(size=12, weight="bold"),
+                 text_color=pnl_clr).pack(side="right")
+
+    table_f = ctk.CTkFrame(card, fg_color="transparent")
+    table_f.pack(fill="x", padx=12, pady=(4, 4))
+    table_header(table_f,
+                 [(2, "Nom"), (1, "Qté vendue"), (1, "Prix vente moy."),
+                  (1, "P&L réalisé"), (1, "Dernière vente"), (2, "Statut")],
+                 extra_button_cols=2)
+
+    for idx, c in enumerate(closed):
+        rp   = c["realized_pnl"]
+        sign = "+" if rp >= 0 else ""
+        last_y, last_m = c["last_sale_ym"] or (0, 0)
+        date_lbl = f"{MONTHS_FR[last_m - 1][:3]} {last_y}" if last_m else "—"
+        name_cell = f"{c['asset_name']}  ·  {ASSET_LABEL.get(c['asset_type'], c['asset_type'])}"
+
+        if c["all_reinvested"]:
+            statut_txt, statut_clr = "♻ Réinvesti", C["muted"]
+        else:
+            statut_txt = f"💵 Cash : {c['cash_pending']:,.0f} €"
+            statut_clr = "#047857"
+
+        if not c["all_reinvested"]:
+            def _reinvest(name=c["asset_name"]):
+                db.mark_sales_reinvested(name, reinvested=True)
+                app._go("patrimoine")
+            toggle_btn = ("♻", "Marquer comme réinvesti", _reinvest)
+        else:
+            def _undo(name=c["asset_name"]):
+                db.mark_sales_reinvested(name, reinvested=False)
+                app._go("patrimoine")
+            toggle_btn = ("↩", "Annuler réinvestissement", _undo)
+
+        def _show_tx(name=c["asset_name"], typ=c["asset_type"]):
+            today = datetime.date.today()
+            asset_min = {
+                "asset_name": name, "asset_type": typ,
+                "value": 0.0, "cost_basis": 0.0,
+                "id": -1, "year": today.year, "month": today.month,
+                "notes": "",
+            }
+            AssetTransactionsDialog(app, asset_min, db, app, today.year, today.month)
+
+        table_row(
+            table_f, idx,
+            [(2, name_cell,                        C["text"]),
+             (1, f"{c['sale_qty']:g}",              C["text"]),
+             (1, f"{c['avg_sale_price']:,.2f} €",   C["text"]),
+             (1, f"{sign}{rp:,.0f} €",              C["green"] if rp >= 0 else C["red"]),
+             (1, date_lbl,                          C["muted"]),
+             (2, statut_txt,                        statut_clr)],
+            extra_buttons=[toggle_btn, ("📋", "Voir les transactions", _show_tx)],
+        )
+
+    foot = ctk.CTkFrame(card, fg_color="transparent")
+    foot.pack(fill="x", padx=12, pady=(8, 14))
+
+    def _export_closed_csv():
+        import tkinter.filedialog as fd
+        import csv as _csv
+        path = fd.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+            initialfile="positions_cloturees.csv",
+        )
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f, delimiter=";")
+            w.writerow(["Nom", "Type", "Qté vendue", "Prix vente moy. (€)",
+                        "Investi (€)", "P&L réalisé (€)", "Frais (€)",
+                        "Dernière vente", "Cash réinvesti"])
+            for c in closed:
+                ly, lm = c["last_sale_ym"] or (0, 0)
+                w.writerow([
+                    c["asset_name"],
+                    ASSET_LABEL.get(c["asset_type"], c["asset_type"]),
+                    f"{c['sale_qty']:g}",
+                    f"{c['avg_sale_price']:.2f}",
+                    f"{c['sale_proceeds'] - c['realized_pnl']:.2f}",
+                    f"{c['realized_pnl']:.2f}",
+                    f"{c['total_fees']:.2f}",
+                    f"{MONTHS_FR[lm-1]} {ly}" if lm else "",
+                    "Oui" if c["all_reinvested"] else "Non",
+                ])
+
+    ctk.CTkButton(foot, text="📄  Exporter CSV", height=32,
+                  fg_color=C["muted"], hover_color="#475569",
+                  command=_export_closed_csv).pack(side="right")
+
+
+# ─────────────────────────────────────────────────────────────
+#  Sous-onglet : Graphiques
+# ─────────────────────────────────────────────────────────────
+def _render_graphs_subview(scroll, db, app, type_f, type_lbl_to_key, period_f):
+    top = ctk.CTkFrame(scroll, fg_color="transparent")
+    top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    top.grid_columnconfigure(0, weight=1)
+
+    type_labels = [FILTER_ALL_TYPES] + [lbl for lbl, _ in ASSET_TYPES]
+    type_var    = ctk.StringVar(value=type_f)
+
+    def on_type_change(choice):
+        app.pat_type_filter = choice
+        app._go("patrimoine")
+
+    tf = ctk.CTkFrame(top, fg_color="transparent")
+    tf.grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(tf, text="Type :",
+                 font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(side="left", padx=(0, 5))
+    ctk.CTkOptionMenu(tf, values=type_labels, variable=type_var,
+                      height=28, width=180,
+                      fg_color=C["primary"], button_color=C["primary"],
+                      command=on_type_change).pack(side="left")
+
+    pf = ctk.CTkFrame(top, fg_color="transparent")
+    pf.grid(row=0, column=1, sticky="e")
+    ctk.CTkLabel(pf, text="Période :",
+                 font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(side="left", padx=(0, 6))
+    for lbl, _ in _PERIODS:
+        is_active = (lbl == period_f)
+        ctk.CTkButton(
+            pf, text=lbl, height=26, width=42,
+            font=ctk.CTkFont(size=11, weight="bold" if is_active else "normal"),
+            fg_color=C["primary"] if is_active else C["light"],
+            text_color="white" if is_active else C["muted"],
+            hover_color="#2A5BD9" if is_active else "#E2E8F0",
+            corner_radius=6,
+            command=lambda l=lbl: (setattr(app, "pat_period_filter", l),
+                                   app._go("patrimoine")),
+        ).pack(side="left", padx=2)
+
+    card = make_card(scroll)
+    card.grid(row=1, column=0, sticky="nsew")
+    _render_patrimoine_charts(card, db, app, type_f, type_lbl_to_key, period_f)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -485,7 +686,7 @@ def _kpi_pat(parent, col, title, value, color, bg, border_color):
                  text_color=C["muted"]).pack(anchor="w")
     ctk.CTkLabel(inner, text=value,
                  font=ctk.CTkFont(size=15, weight="bold"),
-                 text_color=color, wraplength=200, justify="left").pack(anchor="w", pady=(4, 0))
+                 text_color=color, wraplength=280, justify="left").pack(anchor="w", pady=(4, 0))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -504,8 +705,20 @@ def _badge(parent, text: str, bg: str, fg: str):
 # ─────────────────────────────────────────────────────────────
 #  Ligne d'actif
 # ─────────────────────────────────────────────────────────────
+def _fmt_pnl(val, pct):
+    """Formatage sur une seule ligne — cohérent avec les autres cellules de la ligne."""
+    if val is None:
+        return "—"
+    sign = "+" if val >= 0 else ""
+    return f"{sign}{val:,.0f} € ({sign}{pct:.1f}%)"
+
+
 def _asset_row(parent, asset, db, app):
-    """Ligne détaillée d'un actif avec métriques et boutons."""
+    """Ligne détaillée d'un actif avec métriques et boutons.
+
+    Colonnes (aucune réutilisée) : 0=accent, 1=nom, 2=valeur, 3=coût,
+    4=P&L/intérêts, 5=variation, 6=boutons.
+    """
     value      = asset["value"]
     cost_basis = asset["cost_basis"] or 0.0
     prev_value = db.get_asset_previous_value(
@@ -513,9 +726,6 @@ def _asset_row(parent, asset, db, app):
         asset["asset_type"], asset["asset_name"]
     )
 
-    # ── Statut de la position (pour les actifs transactionnels) ──
-    # On ne calcule que si l'actif a un type avec transactions, pour ne pas
-    # taper inutilement la DB sur les comptes / immobilier.
     pos_status = None
     if asset["asset_type"] in _TRANSACTION_TYPES:
         pos_status = db.get_position_status(asset["asset_name"])
@@ -523,10 +733,7 @@ def _asset_row(parent, asset, db, app):
     is_partial = pos_status and pos_status["status"] == "partiel"
     is_sold    = pos_status and pos_status["status"] == "vendu"
 
-    # ── Mode "VENDU + cash en attente" : on affiche le produit de vente
-    #     comme valeur (le cash reste dans le patrimoine).
     if is_sold and not pos_status["all_reinvested"]:
-        # La 'valeur' devient le produit total des ventes (cash dispo).
         value = pos_status["sale_proceeds"]
 
     pnl          = value - cost_basis if cost_basis else None
@@ -534,33 +741,27 @@ def _asset_row(parent, asset, db, app):
     var_prev     = (value - prev_value) if prev_value is not None else None
     var_prev_pct = (var_prev / prev_value * 100) if prev_value else None
 
-    def _fmt_pnl(val, pct):
-        if val is None:
-            return "—"
-        sign = "+" if val >= 0 else ""
-        return f"{sign}{val:,.0f} €\n({sign}{pct:.1f} %)"
-
     accent = _TYPE_ACCENT.get(asset["asset_type"], C["primary"])
-
-    # Couleur de fond légèrement différenciée selon l'état
-    row_bg = C["card"]
-    if is_sold:
-        row_bg = "#FAFBFC"   # gris très clair = position clôturée
+    row_bg = "#FAFBFC" if is_sold else C["card"]
 
     row_f = ctk.CTkFrame(parent, fg_color=row_bg, corner_radius=8,
                           border_width=1, border_color=C["border"])
     row_f.pack(fill="x", padx=12, pady=2)
-    row_f.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+    row_f.grid_columnconfigure(0, weight=0, minsize=8)
+    row_f.grid_columnconfigure(1, weight=2)
+    row_f.grid_columnconfigure((2, 3, 4, 5), weight=1)
+    row_f.grid_columnconfigure(6, weight=0)
 
-    # Barre d'accent colorée à gauche
-    ctk.CTkFrame(row_f, width=3, fg_color=accent,
-                 corner_radius=2).grid(row=0, column=0, rowspan=1,
-                                       sticky="ns", padx=(4, 0), pady=4)
+    # Colonne 0 : barre d'accent (dédiée, plus jamais réutilisée)
+    # height=1 : évite la taille par défaut 200px de CTkFrame (sticky="ns"
+    # l'étirera ensuite à la hauteur réelle de la ligne).
+    ctk.CTkFrame(row_f, width=3, height=1, fg_color=accent,
+                 corner_radius=2).grid(row=0, column=0, sticky="ns", padx=(4, 0), pady=6)
 
+    # Colonne 1 : nom + badge + sous-ligne
     name_cell = ctk.CTkFrame(row_f, fg_color="transparent")
-    name_cell.grid(row=0, column=0, padx=(14, 10), pady=8, sticky="w")
+    name_cell.grid(row=0, column=1, padx=(10, 10), pady=8, sticky="w")
 
-    # ── Ligne nom + badge ─────────────────────────────────────
     name_line = ctk.CTkFrame(name_cell, fg_color="transparent")
     name_line.pack(anchor="w")
     ctk.CTkLabel(name_line, text=asset["asset_name"],
@@ -576,7 +777,6 @@ def _asset_row(parent, asset, db, app):
                  font=ctk.CTkFont(size=9),
                  text_color=C["muted"]).pack(anchor="w")
 
-    # ── Sous-ligne ventes (mode partiel ou vendu) ─────────────
     if pos_status and pos_status["has_sales"]:
         rp     = pos_status["realized_pnl"]
         rp_clr = C["green"] if rp >= 0 else C["red"]
@@ -586,55 +786,52 @@ def _asset_row(parent, asset, db, app):
         if is_partial:
             txt = (f"↳ {sale_qty:g} vendu(s) à {sale_avg:,.2f} € moy. "
                    f"·  P&L réalisé : {sign}{rp:,.0f} €")
-        else:  # vendu total
+        else:
             txt = (f"↳ Total vendu : {sale_qty:g} à {sale_avg:,.2f} € moy. "
                    f"·  P&L réalisé : {sign}{rp:,.0f} €")
         ctk.CTkLabel(name_cell, text=txt,
                      font=ctk.CTkFont(size=9, weight="bold"),
                      text_color=rp_clr).pack(anchor="w", pady=(2, 0))
 
+    # Colonne 2 : valeur
     ctk.CTkLabel(row_f, text=f"{value:,.2f} €",
                  font=ctk.CTkFont(size=12, weight="bold"),
-                 text_color=C["primary"]).grid(row=0, column=1, padx=10, pady=8, sticky="w")
+                 text_color=C["primary"]).grid(row=0, column=2, padx=10, pady=8, sticky="w")
 
     is_compte_type = (asset["asset_type"] == "compte")
 
-    # Colonne 2 : Prix d'achat (invest.) ou Total versé (compte)
-    if is_compte_type:
-        col2_text  = f"{cost_basis:,.2f} €" if cost_basis else "—"
-        col2_color = C["muted"]
-    else:
-        col2_text  = f"{cost_basis:,.2f} €" if cost_basis else "—"
-        col2_color = C["muted"]
-    ctk.CTkLabel(row_f, text=col2_text,
-                 font=ctk.CTkFont(size=11), text_color=col2_color).grid(
-        row=0, column=2, padx=10, pady=8, sticky="w")
+    # Colonne 3 : prix d'achat / total versé
+    col3_text = f"{cost_basis:,.2f} €" if cost_basis else "—"
+    ctk.CTkLabel(row_f, text=col3_text,
+                 font=ctk.CTkFont(size=11), text_color=C["muted"]).grid(
+        row=0, column=3, padx=10, pady=8, sticky="w")
 
-    # Colonne 3 : Intérêts gagnés (compte) ou Plus-value (invest.)
+    # Colonne 4 : intérêts gagnés (compte) ou plus-value (invest.)
     if is_compte_type:
         if cost_basis and cost_basis > 0:
-            interets = value - cost_basis
-            sign = "+" if interets >= 0 else ""
+            interets  = value - cost_basis
+            sign      = "+" if interets >= 0 else ""
             pnl_text  = f"{sign}{interets:,.0f} €"
             pnl_color = C["green"] if interets >= 0 else C["red"]
         else:
-            pnl_text  = "—"
-            pnl_color = C["muted"]
+            pnl_text, pnl_color = "—", C["muted"]
     else:
         pnl_text  = _fmt_pnl(pnl, pnl_pct)
         pnl_color = C["green"] if (pnl or 0) >= 0 else C["red"]
     ctk.CTkLabel(row_f, text=pnl_text,
-                 font=ctk.CTkFont(size=11), text_color=pnl_color,
-                 justify="left").grid(row=0, column=3, padx=10, pady=8, sticky="w")
+                 font=ctk.CTkFont(size=11), text_color=pnl_color).grid(
+        row=0, column=4, padx=10, pady=8, sticky="w")
 
+    # Colonne 5 : variation vs mois précédent
     var_text  = _fmt_pnl(var_prev, var_prev_pct)
     var_color = C["green"] if (var_prev or 0) >= 0 else C["red"]
     ctk.CTkLabel(row_f, text=var_text,
-                 font=ctk.CTkFont(size=11), text_color=var_color,
-                 justify="left").grid(row=0, column=4, padx=10, pady=8, sticky="w")
+                 font=ctk.CTkFont(size=11), text_color=var_color).grid(
+        row=0, column=5, padx=10, pady=8, sticky="w")
 
-    btns  = ctk.CTkFrame(row_f, fg_color="transparent")
-    btns.grid(row=0, column=5, padx=6, pady=4)
+    # Colonne 6 : boutons d'action
+    btns = ctk.CTkFrame(row_f, fg_color="transparent")
+    btns.grid(row=0, column=6, padx=6, pady=4)
     today = datetime.date.today()
 
     def edit_asset():
@@ -693,8 +890,6 @@ def _asset_row(parent, asset, db, app):
     btn_evol.pack(side="left", padx=(0, 2))
     Tooltip(btn_evol, "Évolution historique")
 
-    # Bouton "♻ Réinvesti" — uniquement pour positions vendues dont le cash
-    # n'a pas encore été marqué réinvesti.
     if is_sold and not pos_status["all_reinvested"]:
         def mark_reinvested():
             db.mark_sales_reinvested(asset["asset_name"], reinvested=True)
@@ -717,189 +912,6 @@ def _asset_row(parent, asset, db, app):
                             command=_del_asset)
     btn_del.pack(side="left")
     Tooltip(btn_del, "Supprimer l'actif")
-
-
-# ─────────────────────────────────────────────────────────────
-#  Section "Positions clôturées" (archive des ventes)
-# ─────────────────────────────────────────────────────────────
-def _render_closed_positions(parent, closed: list[dict], db, app, row: int):
-    """Affiche la liste des positions soldées avec P&L réalisé et bouton ♻ Réinvesti."""
-    card = make_card(parent)
-    card.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
-
-    # ── Header repliable ──
-    hdr = ctk.CTkFrame(card, fg_color="transparent")
-    hdr.pack(fill="x", padx=16, pady=(14, 4))
-
-    nb_pending = sum(1 for c in closed if not c["all_reinvested"])
-    total_pnl  = sum(c["realized_pnl"] for c in closed)
-    pnl_clr    = C["green"] if total_pnl >= 0 else C["red"]
-    pnl_sign   = "+" if total_pnl >= 0 else ""
-
-    title_lbl = ctk.CTkLabel(
-        hdr,
-        text=f"💼  Positions clôturées  ·  {len(closed)} position{'s' if len(closed) > 1 else ''}",
-        font=ctk.CTkFont(size=14, weight="bold"),
-        text_color=C["text"],
-    )
-    title_lbl.pack(side="left")
-    if nb_pending:
-        _badge(hdr, f"{nb_pending} cash en attente", "#ECFDF5", "#047857")
-    ctk.CTkLabel(hdr,
-                 text=f"P&L total réalisé : {pnl_sign}{total_pnl:,.0f} €",
-                 font=ctk.CTkFont(size=12, weight="bold"),
-                 text_color=pnl_clr).pack(side="right")
-
-    # ── En-tête colonnes ──
-    th = ctk.CTkFrame(card, fg_color=C["light"], corner_radius=6)
-    th.pack(fill="x", padx=12, pady=(0, 4))
-    th.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
-    headers = ["Nom", "Qté vendue", "Prix vente moy.", "P&L réalisé",
-               "Dernière vente", "Statut"]
-    for i, h in enumerate(headers):
-        ctk.CTkLabel(th, text=h,
-                     font=ctk.CTkFont(size=10, weight="bold"),
-                     text_color=C["muted"]).grid(
-            row=0, column=i, padx=10, pady=6, sticky="w")
-
-    # ── Lignes ──
-    for idx, c in enumerate(closed):
-        bg     = C["card"] if idx % 2 == 0 else "#FAFBFC"
-        rp     = c["realized_pnl"]
-        rp_clr = C["green"] if rp >= 0 else C["red"]
-        sign   = "+" if rp >= 0 else ""
-        last_y, last_m = c["last_sale_ym"] or (0, 0)
-        date_lbl = (f"{MONTHS_FR[last_m - 1][:3]} {last_y}"
-                    if last_m else "—")
-
-        row_f = ctk.CTkFrame(card, fg_color=bg, corner_radius=6)
-        row_f.pack(fill="x", padx=12, pady=1)
-        row_f.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
-        row_f.grid_columnconfigure(6, weight=0)
-
-        # Nom + type
-        n_cell = ctk.CTkFrame(row_f, fg_color="transparent")
-        n_cell.grid(row=0, column=0, padx=10, pady=8, sticky="w")
-        ctk.CTkLabel(n_cell, text=c["asset_name"],
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w")
-        ctk.CTkLabel(n_cell, text=ASSET_LABEL.get(c["asset_type"], c["asset_type"]),
-                     font=ctk.CTkFont(size=9),
-                     text_color=C["muted"]).pack(anchor="w")
-
-        # Qté vendue
-        ctk.CTkLabel(row_f, text=f"{c['sale_qty']:g}",
-                     font=ctk.CTkFont(size=11),
-                     text_color=C["text"]).grid(
-            row=0, column=1, padx=10, pady=8, sticky="w")
-        # Prix vente moyen
-        ctk.CTkLabel(row_f, text=f"{c['avg_sale_price']:,.2f} €",
-                     font=ctk.CTkFont(size=11),
-                     text_color=C["text"]).grid(
-            row=0, column=2, padx=10, pady=8, sticky="w")
-        # P&L réalisé
-        ctk.CTkLabel(row_f,
-                     text=f"{sign}{rp:,.0f} €",
-                     font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color=rp_clr).grid(
-            row=0, column=3, padx=10, pady=8, sticky="w")
-        # Date
-        ctk.CTkLabel(row_f, text=date_lbl,
-                     font=ctk.CTkFont(size=11),
-                     text_color=C["muted"]).grid(
-            row=0, column=4, padx=10, pady=8, sticky="w")
-        # Statut réinvesti
-        if c["all_reinvested"]:
-            ctk.CTkLabel(row_f, text="♻ Réinvesti",
-                         font=ctk.CTkFont(size=10, weight="bold"),
-                         text_color=C["muted"]).grid(
-                row=0, column=5, padx=10, pady=8, sticky="w")
-        else:
-            ctk.CTkLabel(row_f, text=f"💵 Cash : {c['cash_pending']:,.0f} €",
-                         font=ctk.CTkFont(size=10, weight="bold"),
-                         text_color="#047857").grid(
-                row=0, column=5, padx=10, pady=8, sticky="w")
-
-        # ── Boutons ──
-        btns = ctk.CTkFrame(row_f, fg_color="transparent")
-        btns.grid(row=0, column=6, padx=6, pady=4)
-
-        if not c["all_reinvested"]:
-            def _reinvest(name=c["asset_name"]):
-                db.mark_sales_reinvested(name, reinvested=True)
-                app._go("patrimoine")
-            ctk.CTkButton(btns, text="♻ Réinvesti", width=98, height=26,
-                          fg_color="#ECFDF5", text_color="#047857",
-                          hover_color="#D1FAE5",
-                          font=ctk.CTkFont(size=10, weight="bold"),
-                          command=_reinvest).pack(side="left", padx=(0, 2))
-        else:
-            def _undo(name=c["asset_name"]):
-                db.mark_sales_reinvested(name, reinvested=False)
-                app._go("patrimoine")
-            btn_undo = ctk.CTkButton(btns, text="↩", width=30, height=26,
-                                     fg_color="#F5F3FF", text_color="#8B5CF6",
-                                     hover_color="#EDE9FE",
-                                     command=_undo)
-            btn_undo.pack(side="left", padx=(0, 2))
-            Tooltip(btn_undo, "Annuler réinvestissement")
-
-        # Bouton voir transactions (utilise un asset minimal)
-        def _show_tx(name=c["asset_name"], typ=c["asset_type"]):
-            import datetime as _dt
-            today = _dt.date.today()
-            # Reconstruit un asset minimal pour le dialog
-            asset_min = {
-                "asset_name": name, "asset_type": typ,
-                "value": 0.0, "cost_basis": 0.0,
-                "id": -1, "year": today.year, "month": today.month,
-                "notes": "",
-            }
-            AssetTransactionsDialog(app, asset_min, db, app, today.year, today.month)
-
-        btn_tx = ctk.CTkButton(btns, text="📋", width=30, height=26,
-                               fg_color="#FFF7ED", text_color="#F97316",
-                               hover_color="#FFEDD5",
-                               command=_show_tx)
-        btn_tx.pack(side="left")
-        Tooltip(btn_tx, "Voir les transactions")
-
-    # ── Bouton export CSV (déclaration fiscale) ──
-    foot = ctk.CTkFrame(card, fg_color="transparent")
-    foot.pack(fill="x", padx=12, pady=(8, 12))
-
-    def _export_closed_csv():
-        import tkinter.filedialog as fd
-        import csv as _csv
-        path = fd.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv")],
-            initialfile="positions_cloturees.csv",
-        )
-        if not path:
-            return
-        with open(path, "w", newline="", encoding="utf-8-sig") as f:
-            w = _csv.writer(f, delimiter=";")
-            w.writerow(["Nom", "Type", "Qté vendue", "Prix vente moy. (€)",
-                        "Investi (€)", "P&L réalisé (€)", "Frais (€)",
-                        "Dernière vente", "Cash réinvesti"])
-            for c in closed:
-                ly, lm = c["last_sale_ym"] or (0, 0)
-                w.writerow([
-                    c["asset_name"],
-                    ASSET_LABEL.get(c["asset_type"], c["asset_type"]),
-                    f"{c['sale_qty']:g}",
-                    f"{c['avg_sale_price']:.2f}",
-                    f"{c['sale_proceeds'] - c['realized_pnl']:.2f}",
-                    f"{c['realized_pnl']:.2f}",
-                    f"{c['total_fees']:.2f}",
-                    f"{MONTHS_FR[lm-1]} {ly}" if lm else "",
-                    "Oui" if c["all_reinvested"] else "Non",
-                ])
-
-    ctk.CTkButton(foot, text="📄  Exporter CSV", height=32,
-                  fg_color=C["muted"], hover_color="#475569",
-                  command=_export_closed_csv).pack(side="right")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -982,17 +994,11 @@ def _style_ax(ax):
 def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
                                type_lbl_to_key=None, period_filter="Tout"):
 
-    hdr = ctk.CTkFrame(card, fg_color="transparent")
-    hdr.pack(fill="x", padx=12, pady=(12, 0))
-    ctk.CTkLabel(hdr, text="Graphiques",
-                 font=ctk.CTkFont(size=13, weight="bold"),
-                 text_color=C["text"]).pack(side="left")
-
     tabs = ctk.CTkTabview(card, fg_color="transparent",
                           segmented_button_fg_color=C["light"],
                           segmented_button_selected_color=C["primary"],
                           segmented_button_selected_hover_color=C["primary"])
-    tabs.pack(fill="both", expand=True, padx=6, pady=(4, 10))
+    tabs.pack(fill="both", expand=True, padx=6, pady=(10, 10))
     tabs.add("📈  Évolution")
     tabs.add("🥧  Répartition")
     tabs.add("📊  Par actif")
@@ -1058,7 +1064,6 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
                 ax.plot(x, bases, color=C["amber"], lw=2, ls="--",
                         marker="s", ms=4, label="Investi", zorder=3)
                 lines_data.append(("Investi", x, bases, C["amber"]))
-                # Zone de gain/perte
                 ax.fill_between(x, vals, bases,
                                 where=[v >= b for v, b in zip(vals, bases)],
                                 alpha=0.12, color=C["green"], label="_nolegend_")
@@ -1075,7 +1080,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
         return fig, (ax, pts, lines_data, per_asset_mode)
 
     if len(history) >= 2:
-        fig_ev, (ax_ev, pts_ev, lines_ev, pam_ev) = _build_ev_fig(5.6, 4.0)
+        fig_ev, (ax_ev, pts_ev, lines_ev, pam_ev) = _build_ev_fig(11.0, 5.0)
         cv_ev = FigureCanvasTkAgg(fig_ev, ev_tab)
         cv_ev.draw_idle()
         cv_ev.get_tk_widget().pack(fill="both", expand=True)
@@ -1198,7 +1203,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
         return fig2, (ax2, wedges, pie_labels, pie_vals, colors2, total_pie)
 
     if pie_rows:
-        fig2, (ax2, wedges2, plabels, pvals, pcolors, ptotal) = _build_pie_fig(5.2, 4.0)
+        fig2, (ax2, wedges2, plabels, pvals, pcolors, ptotal) = _build_pie_fig(9.5, 5.0)
         cv2 = FigureCanvasTkAgg(fig2, pie_tab)
         cv2.draw_idle()
         cv2.get_tk_widget().pack(fill="both", expand=True)
@@ -1313,7 +1318,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
         return fig3, (ax3, bars3, b_sorted, b_vals, uniq_types, b_colors)
 
     if bar_assets:
-        fig3, (ax3, bars3, bsorted, bvals, utypes, bcolors) = _build_bar_fig(5.4, 4.0)
+        fig3, (ax3, bars3, bsorted, bvals, utypes, bcolors) = _build_bar_fig(9.8, 5.0)
         cv3 = FigureCanvasTkAgg(fig3, bar_tab)
         cv3.draw_idle()
         cv3.get_tk_widget().pack(fill="both", expand=True)
@@ -1418,17 +1423,14 @@ def _render_diversification_tab(parent, db, type_filter, type_lbl_to_key):
     scroll = ctk.CTkScrollableFrame(parent, fg_color=C["card"])
     scroll.pack(fill="both", expand=True)
 
-    # Score de diversification (Herfindahl simplifié)
     weights = [v / total_val for v in by_type.values()] if total_val > 0 else []
-    hhi     = sum(w ** 2 for w in weights)  # 1 = mono-actif, 1/n = parfait
+    hhi     = sum(w ** 2 for w in weights)
     n_types = len(by_type)
-    # Score 0-100 : 100 = parfaitement diversifié
     score   = int(max(0, min(100, (1 - hhi) / max(1 - 1/max(n_types,1), 0.001) * 100))) if n_types > 1 else 0
 
     score_color = C["green"] if score >= 70 else (C["amber"] if score >= 40 else C["red"])
     score_label = "Bien diversifié" if score >= 70 else ("Diversification modérée" if score >= 40 else "Peu diversifié")
 
-    # ── Score card ───────────────────────────────────────────
     sc = ctk.CTkFrame(scroll, fg_color="#F8FAFC", corner_radius=10,
                       border_width=1, border_color=C["border"])
     sc.pack(fill="x", padx=8, pady=(8, 4))
@@ -1443,7 +1445,6 @@ def _render_diversification_tab(parent, db, type_filter, type_lbl_to_key):
                               corner_radius=6, height=14)
     bar_frame.pack(fill="x", pady=(6, 4))
     bar_frame.pack_propagate(False)
-    # Barre de progression
     bar_inner = ctk.CTkFrame(bar_frame, fg_color=score_color,
                               corner_radius=6, height=14)
     bar_inner.place(relx=0, rely=0, relwidth=score/100, relheight=1)
@@ -1456,7 +1457,6 @@ def _render_diversification_tab(parent, db, type_filter, type_lbl_to_key):
     ctk.CTkLabel(row_sc, text=f"{n_types} type{'s' if n_types > 1 else ''} d'actifs",
                  font=ctk.CTkFont(size=11), text_color=C["muted"]).pack(side="right")
 
-    # ── Répartition par type ─────────────────────────────────
     ctk.CTkLabel(scroll, text="Répartition par type d'actif",
                  font=ctk.CTkFont(size=12, weight="bold"),
                  text_color=C["text"]).pack(anchor="w", padx=8, pady=(10, 4))
@@ -1482,7 +1482,7 @@ def _render_diversification_tab(parent, db, type_filter, type_lbl_to_key):
                            border_width=1, border_color=C["border"])
         row.pack(fill="x", padx=8, pady=3)
 
-        ctk.CTkFrame(row, width=4, fg_color=accent,
+        ctk.CTkFrame(row, width=4, height=1, fg_color=accent,
                      corner_radius=3).pack(side="left", fill="y", padx=(0, 10), pady=6)
 
         info = ctk.CTkFrame(row, fg_color="transparent")
@@ -1513,7 +1513,6 @@ def _render_diversification_tab(parent, db, type_filter, type_lbl_to_key):
             ctk.CTkLabel(bottom_row, text=range_txt,
                          font=ctk.CTkFont(size=10), text_color=range_col).pack(side="right", padx=12)
 
-    # ── Conseil ──────────────────────────────────────────────
     if n_types == 1:
         tip = "⚠️  Concentration totale sur un seul type d'actif. Envisagez de diversifier."
         tip_color = C["red"]
