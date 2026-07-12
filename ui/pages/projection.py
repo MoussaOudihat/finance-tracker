@@ -158,6 +158,15 @@ class ProjectionPage:
         horizon_buttons_frame.pack(fill="x", pady=(4, 0))
 
         horizon_var = ctk.StringVar(value="20")
+        horizon_buttons: dict[str, ctk.CTkButton] = {}
+
+        def _update_horizon_style():
+            for v, b in horizon_buttons.items():
+                is_active = (v == horizon_var.get())
+                b.configure(
+                    fg_color=C["primary"] if is_active else C["light"],
+                    text_color="white" if is_active else C["muted"],
+                )
 
         for label, value in [("5 ans", "5"), ("10 ans", "10"), ("20 ans", "20"), ("30 ans", "30")]:
             btn = ctk.CTkButton(
@@ -168,9 +177,13 @@ class ProjectionPage:
                 command=lambda v=value: (
                     horizon_var.set(v),
                     state.update({"horizon_ans": int(v)}),
+                    _update_horizon_style(),
                 ),
             )
             btn.pack(side="left", padx=4)
+            horizon_buttons[value] = btn
+
+        _update_horizon_style()
 
         # --- Inflation ---
         inflation_frame = ctk.CTkFrame(params_inner, fg_color="transparent")
