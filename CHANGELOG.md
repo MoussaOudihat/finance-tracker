@@ -6,6 +6,26 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.2.3] — 2026-07-12
+
+### Ajouté
+- 🔄 **Synchronisation automatique Épargne → Patrimoine** : ajouter une épargne sur un compte déjà suivi dans Patrimoine (ex. "bourso" ou "boursobank" → « Bourso+ ») met à jour automatiquement le solde et le total versé de ce compte. Correspondance approximative (insensible casse/ponctuation), mais uniquement si elle est unique — un nom ambigu ou inconnu (ex. "Fortuneo" non suivi) n'est jamais synchronisé, pour ne jamais toucher au mauvais compte. Modifier ou supprimer une épargne liée ajuste le solde en conséquence. Un message confirme chaque synchronisation.
+- 📊 **Refonte de la page Patrimoine** : découpée en 5 sous-onglets (Vue d'ensemble, Actifs, Passifs, Clôturées, Graphiques) avec un bandeau permanent (patrimoine total, valeur nette, cash en attente) toujours visible, pour remplacer l'ancienne page surchargée en une seule colonne.
+
+### Corrigé
+- 🐛 **Épargne (mois clôturé)** : la liste des épargnes existantes s'affichait vide au lieu d'apparaître en lecture seule.
+- 🐛 **Budget mensuel** : les lignes du tableau s'étiraient sur ~200px de haut (taille par défaut CustomTkinter non corrigée), rendant la page illisible dès qu'il y avait plusieurs catégories.
+- 🐛 **Patrimoine (liste Actifs)** : chevauchement de cellules dans la grille des lignes d'actifs, et le même bug d'étirement à 200px sur les barres d'accent colorées.
+- 🐛 **Projection** : les boutons d'horizon (5/10/20/30 ans) n'indiquaient jamais visuellement lequel était sélectionné.
+- 🔐 **Transactions d'actifs** : le champ "Frais" acceptait silencieusement du texte invalide comme 0€ ; avertissement ajouté avant de supprimer une transaction de vente.
+
+### Sécurité / robustesse
+- Garde-fou empêchant la synchronisation Épargne → Patrimoine de corrompre l'historique lors de la saisie rétroactive d'un mois passé.
+- Plancher à 0 sur les soldes/totaux versés (jamais de solde négatif affiché).
+- Longueur minimale sur la correspondance de nom de compte (évite les faux positifs sur des noms trop courts).
+
+---
+
 ## [1.2.2] — 2026-07-11
 
 ### Corrigé

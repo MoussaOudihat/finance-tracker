@@ -126,7 +126,10 @@ class BudgetPage:
 
     # ── En-tête du tableau ─────────────────────────────────────
     def _create_table_header(self, parent):
-        header_bg = ctk.CTkFrame(parent, fg_color=C["light"], corner_radius=6)
+        # width=1, height=1 : évite la taille par défaut 200×200 de CTkFrame
+        # (sinon la ligne s'étire à ~200px de haut, laissant un grand vide)
+        header_bg = ctk.CTkFrame(parent, fg_color=C["light"], corner_radius=6,
+                                 width=1, height=1)
         header_bg.grid(row=0, column=0, columnspan=7, sticky="nsew", padx=2, pady=(0, 4))
 
         cols = [
@@ -147,7 +150,7 @@ class BudgetPage:
                            year, month, db):
         bg = C["light"] if row_idx % 2 == 0 else C["card"]
 
-        row_bg = ctk.CTkFrame(parent, fg_color=bg, corner_radius=6)
+        row_bg = ctk.CTkFrame(parent, fg_color=bg, corner_radius=6, width=1, height=1)
         row_bg.grid(row=row_idx, column=0, columnspan=7, sticky="nsew", padx=2, pady=1)
 
         # Catégorie
@@ -248,7 +251,8 @@ class BudgetPage:
     def _create_total_row(self, parent, row_idx, total_budget, total_actual):
         bg = "#F0F7FF"
         row_bg = ctk.CTkFrame(parent, fg_color=bg, corner_radius=8,
-                              border_width=2, border_color=C["blue"])
+                              border_width=2, border_color=C["blue"],
+                              width=1, height=1)
         row_bg.grid(row=row_idx, column=0, columnspan=7, sticky="nsew", padx=2, pady=(6, 0))
 
         for col, (txt, color) in enumerate([

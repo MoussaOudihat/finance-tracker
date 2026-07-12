@@ -216,6 +216,9 @@ class Database:
             "ALTER TABLE asset_transactions ADD COLUMN reinvested_into TEXT DEFAULT ''",
             # Clôture de mois : 0 = ouvert, 1 = clôturé (saisie verrouillée)
             "ALTER TABLE months ADD COLUMN closed INTEGER DEFAULT 0",
+            # Nom de l'actif Patrimoine (type 'compte') auto-synchronisé avec
+            # cette épargne, si une correspondance a été trouvée à la saisie.
+            "ALTER TABLE savings ADD COLUMN linked_asset_name TEXT DEFAULT ''",
         ]
         for stmt in migrations:
             try:
@@ -556,28 +559,150 @@ class Database:
     # ──────────────────────────────────────────
     #  SAVINGS
     # ──────────────────────────────────────────
+    @staticmethod
+    def _normalize_account_name(name: str) -> str:
+        return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+    # Longueur minimale du nom normalisé pour tenter une correspondance —
+    # évite qu'un nom de compte trop court/générique ("CB", "A") matche
+    # accidentellement un actif sans rapport.
+    _MIN_MATCH_LEN = 3
+
+    def _match_compte_asset(self, account_name: str, assets_current: list = None):
+        """
+        Cherche un actif Patrimoine de type 'compte' dont le nom correspond
+        (partiellement, insensible casse/ponctuation) au compte saisi en
+        épargne — ex. "bourso" ou "boursobank" correspondent à "Bourso+".
+        Ne renvoie une correspondance que si elle est UNIQUE : en cas
+        d'ambiguïté (0 ou plusieurs candidats), on ne synchronise pas,
+        pour éviter d'ajuster le mauvais compte silencieusement.
+
+        assets_current : liste optionnelle déjà chargée (évite de refaire
+        get_assets_current() si l'appelant l'a déjà en main).
+        """
+        norm_input = self._normalize_account_name(account_name)
+        if len(norm_input) < self._MIN_MATCH_LEN:
+            return None
+        match = None
+        for a in (assets_current if assets_current is not None else self.get_assets_current()):
+            if a["asset_type"] != "compte":
+                continue
+            norm_asset = self._normalize_account_name(a["asset_name"])
+            if norm_asset and (norm_input in norm_asset or norm_asset in norm_input):
+                if match is not None:
+                    return None  # 2e candidat -> ambigu, on arrête tout de suite
+                match = a
+        return match
+
+    def _apply_saving_to_asset(self, year, month, asset_name: str, delta: float,
+                               asset: dict = None):
+        """
+        Ajuste le solde ET le total versé d'un compte Patrimoine du montant
+        delta (positif = dépôt, négatif = retrait/annulation) pour le mois
+        de l'épargne concernée.
+
+        asset : dict optionnel déjà résolu (évite de refaire get_assets_current()).
+
+        Ne fait rien (silencieusement, sauf log) si l'actif n'est plus
+        trouvable (ex. renommé depuis le lien d'origine) — mieux vaut ne pas
+        toucher au patrimoine que d'ajuster le mauvais compte.
+
+        Ne synchronise pas non plus si (year, month) est STRICTEMENT avant
+        le dernier instantané connu de l'actif : appliquer le delta "valeur
+        actuelle ± montant" sur un mois passé écraserait l'historique avec
+        un chiffre qui n'a jamais existé à cette date.
+        """
+        current = asset or next(
+            (a for a in self.get_assets_current()
+             if a["asset_type"] == "compte" and a["asset_name"] == asset_name),
+            None,
+        )
+        if not current:
+            log.warning(
+                "Épargne liée à un compte introuvable (renommé/supprimé ?) : %s — "
+                "ajustement ignoré.", asset_name,
+            )
+            return
+        if (year, month) < (current["year"], current["month"]):
+            log.info(
+                "Épargne pour %s/%s antérieure au dernier instantané connu de %s "
+                "(%s/%s) — synchronisation ignorée pour ne pas corrompre l'historique.",
+                year, month, asset_name, current["year"], current["month"],
+            )
+            return
+        new_value = max(0.0, (current["value"] or 0.0) + delta)
+        new_cost  = max(0.0, (current["cost_basis"] or 0.0) + delta)
+        self.upsert_asset(year, month, "compte", asset_name,
+                          new_value, new_cost, current["notes"] or "")
+
     def add_saving(self, year, month, account, amount, label=""):
         if amount is None or float(amount) <= 0:
             raise ValueError(f"Montant épargne invalide : {amount!r} (doit être > 0)")
+        amount = float(amount)
         mid = self.month_id(year, month)
+        assets_current = self.get_assets_current()
+        matched = self._match_compte_asset(account, assets_current)
+        linked_name = matched["asset_name"] if matched else ""
         self.con.execute(
-            "INSERT INTO savings(month_id, account, amount, label) VALUES(?,?,?,?)",
-            (mid, account, float(amount), label),
+            "INSERT INTO savings(month_id, account, amount, label, linked_asset_name) "
+            "VALUES(?,?,?,?,?)",
+            (mid, account, amount, label, linked_name),
         )
         self.con.commit()
+        if matched:
+            self._apply_saving_to_asset(year, month, matched["asset_name"], amount, asset=matched)
         self._invalidate()
+        return linked_name or None
 
     def update_saving(self, sav_id, account, amount, label):
+        if amount is None or float(amount) <= 0:
+            raise ValueError(f"Montant épargne invalide : {amount!r} (doit être > 0)")
+        amount = float(amount)
+        old = self.con.execute(
+            "SELECT s.account, s.amount, s.linked_asset_name, m.year, m.month "
+            "FROM savings s JOIN months m ON s.month_id = m.id WHERE s.id=?",
+            (sav_id,),
+        ).fetchone()
+
+        # Rien à faire si ni le compte ni le montant n'ont changé (évite deux
+        # écritures Patrimoine superflues pour une simple correction de libellé).
+        if old and old["account"] == account and old["amount"] == amount:
+            self.con.execute(
+                "UPDATE savings SET label=? WHERE id=?", (label, sav_id))
+            self.con.commit()
+            self._invalidate()
+            return old["linked_asset_name"] or None
+
+        assets_current = self.get_assets_current()
+        if old and old["linked_asset_name"]:
+            self._apply_saving_to_asset(
+                old["year"], old["month"], old["linked_asset_name"], -old["amount"],
+            )
+            assets_current = self.get_assets_current()  # la valeur vient de changer
+
+        matched = self._match_compte_asset(account, assets_current)
+        linked_name = matched["asset_name"] if matched else ""
         self.con.execute(
-            "UPDATE savings SET account=?, amount=?, label=? WHERE id=?",
-            (account, amount, label, sav_id),
+            "UPDATE savings SET account=?, amount=?, label=?, linked_asset_name=? WHERE id=?",
+            (account, amount, label, linked_name, sav_id),
         )
         self.con.commit()
+        if matched and old:
+            self._apply_saving_to_asset(old["year"], old["month"], matched["asset_name"], amount)
         self._invalidate()
+        return linked_name or None
 
     def delete_saving(self, sav_id: int):
+        old = self.con.execute(
+            "SELECT s.amount, s.linked_asset_name, m.year, m.month "
+            "FROM savings s JOIN months m ON s.month_id = m.id WHERE s.id=?",
+            (sav_id,),
+        ).fetchone()
         self.con.execute("DELETE FROM savings WHERE id=?", (sav_id,))
         self.con.commit()
+        if old and old["linked_asset_name"]:
+            self._apply_saving_to_asset(
+                old["year"], old["month"], old["linked_asset_name"], -old["amount"])
         self._invalidate()
 
     def get_savings(self, year, month) -> list:

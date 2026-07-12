@@ -3,7 +3,7 @@
 > Application desktop Windows pour suivre ses finances personnelles — **locale, sécurisée, open source.**  
 > Synchronisation Supabase optionnelle pour le multi-appareils.
 
-![Version](https://img.shields.io/badge/Version-1.2.2-4F46E5)
+![Version](https://img.shields.io/badge/Version-1.2.3-4F46E5)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-22C55E)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows)
