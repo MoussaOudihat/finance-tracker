@@ -121,7 +121,7 @@ def month_selector(parent, months_fr, sel_year, sel_month, on_change) -> ctk.CTk
 # ──────────────────────────────────────────────────────────
 #  Tableaux
 # ──────────────────────────────────────────────────────────
-def table_header(parent, columns: list[tuple[int, str]]):
+def table_header(parent, columns: list[tuple[int, str]], extra_button_cols: int = 0):
     """
     Configure les colonnes du parent (grille PARTAGÉE par toutes les lignes)
     et affiche l'en-tête directement dans parent.
@@ -129,19 +129,24 @@ def table_header(parent, columns: list[tuple[int, str]]):
     Principe : header et lignes sont dans la MÊME grille du parent.
     tkinter calcule donc les largeurs de colonnes en prenant le maximum
     sur TOUS les widgets → alignement parfait indépendamment du contenu.
+
+    extra_button_cols : nombre de colonnes boutons additionnelles réservées
+    avant les colonnes ✏/✕ (doit correspondre au nombre d'extra_buttons
+    passés à chaque table_row de ce tableau).
     """
-    n = len(columns)
+    n         = len(columns)
+    n_btn_cols = extra_button_cols + 2   # extra + ✏ + ✕
     # Configure les colonnes du parent UNE SEULE FOIS pour toutes les lignes
     for i, (weight, _) in enumerate(columns):
         parent.grid_columnconfigure(i, weight=weight)
-    parent.grid_columnconfigure(n,     weight=0)   # colonne bouton ✏
-    parent.grid_columnconfigure(n + 1, weight=0)   # colonne bouton ✕
+    for j in range(n_btn_cols):
+        parent.grid_columnconfigure(n + j, weight=0)
 
     # Fond de l'en-tête (placé derrière via lower)
     # width=1, height=1 : évite la taille par défaut 200×200 de CTkFrame
     hdr_bg = ctk.CTkFrame(parent, fg_color=C["light"], corner_radius=6,
                           width=1, height=1)
-    hdr_bg.grid(row=0, column=0, columnspan=n + 2,
+    hdr_bg.grid(row=0, column=0, columnspan=n + n_btn_cols,
                 sticky="nsew", padx=2, pady=(0, 4))
 
     for i, (_, label) in enumerate(columns):
@@ -156,20 +161,31 @@ def table_header(parent, columns: list[tuple[int, str]]):
 
 
 def table_row(parent, row_idx: int, cols: list,
-              on_edit=None, on_delete=None) -> None:
+              on_edit=None, on_delete=None,
+              extra_buttons: list[tuple] = None,
+              delete_label: str = "cet élément",
+              delete_warning: str = None) -> None:
     """
     Insère une ligne de données DIRECTEMENT dans parent (même grille que l'en-tête).
     Les largeurs de colonnes sont partagées → alignement parfait garanti.
+
+    extra_buttons : liste optionnelle de (icone, tooltip, commande) insérée
+    dans des colonnes dédiées AVANT les colonnes ✏/✕ (qui se décalent en
+    conséquence). Le nombre d'extra_buttons doit être constant pour toutes
+    les lignes d'un même tableau et correspondre à extra_button_cols passé
+    à table_header().
     """
     n  = len(cols)
     r  = row_idx + 1                                      # ligne 0 = en-tête
     bg = C["light"] if row_idx % 2 == 0 else C["card"]
+    extra_buttons = extra_buttons or []
+    n_btn_cols = len(extra_buttons) + 2
 
     # Fond de la ligne (passé derrière les cellules via lower)
     # width=1, height=1 : évite la taille par défaut 200×200 de CTkFrame
     row_bg = ctk.CTkFrame(parent, fg_color=bg, corner_radius=6,
                           width=1, height=1)
-    row_bg.grid(row=r, column=0, columnspan=n + 2,
+    row_bg.grid(row=r, column=0, columnspan=n + n_btn_cols,
                 sticky="nsew", padx=2, pady=1)
 
     for i, col in enumerate(cols):
@@ -180,24 +196,33 @@ def table_row(parent, row_idx: int, cols: list,
             fg_color=bg,
         ).grid(row=r, column=i, padx=10, pady=7, sticky="w")
 
+    for j, (icon, tooltip, command) in enumerate(extra_buttons):
+        extra_btn = ctk.CTkButton(
+            parent, text=icon, width=30, height=26,
+            fg_color="#ECFDF5", text_color="#047857",
+            hover_color="#D1FAE5", command=command,
+        )
+        extra_btn.grid(row=r, column=n + j, padx=2, pady=4)
+        Tooltip(extra_btn, tooltip)
+
     if on_edit:
         edit_btn = ctk.CTkButton(
             parent, text="✏", width=30, height=26,
             fg_color="#EFF6FF", text_color=C["primary"],
             hover_color="#DBEAFE", command=on_edit,
         )
-        edit_btn.grid(row=r, column=n, padx=(4, 2), pady=4)
+        edit_btn.grid(row=r, column=n + len(extra_buttons), padx=(4, 2), pady=4)
         Tooltip(edit_btn, "Modifier cette ligne")
 
     if on_delete:
         def _ask_delete(fn=on_delete):
-            confirm_delete(parent, fn)
+            confirm_delete(parent, fn, label=delete_label, extra_warning=delete_warning)
         del_btn = ctk.CTkButton(
             parent, text="✕", width=30, height=26,
             fg_color="#FEE2E2", text_color=C["red"],
             hover_color="#FECACA", command=_ask_delete,
         )
-        del_btn.grid(row=r, column=n + 1, padx=(2, 8), pady=4)
+        del_btn.grid(row=r, column=n + len(extra_buttons) + 1, padx=(2, 8), pady=4)
         Tooltip(del_btn, "Supprimer cette ligne")
 
     row_bg.lower()   # fond derrière les cellules
@@ -206,14 +231,17 @@ def table_row(parent, row_idx: int, cols: list,
 # ──────────────────────────────────────────────────────────
 #  Confirmation avant suppression
 # ──────────────────────────────────────────────────────────
-def confirm_delete(parent, on_confirm, label: str = "cet élément"):
+def confirm_delete(parent, on_confirm, label: str = "cet élément",
+                    extra_warning: str = None):
     """
     Modal de confirmation avant toute suppression.
     on_confirm() n'est appelé que si l'utilisateur clique « Supprimer ».
+    extra_warning : ligne d'avertissement supplémentaire optionnelle
+    (ex : effet de bord non automatique à connaître avant de confirmer).
     """
     dlg = ctk.CTkToplevel(parent)
     dlg.title("Confirmer la suppression")
-    dlg.geometry("360x165")
+    dlg.geometry("360x225" if extra_warning else "360x165")
     dlg.resizable(False, False)
     dlg.grab_set()
     dlg.focus_force()
@@ -225,7 +253,12 @@ def confirm_delete(parent, on_confirm, label: str = "cet élément"):
     ctk.CTkLabel(dlg,
                  text="Cette action est irréversible.",
                  font=ctk.CTkFont(size=11),
-                 text_color=C["muted"]).pack(pady=(0, 18))
+                 text_color=C["muted"]).pack(pady=(0, 8 if extra_warning else 18))
+
+    if extra_warning:
+        ctk.CTkLabel(dlg, text=extra_warning,
+                     font=ctk.CTkFont(size=11), text_color=C["amber"],
+                     wraplength=310, justify="center").pack(pady=(0, 18), padx=16)
 
     btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
     btn_row.pack()

@@ -10,7 +10,7 @@ def _oneliner(text: str, maxlen: int = 55) -> str:
 
 import customtkinter as ctk
 from config import C, MONTHS_FR
-from ui.components import make_card, table_header, table_row, month_selector
+from ui.components import make_card, table_header, table_row, month_selector, show_toast
 from ui.dialogs import SavingDialog
 
 
@@ -18,6 +18,7 @@ class SavingsEntryPage:
     def render(self, container: ctk.CTkFrame, app):
         db   = app.db
         y, m = app.sel_year, app.sel_month
+        is_closed = db.is_month_closed(y, m)
 
         container.grid_columnconfigure(0, weight=1)
         container.grid_rowconfigure(1, weight=1)
@@ -45,13 +46,56 @@ class SavingsEntryPage:
         card.grid_columnconfigure(0, weight=1)
         card.grid_rowconfigure(0, weight=1)
 
-        # ── Liste scrollable ─────────────────────────────────
+        # ── Liste scrollable (row=0, toujours visible) ───────
         list_f = ctk.CTkScrollableFrame(card, fg_color=C["card"])
         list_f.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         list_f.grid_columnconfigure((0, 1, 2), weight=1)
 
-        # ── Bandeau clôture ──────────────────────────────────
-        is_closed = db.is_month_closed(y, m)
+        # ── Total (row=2, toujours visible) ──────────────────
+        total_f = ctk.CTkFrame(card, fg_color="#EFF6FF", corner_radius=8,
+                               border_width=1, border_color="#93C5FD")
+        total_f.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 8))
+        total_lbl = ctk.CTkLabel(total_f, text="",
+                                  font=ctk.CTkFont(size=14, weight="bold"),
+                                  text_color=C["blue"])
+        total_lbl.pack(side="right", padx=16, pady=9)
+
+        # ── Refresh inline ───────────────────────────────────
+        def _refresh():
+            for w in list_f.winfo_children():
+                w.destroy()
+            data = db.get_savings(y, m)
+            table_header(list_f, [(2, "Compte"), (1, "Montant"), (2, "Description")])
+            for idx, r in enumerate(data):
+                if is_closed:
+                    # Lecture seule — pas de boutons édition/suppression
+                    table_row(list_f, idx,
+                              [(2, r["account"] or "—",     C["text"]),
+                               (1, f"{r['amount']:,.2f} €", C["blue"]),
+                               (2, _oneliner(r["label"]),   C["muted"])])
+                else:
+                    def make_edit(row=r):
+                        def _edit():
+                            def _on_save(d):
+                                linked = db.update_saving(
+                                    row["id"], d["account"], d["amount"], d["label"])
+                                if linked:
+                                    show_toast(app, f"✓ Solde « {linked} » mis à jour dans Patrimoine")
+                                _refresh()
+                            SavingDialog(app, initial=dict(row), on_save=_on_save)
+                        return _edit
+                    table_row(list_f, idx,
+                              [(2, r["account"] or "—",     C["text"]),
+                               (1, f"{r['amount']:,.2f} €", C["blue"]),
+                               (2, _oneliner(r["label"]),   C["muted"])],
+                              on_edit=make_edit(),
+                              on_delete=lambda rid=r["id"]: (db.delete_saving(rid), _refresh()))
+            total_lbl.configure(
+                text=f"Total épargne : {sum(r['amount'] for r in data):,.2f} €")
+
+        _refresh()
+
+        # ── row=1 : bandeau clôture OU formulaire de saisie ──
         if is_closed:
             lock_band = ctk.CTkFrame(card, fg_color="#FEF3C7", corner_radius=10,
                                      border_width=1, border_color="#FCD34D")
@@ -81,53 +125,21 @@ class SavingsEntryPage:
         e_label   = ctk.CTkEntry(fields, placeholder_text="Description (optionnel)", height=34)
         e_label.grid(row=0, column=2, padx=(4, 0), pady=(0, 8), sticky="ew")
 
-        # ── Total ────────────────────────────────────────────
-        total_f = ctk.CTkFrame(card, fg_color="#EFF6FF", corner_radius=8,
-                               border_width=1, border_color="#93C5FD")
-        total_f.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 8))
-        total_lbl = ctk.CTkLabel(total_f, text="",
-                                  font=ctk.CTkFont(size=14, weight="bold"),
-                                  text_color=C["blue"])
-        total_lbl.pack(side="right", padx=16, pady=9)
-
-        # ── Refresh inline ───────────────────────────────────
-        def _refresh():
-            for w in list_f.winfo_children():
-                w.destroy()
-            data = db.get_savings(y, m)
-            table_header(list_f, [(2, "Compte"), (1, "Montant"), (2, "Description")])
-            for idx, r in enumerate(data):
-                def make_edit(row=r):
-                    def _edit():
-                        SavingDialog(app, initial=dict(row), on_save=lambda d: (
-                            db.update_saving(row["id"], d["account"], d["amount"], d["label"]),
-                            _refresh(),
-                        ))
-                    return _edit
-                table_row(list_f, idx,
-                          [(2, r["account"] or "—",     C["text"]),
-                           (1, f"{r['amount']:,.2f} €", C["blue"]),
-                           (2, _oneliner(r["label"]),   C["muted"])],
-                          on_edit=make_edit(),
-                          on_delete=lambda rid=r["id"]: (db.delete_saving(rid), _refresh()))
-            total_lbl.configure(
-                text=f"Total épargne : {sum(r['amount'] for r in data):,.2f} €")
-
-        _refresh()
-
         # ── Bouton + logique ajout ────────────────────────────
         def save_and_clear(event=None):
-            raw = e_amount.get().replace(",", ".").replace(" ", "").replace("\u202f", "")
+            raw = e_amount.get().strip().replace(",", ".").replace(" ", "").replace(chr(0x202f), "")
             try:
                 amount = float(raw)
             except ValueError:
                 e_amount.configure(border_color=C["red"]); return
             if amount <= 0:
                 e_amount.configure(border_color=C["red"]); return
-            db.add_saving(y, m, e_account.get().strip(), amount, e_label.get().strip())
+            linked = db.add_saving(y, m, e_account.get().strip(), amount, e_label.get().strip())
             e_account.delete(0, "end"); e_amount.delete(0, "end"); e_label.delete(0, "end")
             e_account.configure(border_color=C["primary"])
             e_amount.configure(border_color=C["primary"])
+            if linked:
+                show_toast(app, f"✓ Solde « {linked} » mis à jour dans Patrimoine")
             _refresh()
             e_account.focus()
 

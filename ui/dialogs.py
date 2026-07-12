@@ -842,7 +842,7 @@ class AssetTransactionsDialog(ctk.CTkToplevel):
             ctk.CTkButton(
                 row_f, text="✕", width=28, height=24,
                 fg_color="#FEE2E2", text_color=C["red"], hover_color="#FECACA",
-                command=lambda _tid=tid: self._delete_transaction(_tid),
+                command=lambda _tid=tid, _tt=t["trans_type"]: self._delete_transaction(_tid, _tt),
             ).grid(row=0, column=6, padx=8, pady=4)
 
             # Notes si présentes
@@ -873,12 +873,16 @@ class AssetTransactionsDialog(ctk.CTkToplevel):
             self._price_entry.configure(border_color=C["red"])
             return
 
-        # Frais (optionnel)
+        # Frais (optionnel, mais doit être numérique si renseigné)
         fees_raw = self._fees_entry.get().strip()
         try:
             fees = float(fees_raw.replace(",", ".")) if fees_raw else 0.0
+            if fees < 0:
+                raise ValueError
+            self._fees_entry.configure(border_color=C["border"])
         except ValueError:
-            fees = 0.0
+            self._fees_entry.configure(border_color=C["red"])
+            return
 
         trans_type = "achat" if self._type_var.get() == "Achat" else "vente"
         t_month    = MONTHS_FR.index(self._t_month_var.get()) + 1
@@ -898,7 +902,7 @@ class AssetTransactionsDialog(ctk.CTkToplevel):
         self._sync_after_transaction(trans_type=trans_type, transacted_qty=qty)
         self._render_all()
 
-    def _delete_transaction(self, trans_id: int):
+    def _delete_transaction(self, trans_id: int, trans_type: str = None):
         # Pour rester safe, on ne réajuste pas la valeur en sens inverse :
         # si l'utilisateur supprime une transaction, qu'il mette la valeur
         # à jour manuellement via le bouton 💰. On recalcule juste le CMUP.
@@ -907,7 +911,12 @@ class AssetTransactionsDialog(ctk.CTkToplevel):
             self._db.delete_asset_transaction(trans_id)
             self._sync_after_transaction(trans_type=None, transacted_qty=0.0)
             self._render_all()
-        confirm_delete(self, _do, label="cette transaction")
+        warning = (
+            "La valeur actuelle de l'actif ne sera pas recalculée "
+            "automatiquement — pensez à la mettre à jour via 💰 si nécessaire."
+            if trans_type == "vente" else None
+        )
+        confirm_delete(self, _do, label="cette transaction", extra_warning=warning)
 
     def _sync_cost_basis(self):
         """Conservé pour compat : ne touche que le cost_basis."""
