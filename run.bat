@@ -1,5 +1,5 @@
 @echo off
-title Finance Tracker v3.0
+title Fintrack
 color 0F
 
 :: Se placer dans le dossier du projet DES LE DEBUT
@@ -7,7 +7,7 @@ cd /d "%~dp0"
 
 echo.
 echo  ==========================================
-echo    Finance Tracker  v3.0
+echo    Fintrack
 echo  ==========================================
 echo.
 
