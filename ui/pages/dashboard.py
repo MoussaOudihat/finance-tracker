@@ -16,7 +16,7 @@ matplotlib.rcParams.update({
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR, PALETTE, ASSET_LABEL, FILTER_ALL_CATS, FILTER_ALL_PAYEES
+from config import C, MONTHS_FR, PALETTE, ASSET_LABEL, FILTER_ALL_CATS, FILTER_ALL_PAYEES, apply_chart_theme
 from ui.components import kpi_card, make_card, filter_dropdown, month_selector
 from ui.dialogs import RecurringApplyDialog, RecurringManagerDialog, MonthCloseDialog
 
@@ -26,6 +26,7 @@ class DashboardPage:
         db  = app.db
         y   = app.sel_year
         m   = app.sel_month
+        apply_chart_theme()
 
         scroll = ctk.CTkScrollableFrame(container, fg_color=C["bg"])
         scroll.grid(row=0, column=0, sticky="nsew", padx=24, pady=20)
@@ -409,7 +410,7 @@ def _add_hbar_hover(fig, ax, bars, labels, vals):
 def _open_expand(root, title: str, render_fn):
     win = ctk.CTkToplevel(root)
     win.title(title); win.geometry("920x620")
-    win.grab_set(); win.configure(fg_color="white")
+    win.grab_set(); win.configure(fg_color=C["card"])
     ctk.CTkLabel(win, text=title,
                  font=ctk.CTkFont(size=16, weight="bold"),
                  text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
@@ -542,7 +543,7 @@ def _render_hbar(card, data, key: str, root=None,
         ]
         fig, ax = plt.subplots(figsize=figsize)
         fig.patch.set_facecolor(C["card"])
-        ax.set_facecolor("#FAFCFF")
+        ax.set_facecolor(C["card"])
         yp   = range(len(names))
         bars = ax.barh(list(yp), amounts, color=bar_colors, alpha=0.85)
         ax.set_yticks(list(yp))

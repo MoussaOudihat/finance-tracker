@@ -6,6 +6,27 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.4.0] — 2026-09-06
+
+### Ajouté
+- 📂 **Paramètres réorganisés en sections repliables** : les 11 blocs de la page Paramètres (Rapports, Email, Apparence, Sécurité, Import Notion, Catégories, Base de données, Transactions récurrentes, Synchronisation, IA…) peuvent maintenant être repliés/dépliés individuellement — état mémorisé. Fini le long défilement pour tout voir.
+- 📋 **Menu latéral repliable par catégorie** : les 4 groupes de navigation (Saisie du mois, Suivi & Objectifs, Analyses, Outils) sont eux aussi repliables, pour un menu plus clair. Le groupe de la page active se déplie automatiquement s'il était replié.
+- 🤖 **Analyse IA plus concrète** : les conseils IA (Recommandations) citent maintenant les libellés des dépenses/revenus les plus importants du mois (ex. "Loyer=850€"), pas seulement des totaux par catégorie.
+
+### Corrigé
+- 🌙 **Mode sombre illisible par endroits** : plusieurs fenêtres (agrandissement de graphique, évolution d'un actif, plein écran Patrimoine) avaient un fond blanc figé sous du texte clair — devenu quasi invisible en mode sombre. Les graphiques eux-mêmes gardaient une zone de tracé blanche, des titres et des légendes en gris sombre, contrastant mal avec un fond de page sombre. Tout est maintenant aligné sur le thème actif.
+- ✨ **Flash blanc lors des changements de page / bascule mode sombre** : bug connu de customtkinter sous Windows — la barre de titre et le fond natifs de la fenêtre restent clairs par défaut jusqu'à ce que l'app finisse de peindre par-dessus. Contourné en forçant Windows à utiliser son propre chrome sombre dès l'activation du mode sombre.
+- 📊 **Analyses → "Personnaliser" laissait un espace vide** : décocher une section (ex. "Détail du mois") ne masquait que son contenu, pas son emplacement — la zone vide restait visible. Les sections décochées ne réservent plus de place du tout.
+- ☁️ **Erreur de synchronisation Supabase** (`ON CONFLICT DO UPDATE command cannot affect row a second time`) : l'horodatage de synchronisation pouvait se retrouver en double dans le même envoi. Corrigé.
+
+### Performance
+- Graphiques "Évolution par catégorie" et "Dépenses empilées" (Analyses) : remplacement de N requêtes par mois par une seule requête groupée.
+- Page Patrimoine : les calculs de statut de position (déjà coûteux) étaient recalculés deux fois par actif à chaque affichage (vue d'ensemble + ligne détaillée) — mis en cache.
+- Page Projection : la figure du graphique n'était jamais libérée à chaque recalcul (glissière, champs, changement d'horizon) — fuite mémoire corrigée.
+- Import Notion (ZIP) et application groupée de transactions récurrentes : le cache interne était entièrement vidé à chaque ligne/transaction au lieu d'une seule fois à la fin — accélère nettement les imports/applications de plusieurs éléments.
+
+---
+
 ## [1.3.0] — 2026-09-06
 
 ### Ajouté

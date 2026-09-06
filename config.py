@@ -137,3 +137,26 @@ _C_DARK = {
 def apply_palette(dark: bool):
     """Met à jour le dict C en place → tous les modules voient le changement."""
     C.update(_C_DARK if dark else _C_LIGHT)
+
+
+def apply_chart_theme():
+    """
+    Aligne les couleurs par défaut de matplotlib (texte, labels, ticks,
+    légende) sur le thème courant (C["muted"]). À appeler au début du
+    render() de chaque page contenant des graphiques — les nombreux appels
+    set_xticklabels()/set_ylabel()/tick_params() sans couleur explicite
+    héritent sinon du noir par défaut de matplotlib, invisible sur un fond
+    de graphique sombre. N'importe matplotlib que s'il est déjà chargé
+    (pages sans graphique jamais visitées ne paient pas ce coût).
+    """
+    import sys
+    if "matplotlib" not in sys.modules:
+        return
+    import matplotlib
+    matplotlib.rcParams.update({
+        "text.color":        C["muted"],
+        "axes.labelcolor":   C["muted"],
+        "xtick.color":       C["muted"],
+        "ytick.color":       C["muted"],
+        "legend.labelcolor": C["muted"],
+    })

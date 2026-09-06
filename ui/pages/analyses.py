@@ -13,7 +13,7 @@ matplotlib.rcParams.update({
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR, PALETTE, FILTER_ALL_CATS, FILTER_ALL_PAYEES
+from config import C, MONTHS_FR, PALETTE, FILTER_ALL_CATS, FILTER_ALL_PAYEES, apply_chart_theme
 from ui.components import make_card, filter_dropdown, month_selector
 
 # ── Sections personnalisables (clé, libellé) ──────────────────
@@ -85,6 +85,7 @@ class AnalysesPage:
     def render(self, container: ctk.CTkFrame, app):
         db   = app.db
         y, m = app.sel_year, app.sel_month
+        apply_chart_theme()
 
         container.grid_columnconfigure(0, weight=1)
         container.grid_rowconfigure(2, weight=1)
@@ -186,35 +187,52 @@ class AnalysesPage:
             _section_evolution(scroll, db, app)
 
         # ── Holders pour sections filtre-dépendantes ──────────
-        stacked_holder = ctk.CTkFrame(scroll, fg_color="transparent")
-        stacked_holder.grid(row=1, column=0, columnspan=2, sticky="ew")
-        stacked_holder.grid_columnconfigure((0, 1), weight=1)
+        # Créés/gridés seulement si la section est visible : un CTkFrame vide
+        # garde une taille minimale par défaut, ce qui laissait un espace
+        # blanc visible même section décochée dans "Personnaliser".
+        _next_row = 1
 
-        detail_holder = ctk.CTkFrame(scroll, fg_color="transparent")
-        detail_holder.grid(row=2, column=0, columnspan=2, sticky="ew")
-        detail_holder.grid_columnconfigure((0, 1), weight=1)
+        stacked_holder = None
+        if "stacked" in visible:
+            stacked_holder = ctk.CTkFrame(scroll, fg_color="transparent")
+            stacked_holder.grid(row=_next_row, column=0, columnspan=2, sticky="ew")
+            stacked_holder.grid_columnconfigure((0, 1), weight=1)
+            _next_row += 1
 
-        catevo_holder = ctk.CTkFrame(scroll, fg_color="transparent")
-        catevo_holder.grid(row=3, column=0, columnspan=2, sticky="ew")
-        catevo_holder.grid_columnconfigure((0, 1), weight=1)
+        detail_holder = None
+        if "detail" in visible:
+            detail_holder = ctk.CTkFrame(scroll, fg_color="transparent")
+            detail_holder.grid(row=_next_row, column=0, columnspan=2, sticky="ew")
+            detail_holder.grid_columnconfigure((0, 1), weight=1)
+            _next_row += 1
+
+        catevo_holder = None
+        if "catevo" in visible:
+            catevo_holder = ctk.CTkFrame(scroll, fg_color="transparent")
+            catevo_holder.grid(row=_next_row, column=0, columnspan=2, sticky="ew")
+            catevo_holder.grid_columnconfigure((0, 1), weight=1)
+            _next_row += 1
 
         def _draw_stacked():
+            if stacked_holder is None:
+                return
             for w in stacked_holder.winfo_children():
                 w.destroy()
-            if "stacked" in visible:
-                _section_stacked_by_category(stacked_holder, db, app, _toggle_cat)
+            _section_stacked_by_category(stacked_holder, db, app, _toggle_cat)
 
         def _draw_detail():
+            if detail_holder is None:
+                return
             for w in detail_holder.winfo_children():
                 w.destroy()
-            if "detail" in visible:
-                _section_month_detail(detail_holder, db, y, m, app, _toggle_cat, _toggle_payee)
+            _section_month_detail(detail_holder, db, y, m, app, _toggle_cat, _toggle_payee)
 
         def _draw_catevo():
+            if catevo_holder is None:
+                return
             for w in catevo_holder.winfo_children():
                 w.destroy()
-            if "catevo" in visible:
-                _section_cat_evolution(catevo_holder, db, app)
+            _section_cat_evolution(catevo_holder, db, app)
 
         def _soft_refresh():
             _sync_effacer()
@@ -337,7 +355,7 @@ def _expand_btn(card, title, root, render_fn):
         win.title(title)
         win.geometry("960x640")
         win.grab_set()
-        win.configure(fg_color="white")
+        win.configure(fg_color=C["card"])
         ctk.CTkLabel(win, text=title,
                      font=ctk.CTkFont(size=16, weight="bold"),
                      text_color=C["text"]).pack(anchor="w", padx=20, pady=(14, 4))
@@ -408,7 +426,7 @@ def _section_evolution(parent, db, app):
     def _draw(parent, figsize=(10, 3.6)):
         fig, ax = plt.subplots(figsize=figsize)
         fig.patch.set_facecolor(C["card"])
-        ax.set_facecolor("#FAFCFF")
+        ax.set_facecolor(C["card"])
         x  = range(len(summaries))
         xl = [f"{MONTHS_FR[r['month']-1][:3]}\n{r['year']}" for r in summaries]
         w  = 0.28
@@ -528,8 +546,8 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
                 for n in pnames
             ]
             fig2, ax2 = plt.subplots(figsize=figsize)
-            fig2.patch.set_facecolor("white")
-            ax2.set_facecolor("#FAFCFF")
+            fig2.patch.set_facecolor(C["card"])
+            ax2.set_facecolor(C["card"])
             yp   = range(len(pnames))
             bars = ax2.barh(list(yp), pamounts,
                             color=bar_colors, alpha=0.85)
@@ -575,14 +593,18 @@ def _section_cat_evolution(parent, db, app):
                  font=ctk.CTkFont(size=14, weight="bold"),
                  text_color=C["text"]).pack(anchor="w", padx=16, pady=(14, 4))
 
+    periods = [(r["year"], r["month"]) for r in summaries]
+    rows = db.get_expenses_by_category_range_per_month(periods)
+    by_month: dict[tuple, dict] = {}
+    for r in rows:
+        by_month.setdefault((r["year"], r["month"]), {})[r["name"]] = r["total"]
+
     cat_series: dict[str, list] = {}
     x_labels = []
     for r in summaries:
         y2, m2 = r["year"], r["month"]
         x_labels.append(f"{MONTHS_FR[m2-1][:3]}\n{y2}")
-        cats_m = db.get_expenses_by_category(y2, m2)
-        for c in cats_m:
-            cname = c["name"]
+        for cname in by_month.get((y2, m2), {}):
             if cat_filter not in (FILTER_ALL_CATS,) and cname != cat_filter:
                 continue
             cat_series.setdefault(cname, [0] * len(summaries))
@@ -593,8 +615,7 @@ def _section_cat_evolution(parent, db, app):
         return
 
     for i, r in enumerate(summaries):
-        cats_m = db.get_expenses_by_category(r["year"], r["month"])
-        totals = {c["name"]: c["total"] for c in cats_m}
+        totals = by_month.get((r["year"], r["month"]), {})
         for cname in cat_series:
             cat_series[cname][i] = totals.get(cname, 0)
 
@@ -603,7 +624,7 @@ def _section_cat_evolution(parent, db, app):
     def _draw_lines(parent, figsize=(10, 3.8)):
         fig, ax = plt.subplots(figsize=figsize)
         fig.patch.set_facecolor(C["card"])
-        ax.set_facecolor("#FAFCFF")
+        ax.set_facecolor(C["card"])
         x = range(len(summaries))
         lines_data = []
         for i, (cname, vals) in enumerate(sorted_cats):
@@ -691,7 +712,7 @@ def _section_stacked_by_category(parent, db, app, toggle_cat):
             win.title("Dépenses empilées par catégorie")
             win.geometry("1100x700")
             win.grab_set()
-            win.configure(fg_color="white")
+            win.configure(fg_color=C["card"])
             ctk.CTkLabel(win, text="Dépenses empilées par catégorie",
                          font=ctk.CTkFont(size=16, weight="bold"),
                          text_color=C["text"]).pack(anchor="w", padx=20, pady=(14, 4))
@@ -716,13 +737,17 @@ def _draw_stacked(parent, db, n_months: int, app, toggle_cat):
         return None
 
     x_labels = [f"{MONTHS_FR[r['month']-1][:3]} {str(r['year'])[2:]}" for r in summaries]
-    all_cats: dict[str, list[float]] = {}
+    periods = [(r["year"], r["month"]) for r in summaries]
+    rows = db.get_expenses_by_category_range_per_month(periods)
+    by_month: dict[tuple, dict] = {}
+    for r in rows:
+        by_month.setdefault((r["year"], r["month"]), {})[r["name"]] = r["total"]
 
+    all_cats: dict[str, list[float]] = {}
     for i, r in enumerate(summaries):
-        cats_m = db.get_expenses_by_category(r["year"], r["month"])
-        for c in cats_m:
-            all_cats.setdefault(c["name"], [0.0] * len(summaries))
-            all_cats[c["name"]][i] = c["total"]
+        for cname, total in by_month.get((r["year"], r["month"]), {}).items():
+            all_cats.setdefault(cname, [0.0] * len(summaries))
+            all_cats[cname][i] = total
 
     if not all_cats:
         ctk.CTkLabel(parent, text="Aucune dépense sur cette période",
@@ -738,7 +763,7 @@ def _draw_stacked(parent, db, n_months: int, app, toggle_cat):
     def _draw(draw_parent, figsize=(10, 4.4)):
         fig, ax = plt.subplots(figsize=figsize)
         fig.patch.set_facecolor(C["card"])
-        ax.set_facecolor("#FAFCFF")
+        ax.set_facecolor(C["card"])
 
         x = list(range(len(summaries)))
         bottoms = [0.0] * len(summaries)
@@ -758,7 +783,7 @@ def _draw_stacked(parent, db, n_months: int, app, toggle_cat):
             if total > 0:
                 ax.text(i, total + max(bottoms) * 0.01,
                         f"{total/1000:.1f}k €" if total >= 1000 else f"{total:.0f} €",
-                        ha="center", va="bottom", fontsize=8.5, color="#475569",
+                        ha="center", va="bottom", fontsize=8.5, color=C["muted"],
                         fontweight="bold")
 
         ax.set_xticks(x)

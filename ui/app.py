@@ -11,7 +11,7 @@ import customtkinter as ctk
 import auth as Auth
 from config import C, DB_PATH, APP_VERSION, apply_palette, FILTER_ALL_CATS, FILTER_ALL_PAYEES, FILTER_ALL_TYPES
 from database import Database
-from ui.components import nav_button
+from ui.components import nav_button, collapsible_nav_group
 from logger import log
 
 # ─── Lazy page loading ──────────────────────────────────────────
@@ -46,6 +46,38 @@ def _resource_path(relative: str) -> str:
         # En développement, les ressources sont à la racine du projet
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, relative)
+
+
+def _set_windows_titlebar_dark(win, dark: bool):
+    """
+    Force le chrome natif Windows (barre de titre + fond de fenêtre géré par
+    le compositeur DWM, hors contrôle de Tk/customtkinter) à suivre le thème
+    actif.
+
+    Sans ça, Windows dessine ce chrome en clair par défaut jusqu'à ce que
+    Tk finisse de peindre par-dessus — ce qui produit un flash blanc bref à
+    chaque création/redimensionnement de fenêtre en mode sombre. C'est un
+    bug connu de customtkinter sur Windows (TomSchimansky/CustomTkinter
+    discussion #2469) ; le contournement validé par la communauté consiste
+    à appeler DwmSetWindowAttribute directement via ctypes.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        value = ctypes.c_int(1 if dark else 0)
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
+        ok = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value)
+        )
+        if ok != 0:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ctypes.byref(value), ctypes.sizeof(value)
+            )
+    except Exception:
+        pass  # Purement cosmétique — ne doit jamais empêcher le lancement
 
 
 def _load_page_class(key: str):
@@ -89,6 +121,14 @@ _NAV_ITEMS = [
     ("⚙️  Paramètres",      "settings",       "Préférences, sécurité et compte"),
 ]
 
+# Clé de persistance (app_settings) pour chaque groupe replié/déplié du menu
+_NAV_GROUP_KEYS = {
+    "SAISIE DU MOIS":    "saisie",
+    "SUIVI & OBJECTIFS": "suivi",
+    "ANALYSES":          "analyses",
+    "OUTILS":            "outils",
+}
+
 
 class App(ctk.CTk):
     def __init__(self, sync=None, startup_sync_msg: str = "",
@@ -112,6 +152,7 @@ class App(ctk.CTk):
         apply_palette(is_dark)
         ctk.set_appearance_mode("dark" if is_dark else "light")
         ctk.set_default_color_theme("blue")
+        _set_windows_titlebar_dark(self, is_dark)
 
         # ── État : dernier mois avec données ────────────────
         today = date.today()
@@ -434,6 +475,8 @@ class App(ctk.CTk):
         nav_scroll.grid_columnconfigure(0, weight=1)
 
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
+        self._nav_groups: dict[str, dict] = {}
+        current_group = None
         for item in _NAV_ITEMS:
             if item is None:
                 # Séparateur fin
@@ -441,21 +484,34 @@ class App(ctk.CTk):
                              fg_color="#1E2D45").pack(
                     fill="x", padx=16, pady=(2, 2)
                 )
+                current_group = None
             elif isinstance(item, str):
-                # Label de section — compact
-                ctk.CTkLabel(nav_scroll, text=item,
-                             font=ctk.CTkFont(size=9, weight="bold"),
-                             text_color="#475569",
-                             anchor="w").pack(
-                    fill="x", padx=20, pady=(7, 1)
+                # Label de section — repliable
+                gkey = _NAV_GROUP_KEYS.get(item)
+                expanded = self.db.get_setting(f"ui_navgroup_{gkey}", "1") != "0" if gkey else True
+                content, chevron, header = collapsible_nav_group(
+                    nav_scroll, item, expanded=expanded, key=gkey, db=self.db,
                 )
+                self._nav_groups[item] = {
+                    "content": content, "chevron": chevron, "header": header,
+                    "expanded": expanded, "keys": set(),
+                }
+                for w in (header,):
+                    w.bind("<Button-1>", lambda e, lbl=item: self._toggle_nav_group(lbl))
+                for w in header.winfo_children():
+                    w.bind("<Button-1>", lambda e, lbl=item: self._toggle_nav_group(lbl))
+                current_group = item
             else:
                 label, key, tip = item
-                btn = nav_button(nav_scroll, label,
+                parent = (self._nav_groups[current_group]["content"]
+                          if current_group else nav_scroll)
+                btn = nav_button(parent, label,
                                  command=lambda k=key: self._go(k),
                                  tooltip=tip)
                 btn.pack(fill="x", padx=6, pady=1)
                 self._nav_buttons[key] = btn
+                if current_group:
+                    self._nav_groups[current_group]["keys"].add(key)
 
         # ── Pied de page ──────────────────────────────────────
         db_mode  = self.db.get_setting("db_mode", "local")
@@ -503,6 +559,7 @@ class App(ctk.CTk):
         self._current_page = page_key
 
         # Mettre en surbrillance la nav immédiatement (réactivité)
+        self._ensure_nav_group_visible(page_key)
         self._update_nav_highlight(page_key)
 
         # Libérer toutes les figures matplotlib avant de détruire les frames :
@@ -569,6 +626,33 @@ class App(ctk.CTk):
                               hover_color="#2D3F5E",
                               text_color="#CBD5E1")
 
+    def _toggle_nav_group(self, label: str):
+        """Replie/déplie un groupe de navigation, persiste le choix."""
+        g = self._nav_groups[label]
+        g["expanded"] = not g["expanded"]
+        if g["expanded"]:
+            g["content"].pack(fill="x", padx=0, pady=0, after=g["header"])
+            g["chevron"].configure(text="▾")
+        else:
+            g["content"].pack_forget()
+            g["chevron"].configure(text="▸")
+        gkey = _NAV_GROUP_KEYS.get(label)
+        if gkey:
+            self.db.set_setting(f"ui_navgroup_{gkey}", "1" if g["expanded"] else "0")
+
+    def _ensure_nav_group_visible(self, page_key: str):
+        """
+        Force le déploiement du groupe contenant la page active s'il était
+        replié — garantie d'accessibilité, PAS une préférence utilisateur :
+        volontairement non persistée, pour ne jamais écraser un repli
+        explicite d'un autre groupe.
+        """
+        for label, g in self._nav_groups.items():
+            if page_key in g["keys"] and not g["expanded"]:
+                g["expanded"] = True
+                g["content"].pack(fill="x", padx=0, pady=0, after=g["header"])
+                g["chevron"].configure(text="▾")
+
     # ────────────────────────────────────────────────────────
     #  TOGGLE MODE SOMBRE (appelé depuis Settings)
     # ────────────────────────────────────────────────────────
@@ -577,9 +661,31 @@ class App(ctk.CTk):
         # Appliquer immédiatement sans redémarrage
         apply_palette(enable)
         ctk.set_appearance_mode("dark" if enable else "light")
-        # Recharger la page courante avec la nouvelle palette
-        self.configure(fg_color=C["bg"])
-        self._track_after(50, lambda: None if self._closing else self._go(self._current_page or "dashboard"))
+        # Avant tout redessin : évite que Windows affiche son chrome natif
+        # clair par défaut pendant la reconstruction (flash blanc, cf.
+        # _set_windows_titlebar_dark).
+        _set_windows_titlebar_dark(self, enable)
+
+        def _rebuild():
+            if self._closing:
+                return
+            # Reconstruit toute la fenêtre (sidebar + topbar + contenu) d'un
+            # coup, au lieu de ne recharger que le contenu : sidebar/topbar
+            # n'étaient sinon jamais reconstruites après le premier lancement
+            # (couleurs figées à la construction), ce qui laissait la
+            # sidebar dans l'ancien thème indéfiniment après une bascule —
+            # le "glitch" de recolorisation partielle/à moitié faite.
+            page_to_restore = self._current_page or "dashboard"
+            self.configure(fg_color=C["bg"])
+            for w in self.winfo_children():
+                w.destroy()
+            self._build_sidebar()
+            self._build_topbar()
+            self._build_content_area()
+            self._current_page = None
+            self._go(page_to_restore)
+
+        self._track_after(50, _rebuild)
 
 
 # ─────────────────────────────────────────────────────────────

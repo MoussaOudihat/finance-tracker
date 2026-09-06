@@ -443,8 +443,14 @@ class SupabaseSync:
                 ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 payload = [
                     {"key": row["key"], "value": row["value"], "user_id": self._user_id}
-                    for row in settings if row["key"] not in SETTINGS_EXCLUDE
+                    for row in settings
+                    if row["key"] not in SETTINGS_EXCLUDE and row["key"] != SYNC_TS_KEY
                 ]
+                # Ajouté une seule fois ici, avec l'horodatage frais — ne doit
+                # jamais aussi apparaître dans la liste ci-dessus (sinon deux
+                # lignes pour la même clé dans le même upsert -> Postgres
+                # refuse : "ON CONFLICT DO UPDATE command cannot affect row a
+                # second time").
                 payload.append({"key": SYNC_TS_KEY, "value": ts, "user_id": self._user_id})
                 self._client.table("app_settings").upsert(
                     payload, on_conflict="user_id,key"
