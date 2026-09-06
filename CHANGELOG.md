@@ -6,6 +6,26 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.3.0] — 2026-09-06
+
+### Ajouté
+- ☁️ **Comptes Supabase Auth réels (multi-utilisateur)** : remplace la restauration par clé `service_role` par de vrais comptes email + mot de passe gérés par Supabase Auth, avec Row Level Security — chaque compte ne voit et ne modifie que ses propres données, même sur un projet Supabase partagé. Récupération de mot de passe par code reçu par email (pas de lien magique, incompatible avec une app desktop).
+- 🤖 **Support IA réellement multi-fournisseur** : Anthropic (Claude Haiku) et OpenAI (GPT-4o-mini) sont maintenant réellement implémentés — jusqu'ici, les choisir dans Paramètres échouait systématiquement car le code n'appelait en réalité que l'API Gemini, quel que soit le fournisseur sélectionné.
+- ⚙️ **Page Analyses personnalisable** : bouton « Personnaliser » pour cocher/décocher chacune des 4 sections (Évolution 6 mois, Détail du mois, Dépenses empilées par catégorie, Évolution par catégorie) et n'afficher que ce qui est utile. Choix mémorisé.
+
+### Corrigé
+- 🐛 **Fournisseur IA figé sur Gemini** : `utils_ai.py` ignorait le paramètre `provider` et appelait toujours Gemini ; la page Projection ne transmettait même pas ce paramètre. Les deux pages utilisent maintenant le même registre `PROVIDER_INFO`.
+- 🐛 **Pop-up de consentement IA incorrect** : affichait toujours "envoyé à Google" même avec Anthropic/OpenAI configuré ; affiche maintenant le vrai fournisseur. Ce pop-up, absent sur la page Projection, y a été ajouté par cohérence.
+- 🐛 **Plantage aléatoire de l'app** (`Tcl_AsyncDelete: async handler deleted by the wrong thread`) : le ramasse-miettes cyclique de Python pouvait se déclencher sur un thread d'arrière-plan (pré-chargement du cache, appel IA, sync) et y détruire un objet Tkinter — notamment la fenêtre de connexion, jamais explicitement fermée — ce que Tcl/Tk interdit hors du thread principal. Le ramassage automatique est désormais désactivé au profit d'une collecte manuelle déclenchée uniquement depuis le thread principal. Au passage, les threads d'arrière-plan IA ne consultent plus Tkinter (`winfo_exists`) pour savoir si la fenêtre est encore ouverte, remplacé par un simple indicateur Python (`app._closing`).
+- 🐛 **Écrasement accidentel des données Supabase** : l'activation du mode en ligne sans avoir d'abord récupéré les données, et l'envoi manuel ("Sync maintenant") sans confirmation, pouvaient écraser des données distantes plus complètes que la base locale. Un garde-fou compare désormais les comptages avant tout envoi destructeur et demande confirmation.
+- 🎨 **Vue "Détail du mois" (Analyses) trop condensée** : camembert et graphique des enseignes agrandis, légende moins compressée.
+
+### Sécurité / robustesse
+- Row Level Security activée sur toutes les tables de données ; la clé `service_role` (accès total) n'est plus utilisée par l'application.
+- `liabilities` et `recurring_transactions` sont désormais incluses dans la synchronisation Supabase (absentes par oubli jusqu'ici).
+
+---
+
 ## [1.2.3] — 2026-07-12
 
 ### Ajouté

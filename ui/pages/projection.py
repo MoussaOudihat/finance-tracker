@@ -483,9 +483,8 @@ class ProjectionPage:
             if ai_btn_ref[0]:
                 ai_btn_ref[0].configure(state="normal", text="✨  Analyser ce scénario avec l'IA")
 
-        def _run_ai():
-            if ai_running[0]:
-                return
+        def _do_run_ai():
+            """Lance l'appel IA — appelé après acceptation du disclaimer."""
             ai_running[0] = True
             if ai_btn_ref[0]:
                 ai_btn_ref[0].configure(state="disabled", text="⏳ Analyse en cours…")
@@ -509,11 +508,7 @@ class ProjectionPage:
             val_ree = data["valeurs_reelles"][-1]
             gain    = data["gains_composés"][-1]
 
-            configured, _, api_key = get_ai_config(db)
-            if not configured:
-                _show_ai_result(False, "Aucune clé API configurée. Rendez-vous dans Paramètres → IA pour renseigner votre clé Gemini.")
-                return
-
+            _, provider, api_key = get_ai_config(db)
             user_context = db.get_setting("user_context", "")
 
             def _worker():
@@ -527,11 +522,30 @@ class ProjectionPage:
                     valeur_reelle=val_ree,
                     gain_compose=gain,
                     api_key=api_key,
+                    provider=provider,
                     user_context=user_context,
                 )
-                scroll.after(0, lambda: _show_ai_result(ok, txt))
+                # Ne jamais interroger Tkinter depuis ce thread — `app._closing`
+                # est un simple booléen Python, sûr à lire hors du thread principal.
+                try:
+                    if not getattr(app, "_closing", False):
+                        scroll.after(0, lambda: _show_ai_result(ok, txt))
+                except Exception:
+                    pass
 
             threading.Thread(target=_worker, daemon=True).start()
+
+        def _run_ai():
+            """Affiche le disclaimer RGPD puis lance l'analyse si accepté."""
+            if ai_running[0]:
+                return
+            configured, provider, _ = get_ai_config(db)
+            if not configured:
+                ai_running[0] = True
+                _show_ai_result(False, "Aucune clé API configurée. Rendez-vous dans Paramètres → IA pour renseigner votre clé API.")
+                return
+            from ui.pages.recommandations import _show_ai_disclaimer
+            _show_ai_disclaimer(app, provider, _do_run_ai)
 
         # Bouton principal (affiché par défaut, seul élément visible)
         ai_btn = ctk.CTkButton(
