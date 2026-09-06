@@ -20,7 +20,7 @@ import matplotlib.ticker as mticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE, FILTER_ALL_TYPES, LIABILITY_LABEL
+from config import C, MONTHS_FR, ASSET_LABEL, ASSET_TYPES, PALETTE, FILTER_ALL_TYPES, LIABILITY_LABEL, apply_chart_theme
 from ui.components import make_card, Tooltip, table_header, table_row
 from ui.dialogs import (AssetDialog, QuickValueUpdateDialog,
                         AssetEvolutionDialog, AssetTransactionsDialog,
@@ -55,6 +55,7 @@ _SUBVIEWS = [
 class PatrimoinePage:
     def render(self, container: ctk.CTkFrame, app):
         db       = app.db
+        apply_chart_theme()
         type_f   = getattr(app, "pat_type_filter",   FILTER_ALL_TYPES)
         period_f = getattr(app, "pat_period_filter",  "Tout")
         subview  = getattr(app, "pat_subview",        "overview")
@@ -260,7 +261,7 @@ def _render_single_evolution_chart(card, app, history):
         ax.plot(x, vals, color=C["primary"], lw=2.8, marker="o", ms=6, label="Valeur", zorder=3)
         if any(b for b in bases):
             ax.plot(x, bases, color=C["amber"], lw=2, ls="--", marker="s", ms=4, label="Investi", zorder=3)
-        ax.set_title("Évolution du patrimoine", fontsize=10, color="#475569", pad=8, loc="left")
+        ax.set_title("Évolution du patrimoine", fontsize=10, color=C["muted"], pad=8, loc="left")
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(_fmt_euros))
         _smart_xticks(ax, labels, x)
         ax.legend(fontsize=8.5, frameon=False, loc="upper left")
@@ -934,7 +935,7 @@ def _open_fullscreen(app, title, build_fig_fn):
                   text_color="white", font=ctk.CTkFont(size=12),
                   command=win.destroy).pack(side="right", padx=12, pady=8)
 
-    frame = ctk.CTkFrame(win, fg_color="white", corner_radius=0)
+    frame = ctk.CTkFrame(win, fg_color=C["card"], corner_radius=0)
     frame.pack(fill="both", expand=True, padx=16, pady=16)
 
     fig, _ = build_fig_fn(13.0, 7.2)
@@ -978,14 +979,14 @@ def _smart_xticks(ax, labels, x):
 
 def _style_ax(ax):
     """Applique un style moderne commun à tous les axes."""
-    ax.set_facecolor("#F8FBFF")
-    ax.grid(axis="y", color="#E8EEF8", lw=0.8, zorder=0)
-    ax.grid(axis="x", color="#F1F5F9", lw=0.5, zorder=0)
+    ax.set_facecolor(C["card"])
+    ax.grid(axis="y", color=C["border"], lw=0.8, zorder=0)
+    ax.grid(axis="x", color=C["border"], lw=0.5, zorder=0)
     for sp in ["top", "right"]:
         ax.spines[sp].set_visible(False)
-    ax.spines["left"].set_color("#DDE3EF")
-    ax.spines["bottom"].set_color("#DDE3EF")
-    ax.tick_params(colors="#64748B", labelsize=8.5)
+    ax.spines["left"].set_color(C["border"])
+    ax.spines["bottom"].set_color(C["border"])
+    ax.tick_params(colors=C["muted"], labelsize=8.5)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1050,9 +1051,9 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
                 ax.fill_between(x, ydata, alpha=0.07, color=color)
                 lines_data.append((name, x, ydata, color))
             total_y = [p["total_value"] for p in pts]
-            ax.plot(x, total_y, color="#1E293B", lw=2.5, marker="D",
+            ax.plot(x, total_y, color=C["text"], lw=2.5, marker="D",
                     ms=4, ls="--", label="Total", zorder=4)
-            lines_data.append(("Total", x, total_y, "#1E293B"))
+            lines_data.append(("Total", x, total_y, C["text"]))
         else:
             vals  = [p["total_value"] for p in pts]
             bases = [p["total_basis"]  for p in pts]
@@ -1072,7 +1073,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
                                 alpha=0.12, color=C["red"], label="_nolegend_")
 
         ax.set_title(_filter_title("Évolution du patrimoine"),
-                     fontsize=10, color="#475569", pad=8, loc="left")
+                     fontsize=10, color=C["muted"], pad=8, loc="left")
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(_fmt_euros))
         _smart_xticks(ax, labels, x)
         ax.legend(fontsize=8.5, frameon=False, loc="upper left")
@@ -1193,7 +1194,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
         ax2.text(0, 0, f"{total_pie:,.0f} €",
                  ha="center", va="center",
                  fontsize=9, fontweight="bold", color=C["text"])
-        ax2.set_title(pie_title, fontsize=10, color="#475569", pad=6, loc="left")
+        ax2.set_title(pie_title, fontsize=10, color=C["muted"], pad=6, loc="left")
         ax2.legend(wedges,
                    [f"{l}  —  {v:,.0f} €  ({v/total_pie*100:.1f}%)"
                     for l, v in zip(pie_labels, pie_vals)],
@@ -1311,7 +1312,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
         ax3.xaxis.set_major_formatter(mticker.FuncFormatter(_fmt_euros))
         ax3.xaxis.set_tick_params(labelsize=8)
         ax3.set_title(_filter_title("Valeurs actuelles par actif"),
-                      fontsize=10, color="#475569", pad=8, loc="left")
+                      fontsize=10, color=C["muted"], pad=8, loc="left")
         ax3.invert_yaxis()
         ax3.set_xlim(0, max_v * 1.18)
         fig3.tight_layout(pad=1.5)
@@ -1478,7 +1479,7 @@ def _render_diversification_tab(parent, db, type_filter, type_lbl_to_key):
         lo, hi = ideal.get(asset_type, (0, 100))
         in_range = lo <= pct <= hi
 
-        row = ctk.CTkFrame(scroll, fg_color="white", corner_radius=8,
+        row = ctk.CTkFrame(scroll, fg_color=C["card"], corner_radius=8,
                            border_width=1, border_color=C["border"])
         row.pack(fill="x", padx=8, pady=3)
 

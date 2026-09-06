@@ -85,6 +85,65 @@ def kpi_card(parent, title: str, value: str, color: str, icon: str = "") -> ctk.
     return card
 
 
+def collapsible_card(parent, row: int, *, title: str, subtitle: str = None,
+                      expanded: bool = True, key: str = None, db=None,
+                      pady=(0, 14)) -> ctk.CTkFrame:
+    """
+    Carte repliable : en-tête cliquable (titre + chevron) qui affiche/masque
+    un frame de contenu. Retourne le frame de CONTENU — les appelants y
+    pack()/grid() leurs widgets exactement comme avec make_card() avant.
+    """
+    if db is not None and key:
+        stored = db.get_setting(f"ui_section_{key}", None)
+        if stored is not None:
+            expanded = (stored == "1")
+
+    card = make_card(parent)
+    card.grid(row=row, column=0, sticky="ew", pady=pady)
+
+    header = ctk.CTkFrame(card, fg_color="transparent", cursor="hand2")
+    header.pack(fill="x", padx=20, pady=(16, 4))
+    title_lbl = ctk.CTkLabel(header, text=title, font=ctk.CTkFont(size=15, weight="bold"),
+                              text_color=C["text"], cursor="hand2", anchor="w")
+    title_lbl.pack(side="left", fill="x", expand=True)
+    chevron = ctk.CTkLabel(header, text="▾" if expanded else "▸",
+                            font=ctk.CTkFont(size=13, weight="bold"),
+                            text_color=C["muted"], cursor="hand2", width=20)
+    chevron.pack(side="right")
+
+    sub_lbl = None
+    if subtitle:
+        sub_lbl = ctk.CTkLabel(card, text=subtitle, text_color=C["muted"],
+                                font=ctk.CTkFont(size=12), justify="left", anchor="w")
+        if expanded:
+            sub_lbl.pack(anchor="w", fill="x", padx=20, pady=(0, 12))
+
+    body = ctk.CTkFrame(card, fg_color="transparent")
+    if expanded:
+        body.pack(fill="x", padx=0, pady=(0, 4))
+
+    state = {"expanded": expanded}
+
+    def toggle(_event=None):
+        state["expanded"] = not state["expanded"]
+        if state["expanded"]:
+            if sub_lbl is not None:
+                sub_lbl.pack(anchor="w", fill="x", padx=20, pady=(0, 12))
+            body.pack(fill="x", padx=0, pady=(0, 4))
+            chevron.configure(text="▾")
+        else:
+            body.pack_forget()
+            if sub_lbl is not None:
+                sub_lbl.pack_forget()
+            chevron.configure(text="▸")
+        if db is not None and key:
+            db.set_setting(f"ui_section_{key}", "1" if state["expanded"] else "0")
+
+    for w in (header, title_lbl, chevron):
+        w.bind("<Button-1>", toggle)
+    return body
+
+
 # ──────────────────────────────────────────────────────────
 #  Navigation
 # ──────────────────────────────────────────────────────────
@@ -98,6 +157,39 @@ def nav_button(parent, text: str, command, tooltip: str = "") -> ctk.CTkButton:
     if tooltip:
         Tooltip(btn, tooltip)
     return btn
+
+
+def collapsible_nav_group(parent, label: str, *, expanded: bool = True,
+                           key: str = None, db=None):
+    """
+    En-tête de groupe de navigation repliable (barre latérale sombre).
+    Retourne (content_frame, chevron_label, header_frame) :
+      - content_frame : parent dans lequel empiler les nav_button() du groupe
+      - header_frame   : à passer en after= lors d'un futur re-pack pour
+                         garder le bon ordre visuel après un repli/dépli
+    Ne gère ni l'état ni la persistance — c'est à l'appelant (App) de le faire,
+    ce composant ne fait que construire les widgets et les retourner.
+    """
+    if db is not None and key:
+        stored = db.get_setting(f"ui_navgroup_{key}", None)
+        if stored is not None:
+            expanded = (stored == "1")
+
+    header = ctk.CTkFrame(parent, fg_color="transparent", cursor="hand2")
+    header.pack(fill="x", padx=14, pady=(7, 1))
+    txt = ctk.CTkLabel(header, text=label, font=ctk.CTkFont(size=9, weight="bold"),
+                        text_color="#475569", anchor="w", cursor="hand2")
+    txt.pack(side="left", padx=(6, 0), fill="x", expand=True)
+    chevron = ctk.CTkLabel(header, text="▾" if expanded else "▸",
+                            font=ctk.CTkFont(size=9, weight="bold"),
+                            text_color="#475569", cursor="hand2")
+    chevron.pack(side="right", padx=(0, 6))
+
+    content = ctk.CTkFrame(parent, fg_color="transparent")
+    if expanded:
+        content.pack(fill="x", padx=0, pady=0)
+
+    return content, chevron, header
 
 
 def month_selector(parent, months_fr, sel_year, sel_month, on_change) -> ctk.CTkFrame:

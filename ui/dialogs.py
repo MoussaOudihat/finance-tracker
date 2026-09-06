@@ -394,7 +394,7 @@ class AssetEvolutionDialog:
         win = ctk.CTkToplevel(parent)
         win.title(f"Évolution — {asset_name}")
         win.geometry("720x480")
-        win.configure(fg_color="white")
+        win.configure(fg_color=C["card"])
         win.grab_set()
 
         # Header
@@ -420,8 +420,8 @@ class AssetEvolutionDialog:
         x      = list(range(len(history)))
 
         fig, ax = plt.subplots(figsize=(9, 4.0))
-        fig.patch.set_facecolor("white")
-        ax.set_facecolor("#FAFCFF")
+        fig.patch.set_facecolor(C["card"])
+        ax.set_facecolor(C["card"])
 
         ax.fill_between(x, vals, alpha=0.10, color=C["primary"])
         line_val, = ax.plot(x, vals, color=C["primary"], lw=2.5,
@@ -1361,21 +1361,22 @@ class RecurringApplyDialog(ctk.CTkToplevel):
     def _on_apply(self):
         applied = 0
         errors = []
-        for row in self._rows:
-            if not row["checked"].get():
-                continue
-            raw = row["amount_entry"].get().replace(",", ".").strip()
-            try:
-                amount = float(raw)
-                if amount <= 0:
-                    raise ValueError
-            except ValueError:
-                row["amount_entry"].configure(border_color=C["red"])
-                errors.append(row["rec_id"])
-                continue
-            row["amount_entry"].configure(border_color=C["border"])
-            self._db.apply_recurring(row["rec_id"], self._year, self._month, amount)
-            applied += 1
+        with self._db.batch_mode():
+            for row in self._rows:
+                if not row["checked"].get():
+                    continue
+                raw = row["amount_entry"].get().replace(",", ".").strip()
+                try:
+                    amount = float(raw)
+                    if amount <= 0:
+                        raise ValueError
+                except ValueError:
+                    row["amount_entry"].configure(border_color=C["red"])
+                    errors.append(row["rec_id"])
+                    continue
+                row["amount_entry"].configure(border_color=C["border"])
+                self._db.apply_recurring(row["rec_id"], self._year, self._month, amount)
+                applied += 1
 
         if errors:
             return  # ne ferme pas si des montants sont invalides

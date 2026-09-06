@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 import customtkinter as ctk
-from config import C, MONTHS_FR
+from config import C, MONTHS_FR, apply_chart_theme
 from ui.components import make_card, render_ai_text
 from utils_ai import get_ai_config, get_projection_advice
 
@@ -25,6 +25,7 @@ class ProjectionPage:
             app: Instance de l'application
         """
         db = app.db
+        apply_chart_theme()
 
         # Récupérer le patrimoine actuel
         assets_current = db.get_assets_current()
@@ -230,6 +231,7 @@ class ProjectionPage:
 
         # Conteneur pour matplotlib
         canvas_holder = [None]
+        fig_holder = [None]
 
         # Résumé (droite)
         summary_card = make_card(main_container, corner_radius=12)
@@ -325,9 +327,12 @@ class ProjectionPage:
             # Redessiner le graphique
             if canvas_holder[0]:
                 canvas_holder[0].get_tk_widget().destroy()
+            if fig_holder[0] is not None:
+                plt.close(fig_holder[0])
 
-            fig, ax = plt.subplots(figsize=(8, 5), facecolor="#F8FBFF")
-            ax.set_facecolor("#F8FBFF")
+            fig, ax = plt.subplots(figsize=(8, 5), facecolor=C["card"])
+            fig_holder[0] = fig
+            ax.set_facecolor(C["card"])
 
             # Axes
             years = list(range(len(data["patrimoines"])))

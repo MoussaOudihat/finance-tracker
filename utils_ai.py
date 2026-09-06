@@ -117,6 +117,31 @@ def build_financial_summary(db, nb_months: int) -> str:
         )
         lines.append(f"top_dep: {cats}")
 
+    # ── Dépenses individuelles notables (labels/enseignes) ────
+    # Permet à l'IA de commenter des postes concrets, pas seulement des totaux.
+    indiv_rows = []
+    for (y, mo) in periods:
+        indiv_rows.extend(db.get_expenses(y, mo))
+    if indiv_rows:
+        top_indiv = sorted(indiv_rows, key=lambda r: -float(r["amount"]))[:5]
+        parts = [
+            f"{(r['label'] or r['payee'] or r['cat'] or '').strip()}={float(r['amount']):.0f}€"
+            for r in top_indiv
+        ]
+        lines.append("depenses_notables: " + " | ".join(parts))
+
+    # ── Sources de revenus notables ────────────────────────────
+    indiv_rev = []
+    for (y, mo) in periods:
+        indiv_rev.extend(db.get_revenues(y, mo))
+    if indiv_rev:
+        top_rev = sorted(indiv_rev, key=lambda r: -float(r["amount"]))[:3]
+        rev_parts = [
+            f"{(r['source'] or r['label'] or '').strip()}={float(r['amount']):.0f}€"
+            for r in top_rev
+        ]
+        lines.append("revenus_sources: " + " | ".join(rev_parts))
+
     # ── Patrimoine (compact) ──────────────────────────────────
     if all_assets:
         total_pat = sum(a["value"] for a in all_assets)

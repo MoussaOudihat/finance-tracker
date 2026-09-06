@@ -3,6 +3,7 @@ database.py — Couche d'accès aux données (SQLite)
 """
 import os
 import csv
+import contextlib
 import sqlite3
 import zipfile
 import io
@@ -31,6 +32,7 @@ class Database:
         self._load_seed_sql_if_empty()
         self._cache: dict = {}
         self._cache_lock = threading.Lock()
+        self._batch_depth = 0
 
     # ──────────────────────────────────────────
     #  FERMETURE PROPRE
@@ -48,8 +50,30 @@ class Database:
     # ──────────────────────────────────────────
     #  CACHE
     # ──────────────────────────────────────────
+    @contextlib.contextmanager
+    def batch_mode(self):
+        """
+        Diffère l'invalidation du cache jusqu'à la sortie du bloc, au lieu de
+        vider tout le cache + réécrire les clés ai_cache_* à CHAQUE écriture
+        individuelle (utile pour les imports/boucles de N écritures).
+        Les commits SQLite individuels ne sont PAS différés — seul le cache
+        mémoire + le cache IA en DB le sont. Aucun risque de perte de données.
+        ATTENTION : ne pas utiliser autour d'un code qui relit une valeur
+        cachée par _q()/get_categories() qu'une écriture précédente DANS LA
+        MÊME boucle est censée avoir invalidée entre-temps.
+        """
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0:
+                self._invalidate()
+
     def _invalidate(self):
         """Vide le cache des requêtes et invalide le cache IA (appelé après chaque écriture)."""
+        if self._batch_depth > 0:
+            return
         with self._cache_lock:
             self._cache.clear()
         # Invalider le cache IA stocké en base (analyse potentiellement obsolète)
@@ -461,6 +485,35 @@ class Database:
             self._cache[ck] = result
         return result
 
+    def get_expenses_by_category_range_per_month(self, months: list[tuple[int, int]]) -> list:
+        """
+        Comme get_expenses_by_category_range, mais groupé PAR MOIS ET catégorie
+        (1 seule requête SQL) — pour les séries temporelles par catégorie
+        (analyses.py), qui bouclaient auparavant sur get_expenses_by_category()
+        une ou deux fois par mois (N+1).
+        """
+        if not months:
+            return []
+        ck = f"ebc_range_pm_{'_'.join(f'{y}{m}' for y, m in months)}"
+        with self._cache_lock:
+            if ck in self._cache:
+                return self._cache[ck]
+        placeholders = ",".join("(?,?)" for _ in months)
+        params = [val for pair in months for val in pair]
+        q = f"""
+            SELECT mo.year, mo.month, c.name, SUM(e.amount) AS total
+            FROM expenses e
+            JOIN categories c ON e.category_id = c.id
+            JOIN months mo ON e.month_id = mo.id
+            WHERE (mo.year, mo.month) IN ({placeholders})
+            GROUP BY mo.year, mo.month, c.id
+            ORDER BY mo.year, mo.month
+        """
+        result = [dict(r) for r in self.con.execute(q, params).fetchall()]
+        with self._cache_lock:
+            self._cache[ck] = result
+        return result
+
     def get_expenses_by_year(self, year: int) -> list:
         """
         Retourne TOUTES les dépenses de l'année avec cat + mois.
@@ -776,7 +829,12 @@ class Database:
         ).fetchall()
 
     def get_asset_previous_value(self, year, month, asset_type, asset_name) -> float | None:
-        """Retourne la valeur du mois précédent pour un actif donné."""
+        """Retourne la valeur du mois précédent pour un actif donné (mis en cache
+        via _q — évite de refaire la requête à chaque ligne rendue sur Patrimoine)."""
+        ck = f"asset_prev_{year}_{month}_{asset_type}_{asset_name}"
+        return self._q(ck, lambda: self._fetch_asset_previous_value(year, month, asset_type, asset_name))
+
+    def _fetch_asset_previous_value(self, year, month, asset_type, asset_name) -> float | None:
         row = self.con.execute(
             """
             SELECT value FROM assets
@@ -883,6 +941,8 @@ class Database:
     def get_position_status(self, asset_name: str) -> dict:
         """
         Calcule le statut d'une position à partir de ses transactions.
+        Mis en cache via _q() : évite les appels dupliqués (vue d'ensemble +
+        ligne détaillée de patrimoine.py, + get_closed_positions()).
         Retourne :
           status         : "detenu" (aucune vente) | "partiel" (qty>0 + ventes) | "vendu" (qty=0)
           qty            : quantité encore détenue
@@ -895,6 +955,9 @@ class Database:
           all_reinvested : bool — toutes les ventes sont-elles marquées réinvesties ?
           cash_pending   : produit des ventes NON réinvesties (cash en attente)
         """
+        return self._q(f"pos_status_{asset_name}", lambda: self._compute_position_status(asset_name))
+
+    def _compute_position_status(self, asset_name: str) -> dict:
         pos = self.compute_asset_position(asset_name)
         sales = self.con.execute(
             """
@@ -1207,19 +1270,38 @@ class Database:
         """
         Importe un export ZIP Notion (revenus, dépenses ou épargnes).
         Retourne (nb_revenus, nb_dépenses, nb_épargnes) importés.
+
+        Restructuré en deux passes sous batch_mode() : les catégories sont
+        toutes résolues en amont (au lieu d'un add_category()+get_categories()
+        par ligne), ce qui évite une rafale de vidages de cache complets sur
+        un import de N lignes ET rend la résolution de catégories inédites
+        indépendante de l'ordre d'invalidation (plus robuste qu'avant, où une
+        catégorie ajoutée en cours de boucle dépendait d'une invalidation
+        immédiate pour être vue par les lignes suivantes).
         """
-        rev_count = 0
-        exp_count = 0
-        sav_count = 0
+        rev_count = exp_count = sav_count = 0
 
-        for fname, content in self._iter_csv_from_zip(zip_path):
-            reader     = csv.DictReader(content.splitlines())
-            fieldnames = [k.strip() for k in (reader.fieldnames or [])]
-            is_expense = "Category" in fieldnames or "à qui" in fieldnames
-            is_saving  = "Compte" in fieldnames and not is_expense
+        with self.batch_mode():
+            parsed_rows: list[tuple[bool, bool, dict]] = []
+            needed_cats: set[str] = set()
 
-            for raw_row in reader:
-                row      = {k.strip(): (v or "").strip() for k, v in raw_row.items()}
+            for fname, content in self._iter_csv_from_zip(zip_path):
+                reader     = csv.DictReader(content.splitlines())
+                fieldnames = [k.strip() for k in (reader.fieldnames or [])]
+                is_expense = "Category" in fieldnames or "à qui" in fieldnames
+                is_saving  = "Compte" in fieldnames and not is_expense
+
+                for raw_row in reader:
+                    row = {k.strip(): (v or "").strip() for k, v in raw_row.items()}
+                    parsed_rows.append((is_expense, is_saving, row))
+                    if is_expense:
+                        needed_cats.add(row.get("Category", "Autres").strip() or "Autres")
+
+            for cat_name in needed_cats:
+                self.add_category(cat_name)
+            cats = {c["name"]: c["id"] for c in self.get_categories()}
+
+            for is_expense, is_saving, row in parsed_rows:
                 mois_raw = row.get("Mois", "")
                 if not mois_raw:
                     continue
@@ -1234,8 +1316,6 @@ class Database:
                     cat_name = row.get("Category", "Autres").strip() or "Autres"
                     payee    = row.get("à qui", "").strip().upper()
                     label    = row.get("Nom", "").strip()
-                    self.add_category(cat_name)
-                    cats   = {c["name"]: c["id"] for c in self.get_categories()}
                     cat_id = cats.get(cat_name) or cats.get("Autres")
                     if cat_id:
                         self.add_expense(year, month, cat_id, amount, label, payee)
@@ -1451,7 +1531,7 @@ class Database:
         self.con.commit()
         # Ne pas invalider le cache IA quand c'est justement lui qu'on écrit,
         # sinon save_cached_result() efface sa propre valeur juste après l'avoir écrite.
-        if not key.startswith("ai_cache_"):
+        if not key.startswith("ai_cache_") and not key.startswith("ui_"):
             self._invalidate()
         else:
             with self._cache_lock:

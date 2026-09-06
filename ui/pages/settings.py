@@ -12,7 +12,7 @@ import auth as Auth
 import cloud_auth
 from config import C, DEFAULT_CATEGORIES, DB_PATH
 from logger import configure_log_level, LOG_LEVELS, get_log_file_path
-from ui.components import make_card, show_toast
+from ui.components import collapsible_card, show_toast
 from ui.dialogs import RecurringManagerDialog
 from secrets_vault import get_secret, save_secret, delete_secret, keyring_available
 
@@ -41,16 +41,12 @@ class SettingsPage:
         # ══════════════════════════════════════════════════════
         #  1. RAPPORTS & EXPORTS
         # ══════════════════════════════════════════════════════
-        rc = make_card(scroll)
-        rc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(rc, text="📄  Rapports & Exports",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(rc,
-                     text="Générez des rapports PDF ou exportez vos données pour la fiscalité.",
-                     text_color=C["muted"], font=ctk.CTkFont(size=12),
-                     justify="left").pack(anchor="w", padx=20, pady=(0, 12))
+        rc = collapsible_card(
+            scroll, next_row(),
+            title="📄  Rapports & Exports",
+            subtitle="Générez des rapports PDF ou exportez vos données pour la fiscalité.",
+            expanded=False, key="rapports", db=db,
+        )
 
         # ── PDF mensuel ──────────────────────────────────────
         pdf_sec = ctk.CTkFrame(rc, fg_color=C["light"], corner_radius=8)
@@ -214,16 +210,12 @@ class SettingsPage:
         # ══════════════════════════════════════════════════════
         #  2. EMAIL SMTP
         # ══════════════════════════════════════════════════════
-        ec = make_card(scroll)
-        ec.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(ec, text="📧  Envoi d'email (synthèse mensuelle)",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(ec,
-                     text="Configurez votre compte SMTP pour recevoir des résumés mensuels par email.",
-                     text_color=C["muted"], font=ctk.CTkFont(size=12),
-                     justify="left").pack(anchor="w", padx=20, pady=(0, 10))
+        ec = collapsible_card(
+            scroll, next_row(),
+            title="📧  Envoi d'email (synthèse mensuelle)",
+            subtitle="Configurez votre compte SMTP pour recevoir des résumés mensuels par email.",
+            expanded=False, key="email_smtp", db=db,
+        )
 
         # Champs SMTP
         smtp_fields = ctk.CTkFrame(ec, fg_color="transparent")
@@ -319,12 +311,8 @@ class SettingsPage:
         # ══════════════════════════════════════════════════════
         #  3. APPARENCE
         # ══════════════════════════════════════════════════════
-        ac = make_card(scroll)
-        ac.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(ac, text="🎨  Apparence",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        ac = collapsible_card(scroll, next_row(), title="🎨  Apparence",
+                               expanded=True, key="apparence", db=db)
 
         dark_row = ctk.CTkFrame(ac, fg_color=C["light"], corner_radius=8)
         dark_row.pack(fill="x", padx=16, pady=(4, 16))
@@ -351,14 +339,10 @@ class SettingsPage:
             anchor="w", padx=20, pady=(0, 10))
 
         # ══════════════════════════════════════════════════════
-        #  3b. JOURNALISATION (LOGS)
+        #  4. JOURNALISATION (LOGS)
         # ══════════════════════════════════════════════════════
-        lc = make_card(scroll)
-        lc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(lc, text="📋  Journalisation",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        lc = collapsible_card(scroll, next_row(), title="📋  Journalisation",
+                               expanded=False, key="journalisation", db=db)
 
         log_inner = ctk.CTkFrame(lc, fg_color=C["light"], corner_radius=8)
         log_inner.pack(fill="x", padx=16, pady=(4, 6))
@@ -406,14 +390,10 @@ class SettingsPage:
                       command=save_log_settings).pack(anchor="w", padx=20, pady=(4, 16))
 
         # ══════════════════════════════════════════════════════
-        #  4. SÉCURITÉ
+        #  5. SÉCURITÉ
         # ══════════════════════════════════════════════════════
-        sc = make_card(scroll)
-        sc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(sc, text="🔐  Sécurité & Accès",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        sc = collapsible_card(scroll, next_row(), title="🔐  Sécurité & Accès",
+                               expanded=True, key="securite", db=db)
 
         is_cloud = db.get_setting("db_mode", "local") == "online"
         if is_cloud:
@@ -556,19 +536,15 @@ class SettingsPage:
                       command=_logout).pack(anchor="w", padx=16, pady=(0, 16))
 
         # ══════════════════════════════════════════════════════
-        #  5. IMPORT NOTION
+        #  6. IMPORT NOTION
         # ══════════════════════════════════════════════════════
-        ic = make_card(scroll)
-        ic.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(ic, text="📥  Importer depuis Notion (ZIP)",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(ic,
-                     text="Sélectionnez les exports ZIP depuis Notion (revenus ou dépenses).\n"
-                          "Les données seront ajoutées sans doublons.",
-                     text_color=C["muted"], font=ctk.CTkFont(size=12),
-                     justify="left").pack(anchor="w", padx=20, pady=(0, 12))
+        ic = collapsible_card(
+            scroll, next_row(),
+            title="📥  Importer depuis Notion (ZIP)",
+            subtitle="Sélectionnez les exports ZIP depuis Notion (revenus ou dépenses).\n"
+                     "Les données seront ajoutées sans doublons.",
+            expanded=False, key="import_notion", db=db,
+        )
 
         self._import_status_lbl = ctk.CTkLabel(ic, text="",
                                                font=ctk.CTkFont(size=12), text_color=C["green"])
@@ -607,14 +583,10 @@ class SettingsPage:
                       font=ctk.CTkFont(size=13)).pack(side="left")
 
         # ══════════════════════════════════════════════════════
-        #  5. CATÉGORIES
+        #  7. CATÉGORIES
         # ══════════════════════════════════════════════════════
-        cc = make_card(scroll)
-        cc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(cc, text="🗂️  Catégories de dépenses",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        cc = collapsible_card(scroll, next_row(), title="🗂️  Catégories de dépenses",
+                               expanded=False, key="categories", db=db)
 
         list_frame = ctk.CTkFrame(cc, fg_color="transparent")
         list_frame.pack(fill="x", padx=20, pady=(0, 8))
@@ -679,14 +651,10 @@ class SettingsPage:
                       command=reset_cats).pack(anchor="e", padx=20, pady=(4, 14))
 
         # ══════════════════════════════════════════════════════
-        #  6. BASE DE DONNÉES
+        #  8. BASE DE DONNÉES
         # ══════════════════════════════════════════════════════
-        dbc = make_card(scroll)
-        dbc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(dbc, text="🗄️  Base de données",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        dbc = collapsible_card(scroll, next_row(), title="🗄️  Base de données",
+                                expanded=False, key="base_donnees", db=db)
         ctk.CTkLabel(dbc,
                      text=f"Chemin : {db.db_path}",
                      text_color=C["muted"], font=ctk.CTkFont(size=11),
@@ -756,20 +724,15 @@ class SettingsPage:
                       command=export_excel).pack(side="left")
 
         # ══════════════════════════════════════════════════════
-        #  6b. TRANSACTIONS RÉCURRENTES
+        #  9. TRANSACTIONS RÉCURRENTES
         # ══════════════════════════════════════════════════════
-        rrc = make_card(scroll)
-        rrc.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(rrc, text="📅  Transactions récurrentes",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(
-            rrc,
-            text=("Gérez vos loyers, abonnements, salaires… définissez-les une fois,\n"
-                  "et appliquez-les chaque mois depuis le tableau de bord."),
-            text_color=C["muted"], font=ctk.CTkFont(size=12), justify="left",
-        ).pack(anchor="w", padx=20, pady=(0, 10))
+        rrc = collapsible_card(
+            scroll, next_row(),
+            title="📅  Transactions récurrentes",
+            subtitle="Gérez vos loyers, abonnements, salaires… définissez-les une fois,\n"
+                     "et appliquez-les chaque mois depuis le tableau de bord.",
+            expanded=False, key="recurrentes", db=db,
+        )
 
         rec_count = len(db.get_recurring_transactions())
         ctk.CTkLabel(rrc, text=f"🔄  {rec_count} transaction(s) configurée(s)",
@@ -784,14 +747,10 @@ class SettingsPage:
         ).pack(anchor="w", padx=20, pady=(0, 16))
 
         # ══════════════════════════════════════════════════════
-        #  7. SYNCHRONISATION SUPABASE
+        #  10. SYNCHRONISATION SUPABASE
         # ══════════════════════════════════════════════════════
-        sc2 = make_card(scroll)
-        sc2.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(sc2, text="☁️  Synchronisation Supabase",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        sc2 = collapsible_card(scroll, next_row(), title="☁️  Synchronisation Supabase",
+                                expanded=False, key="sync_supabase", db=db)
 
         current_mode = db.get_setting("db_mode", "local")
         mode_lbl_text = "✅  Mode actuel : En ligne (Supabase)" if current_mode == "online" \
@@ -931,14 +890,10 @@ class SettingsPage:
                       command=_switch_local).pack(side="left")
 
         # ══════════════════════════════════════════════════════
-        #  8. INTELLIGENCE ARTIFICIELLE
+        #  11. INTELLIGENCE ARTIFICIELLE
         # ══════════════════════════════════════════════════════
-        aic = make_card(scroll)
-        aic.grid(row=next_row(), column=0, sticky="ew", pady=(0, 14))
-
-        ctk.CTkLabel(aic, text="🤖  Intelligence Artificielle",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
+        aic = collapsible_card(scroll, next_row(), title="🤖  Intelligence Artificielle",
+                                expanded=False, key="ia", db=db)
         ctk.CTkLabel(aic,
                      text="Optionnel — enrichit les recommandations avec une analyse IA personnalisée.\n"
                           "Gemini 2.0 Flash Lite (gratuit, sans CB) · Anthropic Haiku · OpenAI GPT-4o-mini.\n"
