@@ -9,6 +9,7 @@ import tkinter.filedialog as fd
 
 import customtkinter as ctk
 import auth as Auth
+import cloud_auth
 from config import C, DEFAULT_CATEGORIES, DB_PATH
 from logger import configure_log_level, LOG_LEVELS, get_log_file_path
 from ui.components import make_card, show_toast
@@ -414,11 +415,18 @@ class SettingsPage:
                      font=ctk.CTkFont(size=15, weight="bold"),
                      text_color=C["text"]).pack(anchor="w", padx=20, pady=(16, 4))
 
-        session_lbl = Auth.session_expiry_label(db)
-        if session_lbl:
-            ctk.CTkLabel(sc, text=f"🔑  {session_lbl}",
+        is_cloud = db.get_setting("db_mode", "local") == "online"
+        if is_cloud:
+            cloud_email = db.get_setting("supabase_user_email", "")
+            ctk.CTkLabel(sc, text=f"☁️  Compte cloud : {cloud_email}",
                          font=ctk.CTkFont(size=11),
                          text_color=C["muted"]).pack(anchor="w", padx=20, pady=(0, 4))
+        else:
+            session_lbl = Auth.session_expiry_label(db)
+            if session_lbl:
+                ctk.CTkLabel(sc, text=f"🔑  {session_lbl}",
+                             font=ctk.CTkFont(size=11),
+                             text_color=C["muted"]).pack(anchor="w", padx=20, pady=(0, 4))
 
         # ── Indicateur trousseau OS ────────────────────────────
         if keyring_available():
@@ -489,13 +497,20 @@ class SettingsPage:
             def _save_pwd():
                 np_ = npwd_var.get()
                 cp_ = cpwd_var.get()
-                if len(np_) < 4:
-                    err_lbl.configure(text="⚠  Au moins 4 caractères.")
+                min_len = 6 if is_cloud else 4
+                if len(np_) < min_len:
+                    err_lbl.configure(text=f"⚠  Au moins {min_len} caractères.")
                     return
                 if np_ != cp_:
                     err_lbl.configure(text="❌  Les mots de passe ne correspondent pas.")
                     return
-                Auth.change_password(db, np_)
+                if is_cloud:
+                    ok, msg = cloud_auth.set_new_password(app.cloud_client, np_)
+                    if not ok:
+                        err_lbl.configure(text=f"❌  {msg}")
+                        return
+                else:
+                    Auth.change_password(db, np_)
                 err_lbl.configure(text="")
                 show_toast(app, "✅  Mot de passe modifié !")
                 _toggle_pwd_form()
@@ -522,8 +537,14 @@ class SettingsPage:
 
         # ── Se déconnecter ────────────────────────────────────
         def _logout():
-            Auth.clear_session(db)
-            show_toast(app, "Session fermée — mot de passe requis au prochain démarrage")
+            if is_cloud:
+                cloud_auth.sign_out(app.cloud_client)
+                cloud_auth.clear_persisted_session(db)
+                # db_mode reste "online" : au prochain démarrage, l'app
+                # affiche l'écran de connexion cloud (pas le mode local).
+            else:
+                Auth.clear_session(db)
+            show_toast(app, "Session fermée — connexion requise au prochain démarrage")
 
         ctk.CTkButton(sc,
                       text="🚪  Fermer la session (verrouiller)",
@@ -778,7 +799,14 @@ class SettingsPage:
         mode_color    = C["green"] if current_mode == "online" else C["muted"]
         ctk.CTkLabel(sc2, text=mode_lbl_text,
                      font=ctk.CTkFont(size=12),
-                     text_color=mode_color).pack(anchor="w", padx=20, pady=(0, 12))
+                     text_color=mode_color).pack(anchor="w", padx=20, pady=(0, 4))
+        ctk.CTkLabel(sc2,
+                     text="L'activation du mode en ligne se fait uniquement depuis "
+                          "l'écran de connexion («Compte cloud») — jamais ici, "
+                          "pour ne jamais activer la synchronisation sans avoir "
+                          "d'abord récupéré vos données.",
+                     font=ctk.CTkFont(size=10), text_color=C["muted"],
+                     wraplength=520, justify="left").pack(anchor="w", padx=20, pady=(0, 12))
 
         fields_frame = ctk.CTkFrame(sc2, fg_color="transparent")
         fields_frame.pack(fill="x", padx=20, pady=(0, 6))
@@ -794,14 +822,14 @@ class SettingsPage:
                      placeholder_text="https://xxxx.supabase.co").grid(
             row=1, column=0, sticky="ew", pady=(0, 10))
 
-        ctk.CTkLabel(fields_frame, text="Clé secrète (Secret key)",
+        ctk.CTkLabel(fields_frame, text="Clé anon (publique)",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=C["muted"]).grid(row=2, column=0, sticky="w", pady=(0, 4))
-        key_var2 = ctk.StringVar(value=get_secret("supabase_service_key") or db.get_setting("supabase_service_key", ""))
+        key_var2 = ctk.StringVar(value=db.get_setting("supabase_anon_key", ""))
         ctk.CTkEntry(fields_frame, textvariable=key_var2, height=36,
-                     show="●", font=ctk.CTkFont(size=12),
+                     font=ctk.CTkFont(size=12),
                      fg_color=C["light"], border_color=C["border"],
-                     placeholder_text="sb_secret_…").grid(row=3, column=0, sticky="ew")
+                     placeholder_text="eyJ…").grid(row=3, column=0, sticky="ew")
 
         sync_status_lbl = ctk.CTkLabel(sc2, text="",
                                         font=ctk.CTkFont(size=11),
@@ -816,51 +844,71 @@ class SettingsPage:
         btn_row_sync = ctk.CTkFrame(sc2, fg_color="transparent")
         btn_row_sync.pack(anchor="w", padx=20, pady=(10, 16))
 
-        def _save_and_test():
+        def _test_connection():
             url = url_var2.get().strip()
             key = key_var2.get().strip()
             if not url or not key:
-                _set_status("⚠️  Renseignez l'URL et la clé.")
+                _set_status("⚠️  Renseignez l'URL et la clé anon.")
                 return
             _set_status("⏳  Test en cours…")
 
             def _run():
                 try:
-                    from sync_supabase import SupabaseSync
-                    s = SupabaseSync(url, key, db.db_path)
-                    ok, msg = s.test_connection()
+                    client = cloud_auth.build_client(url, key)
+                    client.table("categories").select("id").limit(1).execute()
+
                     def _done():
-                        _set_status(msg)
-                        if ok:
-                            db.set_setting("supabase_url", url)
-                            if not save_secret("supabase_service_key", key):
-                                db.set_setting("supabase_service_key", key)  # fallback DB
-                            else:
-                                db.set_setting("supabase_service_key", "")   # effacer de la DB
-                            db.set_setting("db_mode", "online")
-                            show_toast(app, "☁️  Mode Supabase activé")
+                        db.set_setting("supabase_url", url)
+                        db.set_setting("supabase_anon_key", key)
+                        _set_status(
+                            "✅  Connexion OK. Déconnectez-vous puis utilisez "
+                            "«Compte cloud» à l'écran de connexion pour "
+                            "activer le mode en ligne."
+                        )
                     app.after(0, _done)
                 except Exception as e:
-                    app.after(0, lambda: _set_status(f"❌  {e}"))
+                    app.after(0, lambda msg=str(e): _set_status(f"❌  {msg}"))
 
             threading.Thread(target=_run, daemon=True).start()
 
-        def _sync_now():
-            url = db.get_setting("supabase_url", "")
-            key = get_secret("supabase_service_key") or db.get_setting("supabase_service_key", "")
-            if not url or not key:
-                _set_status("⚠️  Configurez d'abord Supabase.")
-                return
+        def _do_force_push(s):
             _set_status("⏳  Upload en cours…")
+
+            def _run():
+                msg = s._do_push(force=True)
+                app.after(0, lambda: _set_status(msg))
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        def _confirm_and_push(s, safe: bool, warn_msg: str, remote: dict, local: dict):
+            import tkinter.messagebox as mb
+            title = "Confirmer l'envoi" if safe else "⚠️  Écart important détecté"
+            prefix = f"{warn_msg}\n\n" if not safe else ""
+            detail = (
+                f"{prefix}Distant : {sum(remote.values())} lignes — "
+                f"Local : {sum(local.values())} lignes.\n\n"
+                f"Ceci va remplacer les données distantes par les données locales. "
+                f"Continuer ?"
+            )
+            if mb.askyesno(title, detail):
+                _do_force_push(s)
+            else:
+                _set_status("Envoi annulé.")
+
+        def _sync_now():
+            if not (is_cloud and app.cloud_client and app.cloud_user_id):
+                _set_status("⚠️  Connectez-vous d'abord en mode cloud (écran de connexion).")
+                return
+            _set_status("⏳  Vérification des comptages…")
 
             def _run():
                 try:
                     from sync_supabase import SupabaseSync
-                    s = SupabaseSync(url, key, db.db_path)
-                    msg = s._do_push()
-                    app.after(0, lambda: _set_status(msg))
+                    s = SupabaseSync.from_session(app.cloud_client, db.db_path, app.cloud_user_id)
+                    safe, warn_msg, remote, local = s.check_push_safety()
+                    app.after(0, lambda: _confirm_and_push(s, safe, warn_msg, remote, local))
                 except Exception as e:
-                    app.after(0, lambda: _set_status(f"❌  {e}"))
+                    app.after(0, lambda msg=str(e): _set_status(f"❌  {msg}"))
 
             threading.Thread(target=_run, daemon=True).start()
 
@@ -869,10 +917,10 @@ class SettingsPage:
             show_toast(app, "💾  Mode local activé")
             _set_status("💾  Mode local activé. Redémarrez l'app pour appliquer.")
 
-        ctk.CTkButton(btn_row_sync, text="🔌  Tester & Activer",
+        ctk.CTkButton(btn_row_sync, text="🔌  Tester la connexion",
                       height=34, font=ctk.CTkFont(size=12),
                       fg_color=C["primary"],
-                      command=_save_and_test).pack(side="left", padx=(0, 8))
+                      command=_test_connection).pack(side="left", padx=(0, 8))
         ctk.CTkButton(btn_row_sync, text="☁️  Sync maintenant",
                       height=34, font=ctk.CTkFont(size=12),
                       fg_color=C["green"],
@@ -966,9 +1014,16 @@ class SettingsPage:
                             show_toast(app, "🤖  IA configurée avec succès")
                         else:
                             _ai_set_status(f"❌  {text}", C["red"])
-                    app.after(0, _done)
+                    # Ne jamais interroger Tkinter depuis ce thread — `app._closing`
+                    # est un simple booléen Python, sûr à lire hors du thread principal.
+                    if not getattr(app, "_closing", False):
+                        app.after(0, _done)
                 except Exception as e:
-                    app.after(0, lambda: _ai_set_status(f"❌  {e}", C["red"]))
+                    try:
+                        if not getattr(app, "_closing", False):
+                            app.after(0, lambda msg=str(e): _ai_set_status(f"❌  {msg}", C["red"]))
+                    except Exception:
+                        pass
 
             threading.Thread(target=_run, daemon=True).start()
 

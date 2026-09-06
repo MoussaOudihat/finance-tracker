@@ -4,7 +4,14 @@ openpyxl>=3.1.0
 supabase>=2.0.0
 bcrypt>=4.0.0
 
-# IA optionnelle (choisir selon le fournisseur utilisé)
-# google-genai       # Gemini 2.0 Flash Lite — gratuit sans CB
-# anthropic          # Claude Haiku
-# openai             # GPT-4o-mini
+# Épinglé : anthropic/openai tirent httpx>=0.28 en dépendance transitive,
+# incompatible avec supabase/postgrest/storage3 (httpx<0.28). Sans cette
+# épingle, un `pip install` peut silencieusement casser la sync Supabase.
+httpx>=0.26,<0.28
+
+# IA — les 3 fournisseurs proposés dans Paramètres, tous réellement
+# implémentés dans utils_ai.py (nécessaires pour que le choix fonctionne
+# ET pour que le build PyInstaller les embarque via hiddenimports)
+google-genai       # Gemini — gratuit sans CB
+anthropic          # Claude Haiku
+openai             # GPT-4o-mini

@@ -16,6 +16,70 @@ import customtkinter as ctk
 from config import C, MONTHS_FR, PALETTE, FILTER_ALL_CATS, FILTER_ALL_PAYEES
 from ui.components import make_card, filter_dropdown, month_selector
 
+# ── Sections personnalisables (clé, libellé) ──────────────────
+_SECTIONS = [
+    ("evolution", "📈  Évolution 6 mois"),
+    ("detail",    "🥧  Détail du mois"),
+    ("stacked",   "📊  Dépenses empilées par catégorie"),
+    ("catevo",    "📉  Évolution par catégorie"),
+]
+_SECTION_KEYS = {k for k, _ in _SECTIONS}
+_SETTING_KEY  = "analyses_sections"
+
+
+def _visible_sections(db) -> set[str]:
+    """Sections à afficher — toutes par défaut si jamais configuré."""
+    raw = db.get_setting(_SETTING_KEY, "")
+    if not raw:
+        return set(_SECTION_KEYS)
+    chosen = {k.strip() for k in raw.split(",") if k.strip()}
+    return chosen & _SECTION_KEYS
+
+
+def _show_customize_dialog(app, db, on_saved):
+    """Petite fenêtre à cases à cocher pour choisir les sections affichées."""
+    current = _visible_sections(db)
+
+    dlg = ctk.CTkToplevel(app)
+    dlg.title("Personnaliser l'affichage")
+    dlg.geometry("360x320")
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    dlg.focus_force()
+
+    ctk.CTkLabel(dlg, text="⚙️  Sections à afficher",
+                 font=ctk.CTkFont(size=14, weight="bold"),
+                 text_color=C["text"]).pack(padx=20, pady=(20, 4), anchor="w")
+    ctk.CTkLabel(dlg, text="Décoche ce que tu ne veux pas voir sur cette page.",
+                 font=ctk.CTkFont(size=11), text_color=C["muted"]
+                 ).pack(padx=20, pady=(0, 14), anchor="w")
+
+    check_vars = {}
+    for key, label in _SECTIONS:
+        var = ctk.BooleanVar(value=key in current)
+        check_vars[key] = var
+        ctk.CTkCheckBox(dlg, text=label, variable=var,
+                         font=ctk.CTkFont(size=12),
+                         text_color=C["text"]).pack(padx=20, pady=6, anchor="w")
+
+    err_var = ctk.StringVar()
+    ctk.CTkLabel(dlg, textvariable=err_var, font=ctk.CTkFont(size=11),
+                 text_color=C["red"]).pack(padx=20, anchor="w")
+
+    def _save():
+        selected = [k for k, v in check_vars.items() if v.get()]
+        if not selected:
+            err_var.set("⚠  Sélectionnez au moins une section.")
+            return
+        db.set_setting(_SETTING_KEY, ",".join(selected))
+        dlg.destroy()
+        on_saved()
+
+    ctk.CTkButton(dlg, text="Enregistrer", height=38,
+                  font=ctk.CTkFont(size=12, weight="bold"),
+                  fg_color=C["primary"], hover_color=C["primary_hover"],
+                  command=_save).pack(padx=20, pady=(16, 20), fill="x")
+
 
 class AnalysesPage:
     def render(self, container: ctk.CTkFrame, app):
@@ -81,6 +145,14 @@ class AnalysesPage:
         filter_dropdown(fi, "Catégorie :", cats,   cat_var,   _apply_dropdown)
         filter_dropdown(fi, "Enseigne :",  payees, payee_var, _apply_dropdown)
 
+        def _open_customize():
+            _show_customize_dialog(app, db, on_saved=lambda: app._go("analyses"))
+
+        ctk.CTkButton(top, text="⚙️  Personnaliser", height=30, width=150,
+                      fg_color=C["light"], text_color=C["muted"],
+                      hover_color="#E2E8F0", font=ctk.CTkFont(size=11),
+                      command=_open_customize).pack(side="right")
+
         # ── Fonctions toggle partagées ────────────────────────
         def _toggle_cat(label: str):
             current = app.ana_cat_filter
@@ -99,8 +171,19 @@ class AnalysesPage:
         scroll.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 16))
         scroll.grid_columnconfigure((0, 1), weight=1)
 
+        visible = _visible_sections(db)
+
+        if not visible:
+            ctk.CTkLabel(scroll,
+                         text="Aucune section sélectionnée.\n"
+                              "Clique sur « ⚙️  Personnaliser » pour en activer.",
+                         text_color=C["muted"], justify="center",
+                         font=ctk.CTkFont(size=13)).grid(row=0, column=0, pady=60)
+            return
+
         # ── Section 1 : Évolution (statique, pas filtre-dépendante) ──
-        _section_evolution(scroll, db, app)
+        if "evolution" in visible:
+            _section_evolution(scroll, db, app)
 
         # ── Holders pour sections filtre-dépendantes ──────────
         stacked_holder = ctk.CTkFrame(scroll, fg_color="transparent")
@@ -118,17 +201,20 @@ class AnalysesPage:
         def _draw_stacked():
             for w in stacked_holder.winfo_children():
                 w.destroy()
-            _section_stacked_by_category(stacked_holder, db, app, _toggle_cat)
+            if "stacked" in visible:
+                _section_stacked_by_category(stacked_holder, db, app, _toggle_cat)
 
         def _draw_detail():
             for w in detail_holder.winfo_children():
                 w.destroy()
-            _section_month_detail(detail_holder, db, y, m, app, _toggle_cat, _toggle_payee)
+            if "detail" in visible:
+                _section_month_detail(detail_holder, db, y, m, app, _toggle_cat, _toggle_payee)
 
         def _draw_catevo():
             for w in catevo_holder.winfo_children():
                 w.destroy()
-            _section_cat_evolution(catevo_holder, db, app)
+            if "catevo" in visible:
+                _section_cat_evolution(catevo_holder, db, app)
 
         def _soft_refresh():
             _sync_effacer()
@@ -267,14 +353,14 @@ def _expand_btn(card, title, root, render_fn):
 
 # ── Légende CTk cliquable helper ──────────────────────────
 def _ctk_legend(parent, items, colors, toggle_fn=None,
-                active_filter=None, ncols=2, height=110):
+                active_filter=None, ncols=2, height=110, font_size=10):
     """
     Grille de légende avec items cliquables si toggle_fn fourni.
     items = [(label, value_str), ...]
     toggle_fn(label) appelé au clic.
     """
     leg = ctk.CTkScrollableFrame(parent, fg_color=C["card"], height=height)
-    leg.pack(fill="x", padx=12, pady=(0, 6))
+    leg.pack(fill="x", padx=12, pady=(0, 8))
     leg.grid_columnconfigure(tuple(range(ncols)), weight=1)
 
     for i, (lbl, val_str) in enumerate(items):
@@ -286,7 +372,7 @@ def _ctk_legend(parent, items, colors, toggle_fn=None,
             corner_radius=4,
             cursor="hand2" if toggle_fn else "",
         )
-        rf.grid(row=i // ncols, column=i % ncols, sticky="ew", padx=4, pady=1)
+        rf.grid(row=i // ncols, column=i % ncols, sticky="ew", padx=4, pady=2)
         dot = ctk.CTkFrame(rf, width=10, height=10,
                            fg_color=colors[i % len(colors)], corner_radius=3)
         dot.pack(side="left", padx=(2, 5))
@@ -294,7 +380,7 @@ def _ctk_legend(parent, items, colors, toggle_fn=None,
         ctk.CTkLabel(
             rf,
             text=f"{lbl}  {val_str}",
-            font=ctk.CTkFont(size=10, weight="bold" if is_active else "normal"),
+            font=ctk.CTkFont(size=font_size, weight="bold" if is_active else "normal"),
             text_color=C["primary"] if is_active else C["text"],
             anchor="w",
         ).pack(side="left")
@@ -374,7 +460,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
     pie_c.grid(row=0, column=0, padx=(0, 8), sticky="nsew", pady=(0, 12))
     ctk.CTkLabel(pie_c, text=f"Catégories — {MONTHS_FR[m-1]} {y}  💡 clic = filtre",
                  font=ctk.CTkFont(size=13, weight="bold"),
-                 text_color=C["text"]).pack(anchor="w", padx=16, pady=(14, 4))
+                 text_color=C["text"]).pack(anchor="w", padx=16, pady=(16, 6))
 
     if cat_data:
         labels_p = [r["name"] for r in cat_data]
@@ -383,7 +469,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
         is_cat_active = (cat_f and cat_f not in (FILTER_ALL_CATS, "", None)
                          and cat_f in labels_p)
 
-        def _draw_pie(parent, figsize=(5, 3.2)):
+        def _draw_pie(parent, figsize=(5.6, 4.0)):
             explode = None
             if is_cat_active:
                 idx = labels_p.index(cat_f)
@@ -414,7 +500,8 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
             items = [(lbl, f"{val:,.0f} €  ({val/total_p*100:.0f}%)" if total_p else f"{val:,.0f} €")
                      for lbl, val in zip(labels_p, vals_p)]
             _ctk_legend(parent, items, colors_p,
-                        toggle_fn=toggle_cat, active_filter=cat_f, height=110)
+                        toggle_fn=toggle_cat, active_filter=cat_f,
+                        height=160, font_size=11)
 
         _draw_pie(pie_c)
         _expand_btn(pie_c, f"Catégories — {MONTHS_FR[m-1]} {y}", app, _draw_pie)
@@ -427,7 +514,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
     bar_c.grid(row=0, column=1, padx=(8, 0), sticky="nsew", pady=(0, 12))
     ctk.CTkLabel(bar_c, text=f"Top enseignes — {MONTHS_FR[m-1]} {y}  💡 clic = filtre",
                  font=ctk.CTkFont(size=13, weight="bold"),
-                 text_color=C["text"]).pack(anchor="w", padx=16, pady=(14, 4))
+                 text_color=C["text"]).pack(anchor="w", padx=16, pady=(16, 6))
 
     if payee_data:
         pnames   = [r["payee"] for r in payee_data]
@@ -435,7 +522,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
         is_payee_active = (payee_f and payee_f not in (FILTER_ALL_PAYEES, "", None)
                            and payee_f in pnames)
 
-        def _draw_hbar(parent, figsize=(5, 4.2)):
+        def _draw_hbar(parent, figsize=(5.6, 4.8)):
             bar_colors = [
                 "#F59E0B" if (is_payee_active and n == payee_f) else PALETTE[0]
                 for n in pnames
@@ -447,7 +534,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
             bars = ax2.barh(list(yp), pamounts,
                             color=bar_colors, alpha=0.85)
             ax2.set_yticks(list(yp))
-            ax2.set_yticklabels(pnames, fontsize=8.5 if figsize[0] < 8 else 11)
+            ax2.set_yticklabels(pnames, fontsize=9.5 if figsize[0] < 8 else 11)
             ax2.invert_yaxis()
             ax2.set_xlabel("€", fontsize=9)
             for sp in ["top", "right"]:

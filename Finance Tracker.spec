@@ -23,10 +23,10 @@ a = Analysis(
         'reportlab.lib.styles', 'reportlab.lib.units', 'reportlab.lib.colors',
         'openpyxl', 'openpyxl.styles',
         'smtplib', 'email.mime.multipart', 'email.mime.text', 'csv',
-        # IA
-        'google.genai', 'google.genai.types', 'utils_ai',
+        # IA — 3 fournisseurs réellement implémentés (utils_ai.PROVIDER_INFO)
+        'google.genai', 'google.genai.types', 'anthropic', 'openai', 'utils_ai',
         # authentification & sync
-        'auth', 'ui.login', 'sync_supabase', 'bcrypt',
+        'auth', 'cloud_auth', 'ui.login', 'sync_supabase', 'bcrypt',
         'supabase', 'httpx', 'httpcore', 'anyio', 'sniffio',
         'gotrue', 'postgrest', 'realtime', 'storage3',
         # pages chargées dynamiquement via importlib (Phase 2 lazy-load)

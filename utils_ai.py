@@ -1,13 +1,18 @@
 """
-utils_ai.py — Intégration IA (Google Gemini — free tier AI Studio)
+utils_ai.py — Intégration IA multi-fournisseur (Gemini / Anthropic / OpenAI)
 
 Stratégie d'économie de tokens :
   • Prompts système ultra-compacts (~40 tokens chacun)
   • Templates utilisateur condensés (~35 tokens hors données)
   • Résumé financier CSV-like (~120-160 tokens)
   • thinking_budget=0  → désactive le raisonnement interne de Gemini 2.5 Flash
-  • max_output_tokens=500  (conseils concis, suffisants)
+  • max_output_tokens=650  (conseils concis mais complets)
   • Cache DB par période — zéro appel automatique
+
+PROVIDER_INFO est la source de vérité unique pour le libellé/modèle/fonction
+d'appel de chaque fournisseur — toute page qui affiche ou appelle l'IA doit
+la consulter plutôt que de coder ses propres libellés (évite qu'un texte
+"Google" reste affiché alors que l'utilisateur a configuré Anthropic/OpenAI).
 """
 import datetime
 
@@ -23,34 +28,34 @@ GEMINI_MODEL = GEMINI_MODELS[0]
 #  Prompts compacts
 # ─────────────────────────────────────────────────────────────
 
-# ~45 tokens — couvre l'essentiel sans répétition
+# ~50 tokens — couvre l'essentiel sans répétition
 _SYSTEM_PROMPT = """\
 Conseiller financier français (PEA, Livret A, assurance-vie, flat tax 30%, ETF/DCA).
-Réponds en français. Cite les chiffres fournis. Conseils concrets et chiffrés, pas de généralités.
-Structure : 3 sections titrées courtes + 1 action prioritaire finale.\
+Réponds en français. Cite au moins 2 chiffres précis fournis dans les données (jamais de généralités sans montant).
+Structure : 3 sections titrées courtes + 1 action prioritaire finale, chiffrée.\
 """
 
-# ~40 tokens hors données
+# ~44 tokens hors données
 _USER_TEMPLATE = """\
 {nb_months} mois de données financières :{context_block}
 {summary}
 
-Fournis : diagnostic 2 phrases | 2-3 points forts | 2-3 problèmes + actions chiffrées | 1 action cette semaine.\
+Fournis : diagnostic 2 phrases (avec chiffres) | 2-3 points forts (chiffrés) | 2-3 problèmes + actions chiffrées | 1 action cette semaine (montant/objectif précis).\
 """
 
-# ~42 tokens hors données
+# ~46 tokens hors données
 _USER_TEMPLATE_1M = """\
 Données du mois :{context_block}
 {summary}
 
-Fournis : commentaire conso (notable/raisonnable) | 2-3 économies possibles (montants précis, exemples locaux) | bilan rev/dep | 1 action cette semaine.\
+Fournis : commentaire conso (notable/raisonnable, avec le chiffre clé) | 2-3 économies possibles (montants précis, exemples locaux) | bilan rev/dep chiffré | 1 action cette semaine (montant précis).\
 """
 
-# ~40 tokens hors données
+# ~44 tokens hors données
 _PROJECTION_SYSTEM_PROMPT = """\
 Expert patrimoine français (PEA, AV, SCPI, ETF, flat tax, retraite, intérêts composés).
-Réponds en français. Cite les chiffres. Avis critique + pistes concrètes.
-Structure : 3 sections courtes + 1 action prioritaire.\
+Réponds en français. Cite au moins 2 chiffres du scénario fourni. Avis critique + pistes concrètes.
+Structure : 3 sections courtes + 1 action prioritaire, chiffrée.\
 """
 
 # ~50 tokens hors données — données en format compact clé=valeur
@@ -59,7 +64,7 @@ Scénario patrimoine :{context_block}
 pat={patrimoine_actuel:.0f}€ | épargne={epargne_mensuelle:.0f}€/m | taux={taux:.1f}% | inf={inflation:.1f}% | horizon={horizon}a
 → projeté={patrimoine_projete:.0f}€ | réel={valeur_reelle:.0f}€ | gain_composé={gain_compose:.0f}€ | versé_total={epargne_totale:.0f}€
 
-Fournis : réalisme du taux + cohérence | 2-3 leviers optimisation (véhicule, fiscalité) | 2 risques à anticiper | 1 action maintenant.\
+Fournis : réalisme du taux + cohérence (chiffré) | 2-3 leviers optimisation (véhicule, fiscalité) | 2 risques à anticiper | 1 action maintenant (montant/objectif précis).\
 """
 
 
@@ -150,7 +155,7 @@ def _call_gemini(api_key: str, system: str, prompt: str) -> tuple[bool, str]:
         try:
             cfg = genai_types.GenerateContentConfig(
                 system_instruction=system,
-                max_output_tokens=500,
+                max_output_tokens=650,
                 temperature=0.35,
                 thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
             )
@@ -158,7 +163,7 @@ def _call_gemini(api_key: str, system: str, prompt: str) -> tuple[bool, str]:
             # Fallback : ThinkingConfig peut ne pas exister sur les vieilles versions SDK
             cfg = genai_types.GenerateContentConfig(
                 system_instruction=system,
-                max_output_tokens=500,
+                max_output_tokens=650,
                 temperature=0.35,
             )
 
@@ -171,6 +176,65 @@ def _call_gemini(api_key: str, system: str, prompt: str) -> tuple[bool, str]:
 
     except Exception as exc:
         return False, f"Erreur Gemini : {exc}"
+
+
+def _call_anthropic(api_key: str, system: str, prompt: str) -> tuple[bool, str]:
+    """Appel bas niveau Anthropic (Claude Haiku). Retourne (success, texte)."""
+    try:
+        import anthropic
+    except ImportError:
+        return False, "Package manquant. Exécutez : python -m pip install anthropic"
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key.strip())
+        resp = client.messages.create(
+            model=PROVIDER_INFO["anthropic"]["model"],
+            max_tokens=650,
+            temperature=0.35,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return True, resp.content[0].text
+    except Exception as exc:
+        return False, f"Erreur Anthropic : {exc}"
+
+
+def _call_openai(api_key: str, system: str, prompt: str) -> tuple[bool, str]:
+    """Appel bas niveau OpenAI (GPT-4o-mini). Retourne (success, texte)."""
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return False, "Package manquant. Exécutez : python -m pip install openai"
+
+    try:
+        client = OpenAI(api_key=api_key.strip())
+        resp = client.chat.completions.create(
+            model=PROVIDER_INFO["openai"]["model"],
+            max_tokens=650,
+            temperature=0.35,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return True, resp.choices[0].message.content
+    except Exception as exc:
+        return False, f"Erreur OpenAI : {exc}"
+
+
+# ─────────────────────────────────────────────────────────────
+#  Registre des fournisseurs — source de vérité unique
+# ─────────────────────────────────────────────────────────────
+PROVIDER_INFO = {
+    "gemini":    {"label": "Google Gemini", "model": GEMINI_MODEL,        "call": _call_gemini},
+    "anthropic": {"label": "Anthropic",     "model": "claude-haiku-4-5",  "call": _call_anthropic},
+    "openai":    {"label": "OpenAI",        "model": "gpt-4o-mini",       "call": _call_openai},
+}
+
+
+def _dispatch(provider: str, api_key: str, system: str, prompt: str) -> tuple[bool, str]:
+    info = PROVIDER_INFO.get(provider, PROVIDER_INFO["gemini"])
+    return info["call"](api_key, system, prompt)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -201,7 +265,7 @@ def get_ai_recommendations(
             context_block=context_block,
         )
 
-    return _call_gemini(api_key, _SYSTEM_PROMPT, prompt)
+    return _dispatch(provider, api_key, _SYSTEM_PROMPT, prompt)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -217,6 +281,7 @@ def get_projection_advice(
     valeur_reelle: float,
     gain_compose: float,
     api_key: str,
+    provider: str = "gemini",
     user_context: str = "",
 ) -> tuple[bool, str]:
     """Retourne (success, texte). Cible ~130 tokens input."""
@@ -236,7 +301,7 @@ def get_projection_advice(
         context_block=context_block,
     )
 
-    return _call_gemini(api_key, _PROJECTION_SYSTEM_PROMPT, prompt)
+    return _dispatch(provider, api_key, _PROJECTION_SYSTEM_PROMPT, prompt)
 
 
 # ─────────────────────────────────────────────────────────────

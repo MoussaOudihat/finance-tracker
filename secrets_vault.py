@@ -9,9 +9,9 @@ Fallback silencieux vers SQLite si keyring est indisponible —
 l'app continue de fonctionner, les secrets restent dans la DB.
 
 Clés gérées ici (jamais stockées en clair dans SQLite) :
-  ai_api_key            — clé API Gemini / Anthropic / OpenAI
-  supabase_service_key  — clé service Supabase (accès total DB distante)
-  smtp_pass             — mot de passe du compte email SMTP
+  ai_api_key              — clé API Gemini / Anthropic / OpenAI
+  supabase_refresh_token  — session Supabase Auth (mode cloud, voir cloud_auth.py)
+  smtp_pass               — mot de passe du compte email SMTP
 """
 
 from logger import log
@@ -23,7 +23,7 @@ _SERVICE = "Fintrack"
 # jamais directement en clair dans app_settings.
 SECRET_KEYS: frozenset[str] = frozenset({
     "ai_api_key",
-    "supabase_service_key",
+    "supabase_refresh_token",
     "smtp_pass",
 })
 

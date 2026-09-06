@@ -91,11 +91,17 @@ _NAV_ITEMS = [
 
 
 class App(ctk.CTk):
-    def __init__(self, sync=None, startup_sync_msg: str = ""):
+    def __init__(self, sync=None, startup_sync_msg: str = "",
+                 cloud_client=None, cloud_user_id=None):
         super().__init__()
 
         # ── Sync Supabase (optionnel) ────────────────────────
         self.sync = sync
+        # Client Supabase Auth authentifié (mode cloud uniquement) — utilisé
+        # par ui/pages/settings.py pour le changement de mot de passe,
+        # la déconnexion, et la sync manuelle avec garde-fou.
+        self.cloud_client  = cloud_client
+        self.cloud_user_id = cloud_user_id
 
         # ── DB ──────────────────────────────────────────────
         self.db = Database(DB_PATH)
@@ -177,6 +183,14 @@ class App(ctk.CTk):
         if self.sync:
             self._schedule_auto_sync()
 
+        # ── Collecte GC périodique (thread principal uniquement) ──
+        # main.py désactive le ramasse-miettes cyclique automatique pour
+        # qu'il ne se déclenche jamais sur un thread d'arrière-plan
+        # (pré-chargement cache, appel IA, sync) — Tcl/Tk n'autorise ces
+        # appels que depuis le thread principal. On le relance donc ici,
+        # manuellement, uniquement via after() (donc toujours sur ce thread).
+        self._schedule_periodic_gc()
+
     # ────────────────────────────────────────────────────────
     #  FERMETURE PROPRE
     # ────────────────────────────────────────────────────────
@@ -234,6 +248,23 @@ class App(ctk.CTk):
             self.db.monthly_summary(6)
         except Exception:
             log.warning("Préchauffage cache DB échoué", exc_info=True)
+
+    # ────────────────────────────────────────────────────────
+    #  COLLECTE GC PÉRIODIQUE (thread principal uniquement)
+    # ────────────────────────────────────────────────────────
+    _GC_INTERVAL_MS = 5 * 60 * 1000  # 5 minutes — aligné sur le rythme de l'auto-sync
+
+    def _schedule_periodic_gc(self):
+        def _do():
+            if self._closing:
+                return
+            import gc
+            gc.collect()
+            try:
+                self._track_after(self._GC_INTERVAL_MS, _do)
+            except Exception:
+                pass
+        self._track_after(self._GC_INTERVAL_MS, _do)
 
     # ────────────────────────────────────────────────────────
     #  AUTO-SYNC SUPABASE (toutes les 5 minutes)
@@ -452,7 +483,10 @@ class App(ctk.CTk):
         topbar.grid(row=0, column=1, sticky="new")
         topbar.grid_propagate(False)
 
-        username = Auth.get_username(self.db)
+        if self.db.get_setting("db_mode", "local") == "online":
+            username = self.db.get_setting("supabase_user_email", "")
+        else:
+            username = Auth.get_username(self.db)
         if username:
             ctk.CTkLabel(
                 topbar, text=f"👤  {username}",

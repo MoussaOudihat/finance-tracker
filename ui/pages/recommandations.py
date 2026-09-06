@@ -187,13 +187,11 @@ def _render_ai_card(scroll, db, app, nb_months: int,
     • Bouton "Mettre à jour" pour forcer une nouvelle analyse (1 appel).
     """
     from utils_ai import (load_cached_result, save_cached_result,
-                          build_financial_summary, get_ai_recommendations)
+                          build_financial_summary, get_ai_recommendations,
+                          PROVIDER_INFO)
 
-    _MODEL_LABELS = {
-        "gemini":    "gemini-2.0-flash (gratuit)",
-        "anthropic": "claude-haiku-4-5",
-        "openai":    "gpt-4o-mini",
-    }
+    provider_label = PROVIDER_INFO.get(provider, {}).get("label", provider.title())
+    provider_model = PROVIDER_INFO.get(provider, {}).get("model", provider)
 
     cached_text, cached_ts = load_cached_result(db, nb_months)
 
@@ -206,17 +204,17 @@ def _render_ai_card(scroll, db, app, nb_months: int,
               sticky="ew", padx=5, pady=(0, 8))
 
     inner = ctk.CTkFrame(card, fg_color="transparent")
-    inner.pack(fill="x", padx=18, pady=14)
+    inner.pack(fill="x", padx=18, pady=18)
 
     # ── En-tête ──────────────────────────────────────────────
     hdr = ctk.CTkFrame(inner, fg_color="transparent")
     hdr.pack(fill="x")
     ctk.CTkLabel(hdr,
-                 text=f"🤖  Analyse IA — {provider.title()}",
+                 text=f"🤖  Analyse IA — {provider_label}",
                  font=ctk.CTkFont(size=14, weight="bold"),
                  text_color=_AI_STYLE["color"]).pack(side="left")
     ctk.CTkLabel(hdr,
-                 text=_MODEL_LABELS.get(provider, provider),
+                 text=provider_model,
                  font=ctk.CTkFont(size=10),
                  text_color=C["muted"]).pack(side="right")
 
@@ -226,7 +224,7 @@ def _render_ai_card(scroll, db, app, nb_months: int,
                                else "Aucune analyse effectuée pour cette période.",
                           font=ctk.CTkFont(size=10),
                           text_color=C["muted"])
-    ts_lbl.pack(anchor="w", pady=(4, 0))
+    ts_lbl.pack(anchor="w", pady=(6, 0))
 
     # ── Zone de résultat (rendu Markdown) ────────────────────
     result_frame = ctk.CTkFrame(inner, fg_color="transparent")
@@ -245,13 +243,13 @@ def _render_ai_card(scroll, db, app, nb_months: int,
 
     if cached_text:
         _display_result(cached_text)
-        result_frame.pack(fill="x", pady=(10, 4))
+        result_frame.pack(fill="x", pady=(14, 6))
 
     status_lbl = ctk.CTkLabel(inner, text="",
                                font=ctk.CTkFont(size=11),
                                text_color=C["muted"],
-                               wraplength=700, justify="left")
-    status_lbl.pack(anchor="w")
+                               wraplength=760, justify="left")
+    status_lbl.pack(anchor="w", pady=(2, 0))
 
     # ── Bouton ────────────────────────────────────────────────
     btn_label = "🔄  Mettre à jour" if cached_text else "✨  Analyser avec l'IA"
@@ -262,7 +260,7 @@ def _render_ai_card(scroll, db, app, nb_months: int,
                            fg_color=_AI_STYLE["color"],
                            hover_color="#6D28D9",
                            width=200)
-    btn_ai.pack(anchor="w", pady=(10, 0))
+    btn_ai.pack(anchor="w", pady=(14, 0))
 
     def _do_run_ai():
         """Lance l'appel IA — appelé après acceptation du disclaimer."""
@@ -295,8 +293,11 @@ def _render_ai_card(scroll, db, app, nb_months: int,
                     status_lbl.configure(text=f"❌  {text}", text_color=C["red"])
                     btn_ai.configure(state="normal", text="🔄  Réessayer")
 
+            # Ne jamais interroger Tkinter (winfo_exists, etc.) depuis ce thread
+            # d'arrière-plan — seul le thread principal doit toucher Tcl.
+            # `app._closing` est un simple booléen Python, sûr à lire ici.
             try:
-                if app.winfo_exists():
+                if not getattr(app, "_closing", False):
                     app.after(0, _done)
             except Exception:
                 pass
@@ -305,7 +306,7 @@ def _render_ai_card(scroll, db, app, nb_months: int,
 
     def _run_ai():
         """Affiche le disclaimer RGPD puis lance l'analyse si accepté."""
-        _show_ai_disclaimer(app, _do_run_ai)
+        _show_ai_disclaimer(app, provider, _do_run_ai)
 
     btn_ai.configure(command=_run_ai)
 
@@ -313,12 +314,15 @@ def _render_ai_card(scroll, db, app, nb_months: int,
 # ─────────────────────────────────────────────────────────────
 #  Disclaimer RGPD — affiché avant chaque appel IA
 # ─────────────────────────────────────────────────────────────
-def _show_ai_disclaimer(app, on_accept):
+def _show_ai_disclaimer(app, provider: str, on_accept):
     """
     Modal de consentement affiché AVANT chaque envoi de données à l'API IA.
     L'utilisateur doit confirmer explicitement à chaque analyse.
     on_accept() est appelé uniquement si l'utilisateur clique « Confirmer ».
     """
+    from utils_ai import PROVIDER_INFO
+    provider_label = PROVIDER_INFO.get(provider, {}).get("label", provider.title())
+
     dlg = ctk.CTkToplevel(app)
     dlg.title("Consentement — données envoyées à un service externe")
     dlg.geometry("520x320")
@@ -328,7 +332,7 @@ def _show_ai_disclaimer(app, on_accept):
 
     # ── En-tête ──────────────────────────────────────────────
     ctk.CTkLabel(dlg,
-                 text="⚠️  Données financières envoyées à Google",
+                 text=f"⚠️  Données financières envoyées à {provider_label}",
                  font=ctk.CTkFont(size=14, weight="bold"),
                  text_color="#B45309").pack(padx=24, pady=(20, 8))
 
@@ -336,7 +340,7 @@ def _show_ai_disclaimer(app, on_accept):
     msg = (
         "Pour générer cette analyse, un résumé de vos données financières\n"
         "(revenus moyens, dépenses par catégorie, épargne, patrimoine)\n"
-        "sera transmis à l'API Google Gemini — un service externe.\n\n"
+        f"sera transmis à l'API {provider_label} — un service externe.\n\n"
         "Aucune donnée d'identité ni coordonnée bancaire n'est envoyée.\n"
         "Vos données brutes restent uniquement sur votre appareil.\n\n"
         "Confirmez-vous l'envoi de ce résumé pour obtenir l'analyse ?"
