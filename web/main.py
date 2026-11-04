@@ -73,8 +73,22 @@ def _clean(text: str, max_len: int = 120) -> str:
     return (text or "").strip()[:max_len]
 
 
+def _configure_logging() -> None:
+    """Niveau INFO par défaut côté serveur (logger.py passe en DEBUG hors
+    exécutable PyInstaller) et bibliothèques HTTP limitées à WARNING : en
+    DEBUG, httpx/httpcore/hpack journalisent chaque en-tête échangé avec
+    Supabase."""
+    import logging
+    from logger import configure_log_level
+    configure_log_level(os.environ.get("FINTRACK_LOG_LEVEL", "INFO"))
+    for name in ("httpx", "httpcore", "hpack", "h2", "h11", "urllib3",
+                 "supabase", "postgrest", "gotrue", "supabase_auth"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def create_app(settings: Optional[WebSettings] = None,
                manager: Optional[WorkspaceManager] = None) -> FastAPI:
+    _configure_logging()
     settings = settings or WebSettings.from_env()
     manager = manager or WorkspaceManager(
         settings.users_dir, settings.sync_delay, settings.idle_timeout

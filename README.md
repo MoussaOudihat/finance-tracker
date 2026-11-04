@@ -219,6 +219,8 @@ kubectl apply -k deploy/k8s
 ```
 Image publiée à chaque release : `ghcr.io/moussaoudihat/fintrack-web:<version>`.
 
+> **Podman (`podman kube play`)** : Podman convertit les sondes `httpGet` en appels `curl` exécutés dans le conteneur, or l'image ne contient pas `curl`. La sonde de démarrage échoue alors et Podman arrête le conteneur au bout de 60 s. Remplacez chaque `httpGet: { path: /healthz, port: http }` par `exec: { command: ["python", "-m", "web.healthcheck", "/healthz"] }` (même chose pour `/readyz`). Un vrai cluster Kubernetes n'est pas concerné.
+
 Les manifestes appliquent par défaut : 1 réplica (stratégie `Recreate`, les sessions vivent dans le pod), volume `ReadWriteOnce` de 1 Gi, utilisateur non-root, système de fichiers en lecture seule, profil Pod Security `restricted`, NetworkPolicy, HTTPS via cert-manager et ingress-nginx, sondes `/healthz` et `/readyz`.
 
 ### Sécurité

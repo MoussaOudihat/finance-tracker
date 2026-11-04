@@ -50,9 +50,12 @@ def sign_in(client: Client, email: str, password: str):
 
 
 def sign_out(client: Client) -> None:
-    """Best-effort — ne lève jamais (ex. hors ligne)."""
+    """Best-effort — ne lève jamais (ex. hors ligne).
+    scope "local" : ne révoque que la session de CET appareil. Le défaut de
+    supabase-py ("global") déconnectait aussi l'interface web et les autres
+    machines du compte."""
     try:
-        client.auth.sign_out()
+        client.auth.sign_out({"scope": "local"})
     except Exception as exc:
         log.info("cloud_auth.sign_out : déconnexion locale seulement (%s)", exc)
 
