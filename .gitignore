@@ -16,7 +16,7 @@ data/*.sql
 !.env.example
 deploy/compose/secrets/
 deploy/compose/.env
-deploy/k8s/overlays/*/secrets.env
+deploy/helm/secrets.env
 secret.*
 *.pem
 *.key

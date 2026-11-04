@@ -108,7 +108,7 @@ services:
   redis:
     <<: *hardening
     image: docker.io/library/redis:7.4-alpine@sha256:1cf73a2f04808e55a8bd2f5706c2aa0ebb0f71938f93deb7af79f48311cd5cb9
-    user: "999:1000"
+    user: "10001:10001"
     # Mot de passe lu depuis le secret ; persistance désactivée (sessions et
     # compteurs éphémères) ; commandes dangereuses retirées.
     command: >-
@@ -127,7 +127,13 @@ services:
 networks:
   backend:
     internal: true          # aucun accès Internet
-  egress: {}
+  egress:
+    # Sous-réseau fixe : le port publié de `web` arrive depuis sa passerelle
+    # (172.30.0.1), seule adresse autorisée à fournir X-Forwarded-For.
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
 
 volumes:
   notifier-data: {}

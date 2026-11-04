@@ -22,7 +22,7 @@ GitHub : onglet *Security* → *Report a vulnerability*. Réponse sous 7 jours.
 | Secrets dans l'historique | Gitleaks | oui |
 | Dockerfile | Hadolint | oui |
 | Images | Trivy (CRITICAL/HIGH corrigeables) | oui, et avant toute publication |
-| IaC | Trivy config (K8s, Compose, Dockerfile), kubeconform (schémas stricts), `docker compose config` | oui (CRITICAL/HIGH) |
+| IaC | `helm lint --strict`, rendu du chart (défaut/local/production) + kubeconform strict, Trivy config (manifestes rendus, Compose, Dockerfile), `docker compose config` | oui (CRITICAL/HIGH) |
 | Chaîne d'approvisionnement | actions épinglées par SHA, permissions minimales par job, cosign (keyless), provenance SLSA, SBOM SPDX attesté | — |
 
 Exceptions acceptées : voir `.trivyignore` (chacune justifiée).
@@ -34,7 +34,13 @@ cosign verify ghcr.io/moussaoudihat/fintrack-web:2.0.0 \
   --certificate-identity-regexp 'https://github.com/MoussaOudihat/finance-tracker/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify oci://ghcr.io/moussaoudihat/fintrack-web:2.0.0 --owner MoussaOudihat
+
+# Chart Helm (même identité de signature)
+cosign verify ghcr.io/moussaoudihat/charts/fintrack:2.0.0 \
+  --certificate-identity-regexp 'https://github.com/MoussaOudihat/finance-tracker/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+Les images publiées sur Docker Hub portent les mêmes digests et signatures.
 
 ## Mesures applicatives (interface web)
 

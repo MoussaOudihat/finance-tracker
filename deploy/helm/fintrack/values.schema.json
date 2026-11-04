@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["image", "config", "secrets", "ingress", "networkPolicy"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["registry", "prefix"],
+      "properties": {
+        "registry": { "type": "string", "minLength": 1 },
+        "prefix": { "type": "string" },
+        "tag": { "type": "string" },
+        "digests": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "supabaseUrl": { "type": "string", "pattern": "^(|https://.+)$" },
+        "cookieSecure": { "type": "boolean" },
+        "logLevel": { "enum": ["DEBUG", "INFO", "WARNING", "ERROR"] },
+        "aiDailyLimit": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": { "existingSecret": { "type": "string" } }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "host": { "type": "string" },
+        "tls": { "type": "object", "properties": { "enabled": { "type": "boolean" } } }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "egressExceptCidrs": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -66,7 +66,9 @@ class InsightsIn(BaseModel):
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: Annotated[str, Field(min_length=1, max_length=2000)]
+    # Les réponses de l'assistant, renvoyées en historique, dépassent souvent
+    # 2000 caractères ; la question utilisateur est bornée côté web (2000).
+    content: Annotated[str, Field(min_length=1, max_length=20_000)]
 
 
 class ChatIn(BaseModel):
@@ -115,10 +117,13 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
             raise HTTPException(502, "Données indisponibles.")
         return r.json()
 
-    def _consume(user: User) -> None:
+    def _quota(user: User):
+        """Vérifie le quota AVANT l'appel, ne le décompte qu'APRÈS succès :
+        une panne du fournisseur ne consomme pas les requêtes du jour."""
         day = dt.date.today().isoformat()
-        if quota.incr("daily", user.id, day, window=86_400) > daily_limit:
+        if quota.get("daily", user.id, day) >= daily_limit:
             raise HTTPException(429, f"Limite quotidienne de {daily_limit} requêtes IA atteinte.")
+        return lambda: quota.incr("daily", user.id, day, window=86_400)
 
     def _run(fn):
         try:
@@ -135,20 +140,21 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
 
     @app.post("/v1/insights")
     def insights(body: InsightsIn, user: User = Depends(current_user)):
-        _consume(user)
+        charge = _quota(user)
         ctx = _finance_get(user, "/v1/ai-context", year=body.year, month=body.month,
                            months=body.months)
         prompt = INSIGHTS_PROMPT.format(context=json.dumps(ctx, ensure_ascii=False))
         text = _run(lambda: prov.complete(body.provider, SYSTEM_ADVISOR,
                                           [{"role": "user", "content": prompt}],
                                           effort="medium", max_tokens=6000))
+        charge()
         return {"provider": body.provider, "text": text}
 
     @app.post("/v1/chat")
     def chat(body: ChatIn, user: User = Depends(current_user)):
         if body.messages[-1].role != "user":
             raise HTTPException(422, "Le dernier message doit venir de l'utilisateur.")
-        _consume(user)
+        charge = _quota(user)
         ctx = _finance_get(user, "/v1/ai-context", year=body.year, month=body.month, months=6)
         # Le contexte ouvre la conversation ; l'historique suit (append-only).
         msgs = [{"role": "user", "content":
@@ -159,13 +165,14 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
         msgs += [m.model_dump() for m in body.messages]
         text = _run(lambda: prov.complete(body.provider, SYSTEM_ADVISOR, msgs,
                                           effort="low", max_tokens=3000))
+        charge()
         return {"provider": body.provider, "text": text}
 
     @app.post("/v1/categorize")
     def categorize(body: CategorizeIn, user: User = Depends(current_user)):
         if not (body.label.strip() or body.payee.strip()):
             raise HTTPException(422, "Libellé ou enseigne requis.")
-        _consume(user)
+        charge = _quota(user)
         cats = _finance_get(user, "/v1/categories")
         names = [c["name"] for c in cats]
         if not names:
@@ -175,6 +182,7 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
                   f"Enseigne : {body.payee.strip() or '—'}")
         name = _run(lambda: prov.choose(body.provider, SYSTEM_CATEGORIZER, prompt, names))
         cat = next(c for c in cats if c["name"] == name)
+        charge()
         return {"category_id": cat["id"], "category": name, "provider": body.provider}
 
     return app

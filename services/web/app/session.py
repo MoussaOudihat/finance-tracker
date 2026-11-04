@@ -74,9 +74,22 @@ class SessionStore:
             return None
         return data
 
-    def save(self, sid: str, data: dict) -> None:
-        """Réécrit la session (prolonge l'expiration glissante)."""
-        self._put(sid, data)
+    def update(self, sid: str, **changes) -> Optional[dict]:
+        """Relit la session ACTUELLE puis n'y applique que `changes` (valeur
+        None = suppression de la clé). Évite qu'une requête longue (appel IA)
+        écrase avec sa copie périmée un jeton rafraîchi entre-temps par une
+        autre requête — ce qui déconnecterait l'utilisateur (rotation du
+        refresh token Supabase). Prolonge aussi l'expiration glissante."""
+        current = self.get(sid)
+        if current is None:
+            return None
+        for k, v in changes.items():
+            if v is None:
+                current.pop(k, None)
+            else:
+                current[k] = v
+        self._put(sid, current)
+        return current
 
     def delete(self, sid: Optional[str]) -> None:
         if not sid:

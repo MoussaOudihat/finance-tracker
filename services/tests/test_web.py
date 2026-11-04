@@ -164,9 +164,7 @@ def test_token_refreshed_before_expiry(setup, user_id):
     c, state, sessions = setup
     login(c)
     sid = c.cookies.get("fintrack_sid")
-    sess = sessions.get(sid)
-    sess["expires_at"] = 0                     # jeton sur le point d'expirer
-    sessions.save(sid, sess)
+    sessions.update(sid, expires_at=0)         # jeton sur le point d'expirer
     assert c.get("/?y=2026&m=1").status_code == 200
     assert state["refresh_calls"] == 1
 
@@ -194,3 +192,28 @@ def test_ai_text_rendering_escapes_html():
     out = str(render_ai_text('<script>alert(1)</script>\n- **gras** <img src=x onerror=alert(1)>'))
     assert "<script>" not in out and "<img" not in out
     assert "&lt;script&gt;" in out and "<li><strong>gras</strong>" in out
+
+
+def test_session_update_merges_concurrent_changes():
+    """Une requête longue ne doit pas écraser un jeton rafraîchi entre-temps."""
+    from cryptography.fernet import Fernet
+    st = SessionStore(Fernet.generate_key().decode())
+    sid = st.create({"access_token": "a1", "refresh_token": "r1", "expires_at": 0})
+    stale = st.get(sid)                                   # copie lue par la requête A
+    st.update(sid, refresh_token="r2", access_token="a2")  # requête B : rotation du jeton
+    st.update(sid, chat=["…"])                            # requête A termine
+    cur = st.get(sid)
+    assert cur["refresh_token"] == "r2" and cur["chat"] == ["…"] and stale["refresh_token"] == "r1"
+
+
+def test_backend_403_is_not_a_logout(setup):
+    c, _, sessions = setup
+    login(c)
+    sid = c.cookies.get("fintrack_sid")
+    from web.app.backends import BackendError
+    def deny(*a, **k):
+        raise BackendError(403, "Opération refusée par la base de données.")
+    c.app.state.backends.call = deny
+    r = c.get("/depenses?y=2026&m=1", headers={"referer": "http://testserver/"})
+    assert sessions.get(sid) is not None                   # toujours connecté
+    assert r.status_code == 403 and "Opération refusée" in r.text

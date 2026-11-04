@@ -33,7 +33,7 @@ assignees: MoussaOudihat
 - OS : [ex: Windows 11]
 - Version Python : [ex: 3.11.5]
 - Version Finance Tracker : [ex: v3.0.0]
-- Lancé via : [ ] `python main.py`  [ ] `.exe` 
+- Lancé via : [ ] `python desktop/main.py`  [ ] `.exe` 
 
 ## Message d'erreur complet
 

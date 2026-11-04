@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────────────────
+#  Valeurs par défaut du chart Fintrack (sûres pour la production :
+#  HTTPS requis, NetworkPolicies, Pod Security restricted).
+#  Exemples : values-local.yaml (cluster local), values-production.yaml.
+# ─────────────────────────────────────────────────────────────
+
+image:
+  # Registre et préfixe des images : fintrack-web, fintrack-finance-api…
+  #   GHCR       : registry=ghcr.io     prefix=moussaoudihat/fintrack-
+  #   Docker Hub : registry=docker.io   prefix=<utilisateur>/fintrack-
+  registry: ghcr.io
+  prefix: moussaoudihat/fintrack-
+  tag: ""                 # vide = .Chart.AppVersion
+  digests: {}             # optionnel, par service : { web: "sha256:…" } (prioritaire sur tag)
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# ── Configuration applicative (ConfigMap) ────────────────────
+config:
+  supabaseUrl: ""                     # OBLIGATOIRE — https://<projet>.supabase.co
+  cookieSecure: true                  # false uniquement pour un test en http://localhost
+  logLevel: INFO
+  claudeModel: claude-opus-5-5
+  geminiModel: gemini-2.5-flash
+  aiDailyLimit: 40
+  notifierAllowedHosts: ntfy.sh,discord.com,discordapp.com,hooks.slack.com
+  ticktickClientId: ""
+  ticktickRedirectUri: ""             # défaut : https://<ingress.host>/parametres/ticktick/callback
+  # Adresses autorisées à fournir X-Forwarded-For (contrôleur d'Ingress)
+  forwardedAllowIps: "10.0.0.0/8"
+
+# ── Secrets ───────────────────────────────────────────────────
+secrets:
+  # Recommandé : Secret existant (créé à la main, Sealed Secrets, External
+  # Secrets Operator…) contenant les clés listées dans README / secrets.env.example.
+  existingSecret: ""
+  # Sinon le chart crée le Secret : clés internes générées aléatoirement à la
+  # première installation (conservées aux mises à jour), clés fournisseurs ici.
+  supabaseAnonKey: ""
+  anthropicApiKey: ""
+  geminiApiKey: ""
+  ticktickClientSecret: ""
+
+# ── Services ─────────────────────────────────────────────────
+# Pas de limite CPU (choix délibéré) : elle provoque du bridage (throttling)
+# sans protéger le nœud ; la mémoire, elle, est toujours plafonnée.
+web:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 5, targetCPU: 70 }
+  pdb: { enabled: true }
+
+financeApi:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 6, targetCPU: 70 }
+  pdb: { enabled: true }
+
+aiService:
+  enabled: true
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 192Mi }
+    limits: { memory: 384Mi }
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 4, targetCPU: 70 }
+  pdb: { enabled: true }
+
+notifier:
+  enabled: true
+  resources:
+    requests: { cpu: 25m, memory: 96Mi }
+    limits: { memory: 192Mi }
+  persistence:
+    size: 256Mi
+    storageClass: ""        # vide = classe par défaut du cluster
+
+redis:
+  image: docker.io/library/redis:7.4-alpine@sha256:1cf73a2f04808e55a8bd2f5706c2aa0ebb0f71938f93deb7af79f48311cd5cb9
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { memory: 96Mi }
+
+# ── Exposition ───────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx
+  host: fintrack.example.com
+  tls:
+    enabled: true
+    secretName: fintrack-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+
+# ── Réseau ────────────────────────────────────────────────────
+networkPolicy:
+  enabled: true
+  # Namespace du contrôleur d'Ingress (seul autorisé à joindre web)
+  ingressNamespace: ingress-nginx
+  # Sortie Internet (Supabase, IA, TickTick, ntfy) : 443 uniquement, sans
+  # plages privées ni métadonnées cloud (défense anti-SSRF).
+  egressExceptCidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+
+# Étalement des réplicas sur les nœuds
+topologySpread: true

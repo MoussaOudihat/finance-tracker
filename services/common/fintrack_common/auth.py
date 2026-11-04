@@ -53,6 +53,11 @@ class TokenVerifier:
                 issuer=self.issuer, leeway=self.leeway,
                 options={"require": ["exp", "sub", "iss", "aud"]},
             )
+        except jwt.PyJWKClientConnectionError as exc:
+            # Clés publiques momentanément injoignables : ce n'est PAS un jeton
+            # invalide (un 401 déconnecterait tous les utilisateurs).
+            log.warning("JWKS injoignable : %s", exc.__class__.__name__)
+            raise HTTPException(503, "Vérification d'identité momentanément indisponible.") from exc
         except jwt.PyJWTError as exc:
             log.info("Jeton refusé : %s", exc.__class__.__name__)
             raise HTTPException(401, "Jeton invalide ou expiré.",

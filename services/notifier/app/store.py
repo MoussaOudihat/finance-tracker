@@ -10,7 +10,7 @@ import secrets
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -52,7 +52,6 @@ class Prefs:
     ticktick_project: str = ""
     ntfy_url: str = ""
     webhook_url: str = ""
-    extra: dict = field(default_factory=dict)
 
     def public(self) -> dict:
         """Vue sans secret, renvoyée au navigateur."""
@@ -157,6 +156,12 @@ class Store:
             self._con.execute("DELETE FROM sent WHERE sent_at < ?", (time.time() - 400 * 86400,))
             self._con.commit()
             return cur.rowcount == 1
+
+    def unmark(self, key: str) -> None:
+        """Annule mark_once() : l'envoi a échoué partout, il sera retenté."""
+        with self._lock:
+            self._con.execute("DELETE FROM sent WHERE dedupe_key=?", (key,))
+            self._con.commit()
 
     def close(self) -> None:
         with self._lock:

@@ -57,3 +57,23 @@ def test_counter_with_redis():
     assert c.get("x", "a") == 2
     c.reset("x", "a")
     assert c.get("x", "a") == 0
+
+
+def test_jwks_outage_is_503_not_401():
+    import jwt as _jwt
+    from fintrack_common.auth import TokenVerifier
+
+    class Down:
+        def get_signing_key_from_jwt(self, token):
+            raise _jwt.PyJWKClientConnectionError("down")
+    v = TokenVerifier("https://proj.supabase.co", jwks_client=Down())
+    with pytest.raises(HTTPException) as e:
+        v.verify(make_token("abc"))
+    assert e.value.status_code == 503
+
+
+def test_fmt_helpers():
+    from fintrack_common.fmt import fmt_eur, month_name, shift_month
+    assert fmt_eur(1234.5) == "1 234,50 €" and fmt_eur(3, sign=True) == "+3,00 €"
+    assert shift_month(2026, 1, -1) == (2025, 12) and shift_month(2026, 12, 1) == (2027, 1)
+    assert month_name(8, capitalize=True) == "Août"
