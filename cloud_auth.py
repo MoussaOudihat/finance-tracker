@@ -12,8 +12,11 @@ desktop ne peut pas recevoir de redirection web proprement).
 """
 from supabase import create_client, Client
 
-from secrets_vault import get_secret, save_secret, delete_secret
 from logger import log
+
+# secrets_vault (trousseau OS) n'est importé que par les fonctions de
+# persistance de session, propres à l'app desktop : l'interface web
+# (conteneur) n'utilise que sign_in/sign_out et n'embarque pas ce module.
 
 
 def build_client(url: str, anon_key: str) -> Client:
@@ -120,12 +123,14 @@ def persist_session(db, session) -> None:
     """Stocke le refresh token dans le trousseau OS, l'identité (non
     sensible) dans app_settings. Ces clés sont exclues de la sync table
     (voir sync_supabase.SETTINGS_EXCLUDE)."""
+    from secrets_vault import save_secret
     save_secret("supabase_refresh_token", session.refresh_token)
     db.set_setting("supabase_user_id", session.user.id)
     db.set_setting("supabase_user_email", session.user.email or "")
 
 
 def clear_persisted_session(db) -> None:
+    from secrets_vault import delete_secret
     delete_secret("supabase_refresh_token")
     db.set_setting("supabase_user_id", "")
     db.set_setting("supabase_user_email", "")
@@ -136,6 +141,7 @@ def try_silent_refresh(db):
     Retourne (ok, client_authentifié|None, user_id|None)."""
     url       = db.get_setting("supabase_url", "")
     anon_key  = db.get_setting("supabase_anon_key", "")
+    from secrets_vault import get_secret
     refresh_token = get_secret("supabase_refresh_token")
     if not (url and anon_key and refresh_token):
         return False, None, None
