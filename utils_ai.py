@@ -202,14 +202,17 @@ def _call_anthropic(api_key: str, system: str, prompt: str) -> tuple[bool, str]:
 
     try:
         client = anthropic.Anthropic(api_key=api_key.strip())
+        # Pas de `temperature` : refusé (HTTP 400) par l'API Messages depuis
+        # la version d'API 2026-10-21, quel que soit le modèle.
         resp = client.messages.create(
             model=PROVIDER_INFO["anthropic"]["model"],
             max_tokens=650,
-            temperature=0.35,
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
-        return True, resp.content[0].text
+        if resp.stop_reason == "refusal":
+            return False, "Claude a décliné cette demande."
+        return True, "".join(b.text for b in resp.content if b.type == "text")
     except Exception as exc:
         return False, f"Erreur Anthropic : {exc}"
 

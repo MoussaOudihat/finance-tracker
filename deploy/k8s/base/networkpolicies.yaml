@@ -1,0 +1,115 @@
+# Zéro confiance réseau : tout est interdit par défaut, puis chaque flux
+# nécessaire est autorisé explicitement. Nécessite un CNI qui applique les
+# NetworkPolicy (Calico, Cilium…).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# DNS pour tous les pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-dns }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+---
+# HTTPS sortant vers Internet (Supabase, Anthropic, Gemini, TickTick, ntfy)
+# — plages privées et métadonnées cloud EXCLUES (défense anti-SSRF).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-internet-https }
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: [web, finance-api, ai-service, notifier] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+      ports: [{ port: 443, protocol: TCP }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: web }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: web } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ port: 8000 }]
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [finance-api, ai-service, notifier] }
+      ports: [{ port: 8000 }]
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: redis } } }]
+      ports: [{ port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: finance-api }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: finance-api } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [web, ai-service] }
+      ports: [{ port: 8000 }]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: notifier } } }]
+      ports: [{ port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: ai-service }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: ai-service } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app.kubernetes.io/name: web } } }]
+      ports: [{ port: 8000 }]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: finance-api } } }]
+      ports: [{ port: 8000 }]
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: redis } } }]
+      ports: [{ port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: notifier }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: notifier } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [web, finance-api] }
+      ports: [{ port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: redis }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: redis } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [web, ai-service] }
+      ports: [{ port: 6379 }]

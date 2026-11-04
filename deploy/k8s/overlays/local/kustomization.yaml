@@ -1,0 +1,41 @@
+# Cluster local (kind, k3d, minikube, Docker Desktop) avec images construites
+# localement. Accès : kubectl -n fintrack port-forward svc/web 8080:8000
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fintrack
+resources:
+  - ../../base
+configMapGenerator:
+  - name: fintrack-config
+    behavior: merge
+    literals:
+      - FINTRACK_COOKIE_SECURE=0
+      - TICKTICK_REDIRECT_URI=http://localhost:8080/parametres/ticktick/callback
+      - FORWARDED_ALLOW_IPS=127.0.0.1
+secretGenerator:
+  - name: fintrack-secrets
+    envs: [secrets.env]
+images:
+  - { name: ghcr.io/moussaoudihat/fintrack-web,         newName: localhost/fintrack-web,         newTag: dev }
+  - { name: ghcr.io/moussaoudihat/fintrack-finance-api, newName: localhost/fintrack-finance-api, newTag: dev }
+  - { name: ghcr.io/moussaoudihat/fintrack-ai-service,  newName: localhost/fintrack-ai-service,  newTag: dev }
+  - { name: ghcr.io/moussaoudihat/fintrack-notifier,    newName: localhost/fintrack-notifier,    newTag: dev }
+replicas:
+  - { name: web, count: 1 }
+  - { name: finance-api, count: 1 }
+  - { name: ai-service, count: 1 }
+patches:
+  # Une seule instance en local : HPA minimum à 1
+  - target: { kind: HorizontalPodAutoscaler }
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+  # Un seul réplica : un PDB minAvailable=1 bloquerait tout drain de nœud
+  - target: { kind: PodDisruptionBudget }
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1

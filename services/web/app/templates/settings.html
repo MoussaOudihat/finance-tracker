@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<h1>Notifications</h1>
+{% if notifier_error %}<div class="flash flash-error">{{ notifier_error }}</div>{% endif %}
+{% if prefs %}
+<div class="grid-2">
+  <section class="card">
+    <h2>TickTick</h2>
+    {% if not prefs.ticktick_available %}
+      <p class="muted">L'intégration TickTick n'est pas configurée sur ce serveur (TICKTICK_CLIENT_ID / SECRET / REDIRECT_URI du service notifier).</p>
+    {% elif prefs.ticktick_connected %}
+      <p><span class="badge">Connecté</span> Les alertes et rappels créent des tâches dans TickTick.</p>
+      <form method="post" action="/parametres/notifications" class="form">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="budget_alerts" value="{{ '1' if prefs.budget_alerts else '' }}">
+        <input type="hidden" name="reminder_enabled" value="{{ '1' if prefs.reminder_enabled else '' }}">
+        <input type="hidden" name="reminder_day" value="{{ prefs.reminder_day }}">
+        <label>Liste TickTick
+          <select name="ticktick_project">
+            <option value="">Boîte de réception</option>
+            {% for p in projects %}<option value="{{ p.id }}" {% if p.id == prefs.ticktick_project %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="btn btn-ghost">Enregistrer la liste</button>
+      </form>
+      <form method="post" action="/parametres/ticktick/deconnecter">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn btn-danger btn-sm">Déconnecter TickTick</button>
+      </form>
+    {% else %}
+      <p class="muted">Recevez vos alertes de budget et le rappel de saisie mensuel sous forme de tâches TickTick.</p>
+      <form method="post" action="/parametres/ticktick/connecter">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn btn-primary">Connecter TickTick</button>
+      </form>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Alertes et rappels</h2>
+    <form method="post" action="/parametres/notifications" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="check"><input type="checkbox" name="budget_alerts" value="1" {% if prefs.budget_alerts %}checked{% endif %}> Alerte quand un budget atteint 80 % puis 100 %</label>
+      <label class="check"><input type="checkbox" name="reminder_enabled" value="1" {% if prefs.reminder_enabled %}checked{% endif %}> Rappel mensuel de saisie</label>
+      <label>Jour du rappel (1-28)
+        <input name="reminder_day" type="number" min="1" max="28" value="{{ prefs.reminder_day }}">
+      </label>
+      <label>ntfy {% if prefs.ntfy_configured %}<span class="badge">configuré</span>{% endif %}
+        <input name="ntfy_url" type="url" placeholder="https://ntfy.sh/mon-sujet-secret" autocomplete="off">
+      </label>
+      {% if prefs.ntfy_configured %}<label class="check"><input type="checkbox" name="clear_ntfy" value="1"> Supprimer ntfy</label>{% endif %}
+      <label>Webhook Discord / Slack {% if prefs.webhook_configured %}<span class="badge">configuré</span>{% endif %}
+        <input name="webhook_url" type="url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off">
+      </label>
+      {% if prefs.webhook_configured %}<label class="check"><input type="checkbox" name="clear_webhook" value="1"> Supprimer le webhook</label>{% endif %}
+      <p class="muted small">Laisser un champ vide conserve l'adresse enregistrée (jamais réaffichée). Hôtes autorisés : {{ prefs.allowed_hosts|join(', ') }}.</p>
+      <button type="submit" class="btn btn-primary">Enregistrer</button>
+    </form>
+    <form method="post" action="/parametres/test">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="btn btn-ghost">Envoyer une notification de test</button>
+    </form>
+  </section>
+</div>
+{% endif %}
+{% endblock %}

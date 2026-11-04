@@ -384,6 +384,44 @@ class SupabaseSync:
                     self._idle.set() # redevient disponible
             threading.Thread(target=_run, daemon=True).start()
 
+    def check_remote_newer(self) -> tuple[bool, str]:
+        """Verrou optimiste : les données distantes ont-elles changé depuis
+        la dernière synchronisation de CETTE base (saisie depuis l'interface
+        web, ou depuis un autre PC) ? Le push supprime puis réinsère tout :
+        pousser par-dessus effacerait ces modifications.
+        Retourne (plus_récent, message)."""
+        res = (
+            self._client.table("app_settings").select("value")
+            .eq("key", SYNC_TS_KEY).eq("user_id", self._user_id).execute()
+        )
+        if not res.data:
+            return False, ""
+        try:
+            remote_ts = datetime.datetime.fromisoformat(res.data[0]["value"])
+        except ValueError:
+            return False, ""
+        con = sqlite3.connect(self._db_path)
+        try:
+            row = con.execute("SELECT value FROM app_settings WHERE key=?",
+                              (SYNC_TS_KEY,)).fetchone()
+        finally:
+            con.close()
+        local_ts = None
+        if row and row[0]:
+            try:
+                local_ts = datetime.datetime.fromisoformat(row[0])
+            except ValueError:
+                local_ts = None
+        if local_ts is not None and remote_ts <= local_ts + datetime.timedelta(seconds=1):
+            return False, ""
+        return True, (
+            "⚠️  Les données Supabase ont été modifiées ailleurs (interface web ou "
+            "autre PC) depuis votre dernière synchronisation. Envoi annulé pour ne "
+            "pas les écraser : récupérez d'abord les données depuis Supabase "
+            "(Paramètres → Synchronisation), puis ressaisissez vos modifications "
+            "locales récentes si besoin."
+        )
+
     def _do_push(self, force: bool = False) -> str:
         with self._lock:
             if not force:
@@ -391,6 +429,13 @@ class SupabaseSync:
                 if not safe:
                     log.warning("[Sync] Push refusé par le garde-fou : %s", msg)
                     return msg  # abandon — aucun delete, aucun upload
+                try:
+                    newer, msg = self.check_remote_newer()
+                except Exception as exc:
+                    return f"⚠️  Push annulé : vérification impossible ({exc})"
+                if newer:
+                    log.warning("[Sync] Push refusé : données distantes plus récentes.")
+                    return msg
 
             try:
                 con = sqlite3.connect(self._db_path)

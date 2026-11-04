@@ -9,11 +9,18 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 ## [2.0.0] — 2026-11-04
 
 ### Ajouté
-- 🌐 **Interface web hébergeable (Docker / Kubernetes)** : Fintrack est maintenant accessible depuis un navigateur, y compris sur mobile. On s'y connecte avec le même compte Supabase que l'application desktop. Disponible : tableau de bord du mois (KPI, dépenses par catégorie, budget, historique sur 12 mois), saisie, modification et suppression des dépenses, revenus et épargnes (avec la même synchronisation Épargne → Patrimoine), consultation du patrimoine. Les mois clôturés sont en lecture seule.
-- 🐳 **Image Docker** `ghcr.io/moussaoudihat/fintrack-web`, publiée à chaque release. Elle tourne en utilisateur non-root sur un système de fichiers en lecture seule, avec un healthcheck, et n'embarque aucune donnée personnelle. `docker-compose.yml` permet de la lancer localement.
-- ☸️ **Manifestes Kubernetes** (`deploy/k8s`, Kustomize) : Deployment, volume persistant, Service, Ingress HTTPS, NetworkPolicy, profil Pod Security `restricted`, sondes de santé.
-- 🔐 **Sécurité web** : cookie de session signé, protection CSRF, limitation des tentatives de connexion, en-têtes CSP/HSTS stricts. Un mode `local` (compte unique, sans Supabase) est aussi proposé.
-- ✅ **Tests automatisés** (`tests/`, pytest), exécutés par la CI avec le build de l'image et la validation des manifestes.
+- 🌐 **Interface web en microservices** (Docker Compose / Kubernetes) : Fintrack est accessible depuis un navigateur, y compris sur mobile, avec le même compte Supabase que l'application desktop. Quatre services : **web** (pages, sessions), **finance-api** (données, écrites ligne par ligne dans Supabase avec la RLS de l'utilisateur), **ai-service** (IA), **notifier** (notifications). Disponible : tableau de bord, dépenses / revenus / épargne (avec la synchro Épargne → Patrimoine), budgets, patrimoine. Les mois clôturés sont en lecture seule. Voir `docs/ARCHITECTURE.md`.
+- 🤖 **Assistant IA avec Claude ou Gemini** : analyse de la période (1, 3 ou 6 mois), questions libres sur ses finances (« combien je dépense en restaurants ? »), suggestion automatique de la catégorie d'une dépense. Seul un résumé agrégé est envoyé, après consentement, avec un quota quotidien par utilisateur.
+- 💰 **Budgets depuis le web** : définir, modifier et copier les budgets du mois précédent. Une alerte est envoyée quand un budget atteint 80 % puis 100 %.
+- 🔔 **Notifications** : **TickTick** (connexion OAuth, les alertes et rappels deviennent des tâches dans la liste choisie), **ntfy**, webhooks **Discord / Slack**. Rappel mensuel de saisie, au jour choisi.
+- ☸️ **Déploiement** : Compose durci (réseau interne sans Internet, secrets en fichiers, conteneurs non-root en lecture seule) et Kustomize (overlays `local` / `production`, NetworkPolicies deny-all, Pod Security `restricted`, HPA, PDB, Ingress TLS).
+- 🛡️ **Pipeline DevSecOps** : Ruff, Bandit, Semgrep, CodeQL, pip-audit, Gitleaks, Hadolint, Trivy (images et IaC), kubeconform, Dependabot. Actions épinglées par SHA. Images publiées sur GHCR signées avec cosign, avec provenance SLSA et SBOM attestés. Voir `SECURITY.md`.
+- ✅ **Tests** : 63 pour les services (dont des tests de bout en bout web → finance-api → base) et 9 pour le desktop.
+
+### Sécurité
+- 🛡️ **Plus d'écrasement entre appareils** : l'app desktop vérifie avant d'envoyer que les données Supabase n'ont pas été modifiées ailleurs (web ou autre PC) depuis sa dernière synchronisation. Si c'est le cas, elle refuse au lieu d'effacer ces modifications.
+- 🔐 **Déconnexion limitée à l'appareil** : se déconnecter (desktop ou web) ne ferme plus les sessions Supabase des autres appareils.
+- 🤖 L'appel Claude de l'app desktop n'envoie plus `temperature`, refusé par l'API Messages depuis la version 2026-10-21.
 
 ### Corrigé
 - 🐛 **Import Notion : nouvelles catégories rangées dans « Autres »** : depuis la v1.4.0, l'import utilisait une liste de catégories en cache, sans celles qu'il venait de créer. Toutes les dépenses d'une catégorie inédite partaient dans « Autres ».
