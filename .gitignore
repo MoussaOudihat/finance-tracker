@@ -14,7 +14,9 @@ data/*.sql
 # Secrets / identifiants (ne jamais committer)
 .env
 !.env.example
-deploy/k8s/secret.yaml
+deploy/compose/secrets/
+deploy/compose/.env
+deploy/k8s/overlays/*/secrets.env
 secret.*
 *.pem
 *.key

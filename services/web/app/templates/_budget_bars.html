@@ -1,0 +1,13 @@
+<ul class="bars">
+  {% for b in s.budgets %}
+  {% set pct = [b.pct, 100]|min %}
+  <li>
+    <span class="bar-label">{{ b.category }}</span>
+    <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+      <rect class="bar-bg" width="100" height="8" rx="2"/>
+      <rect class="{{ 'bar-over' if b.pct > 100 else ('bar-warn' if b.pct >= 80 else 'bar-fg') }}" width="{{ pct|round(1) }}" height="8" rx="2"/>
+    </svg>
+    <span class="bar-value {{ 'neg' if b.pct > 100 else '' }}">{{ b.spent|eur }} / {{ b.budget|eur }}</span>
+  </li>
+  {% endfor %}
+</ul>

@@ -190,57 +190,49 @@ Dans votre projet Supabase → **Settings → API** :
 
 ---
 
-## 🌐 Interface web (Docker / Kubernetes) — v2.0
+## 🌐 Interface web — microservices (Docker / Kubernetes) — v2.0
 
-Accédez à Fintrack depuis un navigateur, y compris sur mobile, en hébergeant l'interface web dans un conteneur. Elle utilise **les mêmes comptes et les mêmes données Supabase** que l'application desktop.
+Accédez à Fintrack depuis un navigateur (mobile compris) avec **le même compte Supabase** que l'application desktop. Architecture détaillée : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Sécurité : [SECURITY.md](SECURITY.md).
 
-**Disponible dans le navigateur** : tableau de bord du mois (KPI, dépenses par catégorie, budget, historique sur 12 mois), saisie, modification et suppression des **dépenses, revenus et épargnes**, et consultation du **patrimoine**. Les fonctions avancées (analyses, projection, IA, exports, clôture de mois, transactions de patrimoine) restent dans l'application desktop.
+| Service | Rôle | État |
+|---|---|---|
+| **web** | Pages HTML, sessions (Redis), orchestration | sans état · HPA |
+| **finance-api** | Données : écrit ligne par ligne dans Supabase Postgres avec le jeton de l'utilisateur (RLS) | sans état · HPA |
+| **ai-service** | Analyse, assistant conversationnel, catégorisation — Claude ou Gemini | sans état · HPA |
+| **notifier** | TickTick (OAuth), ntfy, Discord/Slack : alertes budget, rappel mensuel | volume · 1 réplica |
+| **redis** | Sessions et compteurs (quotas IA, tentatives de connexion) | éphémère |
 
-### Fonctionnement
-- Chaque utilisateur connecté a sa propre base SQLite dans le volume `/data`. Elle est récupérée depuis Supabase à la connexion.
-- Les modifications sont renvoyées vers Supabase environ 20 s après la dernière saisie, puis à la déconnexion, après 1 h d'inactivité et à l'arrêt du pod.
-- ⚠️ La synchronisation reste de type « dernier envoi gagnant », comme entre deux PC. Évitez de modifier le même compte dans l'app desktop et dans le navigateur au même moment. Fermez l'une avant d'utiliser l'autre.
-- Mode `local` : un compte unique défini par variables d'environnement, sans Supabase. Les données restent alors uniquement dans le volume, pensez à le sauvegarder.
+**Dans le navigateur** : tableau de bord, dépenses / revenus / épargne (avec la synchro Épargne → Patrimoine), **budgets** (alertes à 80 % et 100 %), patrimoine, **assistant IA** (analyse de la période, questions libres, suggestion de catégorie), **notifications** (TickTick, ntfy, webhooks). L'analyse avancée, la projection, les exports et la clôture de mois restent dans l'app desktop.
 
-### Lancer avec Docker
+> **Desktop + web** : le web écrit ligne par ligne et ne peut plus écraser les données. L'app desktop refuse désormais d'envoyer sa base si des modifications ont été faites ailleurs depuis sa dernière synchro : elle demande de récupérer d'abord.
+
+### Docker Compose (ou Podman Compose)
 ```bash
-cp .env.example .env          # remplir FINTRACK_SECRET_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
-docker compose up --build     # → http://localhost:8000
+python deploy/gen_secrets.py                 # secrets dans deploy/compose/secrets/ (ignorés par git)
+cp deploy/compose/.env.example deploy/compose/.env   # SUPABASE_URL, TickTick, modèles IA…
+docker compose -f deploy/compose/compose.yaml up -d --build   # → http://localhost:8080
 ```
+Réseau `backend` interne (sans Internet), seul `web` publié sur 127.0.0.1, conteneurs non-root en lecture seule, secrets en fichiers, healthchecks, limites de ressources.
 
-### Déployer sur Kubernetes
+### Kubernetes (Kustomize)
 ```bash
-kubectl create namespace fintrack
-kubectl -n fintrack create secret generic fintrack-web-secret \
-  --from-literal=FINTRACK_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
-  --from-literal=SUPABASE_ANON_KEY="<clé anon>"
-# Adapter SUPABASE_URL (configmap.yaml) et l'hôte (ingress.yaml), puis :
-kubectl apply -k deploy/k8s
+python deploy/gen_secrets.py --k8s           # → deploy/k8s/overlays/local/secrets.env
+kubectl apply -k deploy/k8s/overlays/local   # cluster local (images localhost/…:dev)
+# Production : adapter hôte + SUPABASE_URL dans overlays/production, fournir secrets.env
+# (ou Sealed Secrets / External Secrets), puis :
+kubectl apply -k deploy/k8s/overlays/production
 ```
-Image publiée à chaque release : `ghcr.io/moussaoudihat/fintrack-web:<version>`.
+NetworkPolicies « deny-all » + flux explicites (sortie Internet limitée au 443, plages privées et métadonnées cloud exclues), Pod Security `restricted`, ServiceAccounts sans jeton, HPA + PDB, Ingress TLS (cert-manager), images signées.
 
-> **Podman (`podman kube play`)** : Podman convertit les sondes `httpGet` en appels `curl` exécutés dans le conteneur, or l'image ne contient pas `curl`. La sonde de démarrage échoue alors et Podman arrête le conteneur au bout de 60 s. Remplacez chaque `httpGet: { path: /healthz, port: http }` par `exec: { command: ["python", "-m", "web.healthcheck", "/healthz"] }` (même chose pour `/readyz`). Un vrai cluster Kubernetes n'est pas concerné.
-
-Les manifestes appliquent par défaut : 1 réplica (stratégie `Recreate`, les sessions vivent dans le pod), volume `ReadWriteOnce` de 1 Gi, utilisateur non-root, système de fichiers en lecture seule, profil Pod Security `restricted`, NetworkPolicy, HTTPS via cert-manager et ingress-nginx, sondes `/healthz` et `/readyz`.
-
-### Sécurité
-Cookie de session signé (`HttpOnly`, `Secure`, `SameSite=Lax`), protection CSRF sur tous les formulaires, limitation des tentatives de connexion, en-têtes CSP/HSTS stricts, `Cache-Control: no-store`. Aucune donnée n'est incluse dans l'image (voir `.dockerignore`).
-
-### Variables d'environnement
-| Variable | Rôle |
-|---|---|
-| `FINTRACK_SECRET_KEY` | **Obligatoire.** Signature des cookies (32+ caractères aléatoires) |
-| `FINTRACK_AUTH_MODE` | `supabase` (défaut) ou `local` |
-| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Projet Supabase (mode `supabase`) |
-| `FINTRACK_WEB_USER` / `FINTRACK_WEB_PASSWORD_HASH` | Compte unique (mode `local`), hash généré par `python -m web.hash_password` |
-| `FINTRACK_COOKIE_SECURE` | `1` (défaut, HTTPS requis) ; `0` pour tester en `http://localhost` |
-| `FINTRACK_SYNC_DELAY` / `FINTRACK_IDLE_TIMEOUT` | Délai d'envoi vers Supabase (20 s) et d'inactivité (3600 s) |
+### Intégrations
+- **Claude / Gemini** : clés serveur `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` (secrets de ai-service). Modèles : `CLAUDE_MODEL` (défaut `claude-opus-5-5`), `GEMINI_MODEL`. Quota `AI_DAILY_LIMIT` par utilisateur et par jour. Seul un **résumé agrégé** est envoyé au fournisseur, après consentement explicite.
+- **TickTick** : créer une application sur [developer.ticktick.com](https://developer.ticktick.com), URL de redirection `https://<votre-hôte>/parametres/ticktick/callback`, puis renseigner `TICKTICK_CLIENT_ID`, `TICKTICK_REDIRECT_URI` et le secret `ticktick_client_secret`. L'utilisateur clique ensuite « Connecter TickTick » dans Notifications.
+- **ntfy / Discord / Slack** : URL saisie par l'utilisateur, limitée aux hôtes de `NOTIFIER_ALLOWED_HOSTS` (anti-SSRF).
 
 ### Développement
 ```bash
-pip install -r requirements-web.txt pytest
-python -m pytest -q
-FINTRACK_SECRET_KEY=... FINTRACK_COOKIE_SECURE=0 uvicorn web.main:app --reload
+pip install -r services/requirements-dev.txt
+cd services && python -m pytest -q tests      # tests des 4 services (dont bout en bout web → API)
 ```
 
 ---
@@ -248,8 +240,10 @@ FINTRACK_SECRET_KEY=... FINTRACK_COOKIE_SECURE=0 uvicorn web.main:app --reload
 ## 🗺️ Roadmap
 
 ### ✅ v2.0 — Actuel
-- [x] Interface web hébergeable (Docker / Kubernetes), mêmes comptes Supabase que l'app desktop
-- [x] Saisie des dépenses, revenus et épargnes, tableau de bord et patrimoine depuis le navigateur
+- [x] Interface web en 4 microservices (Docker Compose / Kubernetes), mêmes comptes Supabase que l'app desktop
+- [x] Assistant IA (Claude, Gemini) : analyse, questions libres, catégorisation automatique
+- [x] Budgets depuis le web avec alertes 80 % / 100 %, rappel mensuel — TickTick, ntfy, Discord/Slack
+- [x] Pipeline DevSecOps : SAST, SCA, secrets, scan d'images et d'IaC, images signées + SBOM
 
 ### ✅ v1.2
 - [x] Import / export Excel par page (Dépenses et Revenus)

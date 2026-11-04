@@ -1,0 +1,26 @@
+# kubectl apply -k deploy/k8s/overlays/production
+# Avant : adapter l'hôte (ingress.yaml, TICKTICK_REDIRECT_URI), SUPABASE_URL,
+# et fournir les secrets (secrets.env via `python deploy/gen_secrets.py --k8s`
+# puis copie ici, ou mieux : Sealed Secrets / External Secrets Operator).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fintrack
+resources:
+  - ../../base
+  - ingress.yaml
+configMapGenerator:
+  - name: fintrack-config
+    behavior: merge
+    literals:
+      - SUPABASE_URL=https://xxxxxxxx.supabase.co
+      - TICKTICK_REDIRECT_URI=https://fintrack.example.com/parametres/ticktick/callback
+secretGenerator:
+  - name: fintrack-secrets
+    envs: [secrets.env]
+    options: { disableNameSuffixHash: false }
+# Images versionnées (idéalement épinglées par digest : `digest: sha256:…`)
+images:
+  - { name: ghcr.io/moussaoudihat/fintrack-web,         newTag: "2.0.0" }
+  - { name: ghcr.io/moussaoudihat/fintrack-finance-api, newTag: "2.0.0" }
+  - { name: ghcr.io/moussaoudihat/fintrack-ai-service,  newTag: "2.0.0" }
+  - { name: ghcr.io/moussaoudihat/fintrack-notifier,    newTag: "2.0.0" }

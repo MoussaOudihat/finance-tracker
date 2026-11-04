@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Budgets{% endblock %}
+{% block content %}
+{% include "_month_nav.html" %}
+
+<div class="grid-2 entries">
+  <section class="card">
+    <h2>Budgets du mois</h2>
+    {% if s.budgets %}
+    {% include "_budget_bars.html" %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Catégorie</th><th class="num">Dépensé</th><th class="num">Budget</th><th class="num">Reste</th><th><span class="sr-only">Modifier</span></th></tr></thead>
+      <tbody>
+      {% for b in s.budgets %}
+      <tr>
+        <td>{{ b.category }}</td>
+        <td class="num">{{ b.spent|eur }}</td>
+        <td class="num">{{ b.budget|eur }}</td>
+        <td class="num {{ 'neg' if b.budget - b.spent < 0 else 'pos' }}">{{ (b.budget - b.spent)|eur(true) }}</td>
+        <td>
+          <form method="post" action="/budgets" class="inline-form">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+            <input type="hidden" name="category" value="{{ b.category }}">
+            <input name="amount" inputmode="decimal" aria-label="Nouveau budget {{ b.category }}" value="{{ ('%.0f'|format(b.budget)) }}" class="input-sm">
+            <button type="submit" class="btn btn-ghost btn-sm">OK</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">Mettre un budget à 0 le supprime. Une alerte est envoyée à 80 % et à 100 % (voir Notifications).</p>
+    {% else %}
+    <p class="muted">Aucun budget défini pour ce mois.</p>
+    {% endif %}
+    <form method="post" action="/budgets/copier">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+      <button type="submit" class="btn btn-ghost">Copier les budgets du mois précédent</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Ajouter un budget</h2>
+    {% if unbudgeted %}
+    <form method="post" action="/budgets" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+      <label>Catégorie
+        <select name="category" required>
+          {% for c in unbudgeted %}<option value="{{ c.name }}">{{ c.name }}{% if c.spent %} — {{ c.spent|eur }} dépensés{% endif %}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Montant mensuel (€)
+        <input name="amount" required inputmode="decimal" pattern="[0-9 ]+([,.][0-9]{1,2})?" placeholder="300">
+      </label>
+      <button type="submit" class="btn btn-primary">Enregistrer</button>
+    </form>
+    {% else %}<p class="muted">Toutes les catégories ont un budget.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

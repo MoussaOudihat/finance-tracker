@@ -1,5 +1,4 @@
 """Tests de non-régression des corrections de l'audit v2.0.0 (database.py)."""
-import io
 import zipfile
 
 import pytest
