@@ -150,3 +150,38 @@ def test_settings_validation(tmp_path):
         _settings(tmp_path, auth_mode="supabase").validate()
     with pytest.raises(ConfigError):
         _settings(tmp_path, local_password_hash="plaintext").validate()
+
+
+def test_sign_out_only_revokes_this_device():
+    import cloud_auth
+
+    class _Auth:
+        def sign_out(self, options=None):
+            self.options = options
+
+    class _Client:
+        auth = _Auth()
+
+    c = _Client()
+    cloud_auth.sign_out(c)
+    assert c.auth.options == {"scope": "local"}
+
+
+def test_healthcheck_module(monkeypatch):
+    from web import healthcheck
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr("sys.argv", ["healthcheck", "/readyz"])
+    seen = {}
+    monkeypatch.setattr(healthcheck.urllib.request, "urlopen",
+                        lambda url, timeout: seen.setdefault("url", url) and _Resp())
+    assert healthcheck.main() == 0 and seen["url"].endswith("/readyz")
+
+    def _down(url, timeout):
+        raise OSError("connection refused")
+    monkeypatch.setattr(healthcheck.urllib.request, "urlopen", _down)
+    assert healthcheck.main() == 1

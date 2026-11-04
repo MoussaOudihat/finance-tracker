@@ -111,11 +111,8 @@ class Workspace:
             except Exception:
                 log.warning("Fermeture de la base %s échouée", self.db_path, exc_info=True)
         if self.client is not None:
-            try:
-                import cloud_auth
-                cloud_auth.sign_out(self.client)
-            except Exception:
-                pass
+            import cloud_auth
+            cloud_auth.sign_out(self.client)   # scope local : ce pod uniquement
 
 
 class WorkspaceManager:
