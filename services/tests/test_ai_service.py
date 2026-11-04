@@ -140,3 +140,18 @@ def _respond(req, seen):
             "content": [{"type": "text", "text": '{"category": "RESTAURANTS"}'}],
             "stop_reason": "end_turn", "stop_sequence": None,
             "usage": {"input_tokens": 10, "output_tokens": 5}}
+
+
+def test_long_assistant_history_accepted(make):
+    c, _ = make()
+    r = c.post("/v1/chat", headers=H, json={"year": 2026, "month": 3, "messages": [
+        {"role": "user", "content": "Bilan ?"}, {"role": "assistant", "content": "x" * 6000},
+        {"role": "user", "content": "Et ensuite ?"}]})
+    assert r.status_code == 200
+
+
+def test_failed_calls_do_not_consume_quota(make):
+    c, _ = make(providers=FakeProviders(fail=True))
+    for _ in range(5):
+        assert c.post("/v1/insights", headers=H, json={"year": 2026, "month": 3}).status_code == 502
+    assert c.get("/v1/providers", headers=H).json()["remaining"] == 3

@@ -13,9 +13,13 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 - 🤖 **Assistant IA avec Claude ou Gemini** : analyse de la période (1, 3 ou 6 mois), questions libres sur ses finances (« combien je dépense en restaurants ? »), suggestion automatique de la catégorie d'une dépense. Seul un résumé agrégé est envoyé, après consentement, avec un quota quotidien par utilisateur.
 - 💰 **Budgets depuis le web** : définir, modifier et copier les budgets du mois précédent. Une alerte est envoyée quand un budget atteint 80 % puis 100 %.
 - 🔔 **Notifications** : **TickTick** (connexion OAuth, les alertes et rappels deviennent des tâches dans la liste choisie), **ntfy**, webhooks **Discord / Slack**. Rappel mensuel de saisie, au jour choisi.
-- ☸️ **Déploiement** : Compose durci (réseau interne sans Internet, secrets en fichiers, conteneurs non-root en lecture seule) et Kustomize (overlays `local` / `production`, NetworkPolicies deny-all, Pod Security `restricted`, HPA, PDB, Ingress TLS).
+- ☸️ **Déploiement** : Compose durci (réseau interne sans Internet, secrets en fichiers, conteneurs non-root en lecture seule) et **chart Helm** `fintrack` (NetworkPolicies deny-all, Pod Security `restricted`, HPA, PDB, Ingress TLS, `helm test`, schéma de valeurs). Images et chart publiés et signés sur **GHCR** et, si configuré, **Docker Hub**.
 - 🛡️ **Pipeline DevSecOps** : Ruff, Bandit, Semgrep, CodeQL, pip-audit, Gitleaks, Hadolint, Trivy (images et IaC), kubeconform, Dependabot. Actions épinglées par SHA. Images publiées sur GHCR signées avec cosign, avec provenance SLSA et SBOM attestés. Voir `SECURITY.md`.
-- ✅ **Tests** : 63 pour les services (dont des tests de bout en bout web → finance-api → base) et 9 pour le desktop.
+- ✅ **Tests** : 71 pour les services (dont des tests de bout en bout web → finance-api → base) et 8 pour le desktop.
+
+### Réorganisation
+- 📁 Dépôt séparé en `desktop/` (application Windows), `services/` (plateforme web), `deploy/` (Compose, Helm), `supabase/` (schémas SQL) et `docs/`. En mode source, la base locale (`data/`) et `VERSION` restent à la racine : rien ne change pour une installation existante. Lancement : `python desktop/main.py`.
+- 🧹 Nettoyage : code mort supprimé (méthodes jamais appelées de `database.py`, utilitaires et imports inutilisés, mécanisme de rafraîchissement jamais déclenché), manifestes Kustomize remplacés par le chart Helm, helpers dupliqués (mois, euros, décalage de mois) regroupés dans `fintrack_common`.
 
 ### Sécurité
 - 🛡️ **Plus d'écrasement entre appareils** : l'app desktop vérifie avant d'envoyer que les données Supabase n'ont pas été modifiées ailleurs (web ou autre PC) depuis sa dernière synchronisation. Si c'est le cas, elle refuse au lieu d'effacer ces modifications.

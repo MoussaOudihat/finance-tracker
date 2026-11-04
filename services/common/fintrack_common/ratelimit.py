@@ -56,6 +56,18 @@ class Counter:
                 self._local.popitem(last=False)     # éviction : mémoire bornée
             return count + 1
 
+    def decr(self, scope: str, *parts: str) -> None:
+        """Annule une consommation (ex. requête IA échouée : non décomptée)."""
+        k = self._full(scope, *parts)
+        if self.redis is not None:
+            if int(self.redis.get(k) or 0) > 0:
+                self.redis.decr(k)
+            return
+        with self._lock:
+            v = self._local.get(k)
+            if v and v[0] > 0:
+                self._local[k] = (v[0] - 1, v[1])
+
     def reset(self, scope: str, *parts: str) -> None:
         k = self._full(scope, *parts)
         if self.redis is not None:

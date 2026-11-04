@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from fintrack_common.auth import TokenVerifier, User, internal_dependency, user_dependency
 from fintrack_common.config import VERSION, env, env_int
+from fintrack_common.fmt import fmt_eur, month_name, shift_month
 from fintrack_common.http import RequestContextMiddleware, add_health_routes
 from fintrack_common.logs import setup_logging
 
@@ -31,8 +32,6 @@ from .store import Prefs, Store
 
 log = setup_logging("notifier")
 
-MONTHS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
-             "septembre", "octobre", "novembre", "décembre"]
 
 
 class PrefsIn(BaseModel):
@@ -62,13 +61,10 @@ class EventIn(BaseModel):
     budget: float
 
 
-def fmt_eur(v: float) -> str:
-    return f"{v:,.2f} €".replace(",", " ").replace(".", ",")
-
-
 def dispatch(ch: Channels, p: Prefs, msg: Message, *, due: dt.date | None = None) -> list[str]:
     """Envoie sur tous les canaux configurés. Renvoie la liste des échecs
-    (un canal en panne n'empêche pas les autres)."""
+    (un canal en panne n'empêche pas les autres) ; ["aucun canal"] si rien
+    n'est configuré."""
     failures = []
     targets = []
     if p.ticktick_token:
@@ -79,6 +75,8 @@ def dispatch(ch: Channels, p: Prefs, msg: Message, *, due: dt.date | None = None
         targets.append(("ntfy", lambda: ch.ntfy(p.ntfy_url, msg)))
     if p.webhook_url:
         targets.append(("webhook", lambda: ch.webhook(p.webhook_url, msg)))
+    if not targets:
+        return ["aucun canal"]
     for name, send in targets:
         try:
             send()
@@ -86,6 +84,12 @@ def dispatch(ch: Channels, p: Prefs, msg: Message, *, due: dt.date | None = None
             log.warning("Canal %s en échec : %s", name, exc.__class__.__name__)
             failures.append(name)
     return failures
+
+
+def delivered(failures: list[str], p: Prefs) -> bool:
+    """Au moins un canal a reçu le message."""
+    configured = sum(bool(x) for x in (p.ticktick_token, p.ntfy_url, p.webhook_url))
+    return configured > 0 and len(failures) < configured
 
 
 def create_app(*, verifier: Optional[TokenVerifier] = None, store: Optional[Store] = None,
@@ -107,17 +111,21 @@ def create_app(*, verifier: Optional[TokenVerifier] = None, store: Optional[Stor
 
     def run_reminders(today: dt.date | None = None) -> int:
         today = today or dt.date.today()
-        py, pm = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+        py, pm = shift_month(today.year, today.month, -1)
         sent = 0
         for p in st.reminder_candidates(today.day):
-            if not st.mark_once(f"reminder:{p.user_id}:{today:%Y-%m}"):
+            key = f"reminder:{p.user_id}:{today:%Y-%m}"
+            if not st.mark_once(key):
                 continue
             last = calendar.monthrange(today.year, today.month)[1]
-            msg = Message(title=f"Fintrack : saisir les dépenses de {MONTHS_FR[pm - 1]} {py}",
+            msg = Message(title=f"Fintrack : saisir les dépenses de {month_name(pm)} {py}",
                           body="Pensez à compléter revenus, dépenses et épargne du mois "
                                "écoulé, puis à le clôturer.", priority=3)
-            dispatch(ch, p, msg, due=today.replace(day=min(today.day + 3, last)))
-            sent += 1
+            failures = dispatch(ch, p, msg, due=today.replace(day=min(today.day + 3, last)))
+            if delivered(failures, p):
+                sent += 1
+            else:
+                st.unmark(key)       # retenté au prochain passage du planificateur
         return sent
 
     def scheduler_loop():
@@ -240,10 +248,14 @@ def create_app(*, verifier: Optional[TokenVerifier] = None, store: Optional[Stor
         msg = Message(
             title=(f"Budget {ev.category} dépassé" if over
                    else f"Budget {ev.category} à {ev.threshold} %"),
-            body=(f"{MONTHS_FR[ev.month - 1].capitalize()} {ev.year} : {fmt_eur(ev.spent)} "
+            body=(f"{month_name(ev.month, capitalize=True)} {ev.year} : {fmt_eur(ev.spent)} "
                   f"dépensés sur un budget de {fmt_eur(ev.budget)}."),
             priority=5 if over else 3)
-        return {"status": "sent", "failures": dispatch(ch, p, msg)}
+        failures = dispatch(ch, p, msg)
+        if not delivered(failures, p):
+            st.unmark(key)           # aucun canal n'a reçu l'alerte : pas de faux « envoyé »
+            return {"status": "failed", "failures": failures}
+        return {"status": "sent", "failures": failures}
 
     return app
 

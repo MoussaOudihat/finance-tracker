@@ -1,0 +1,21 @@
+# Cluster local (kind, k3d, minikube, Docker Desktop, Podman) :
+#   helm install fintrack deploy/helm/fintrack -n fintrack --create-namespace \
+#     -f deploy/helm/fintrack/values-local.yaml \
+#     --set config.supabaseUrl=https://<projet>.supabase.co \
+#     --set secrets.supabaseAnonKey=<clé anon>
+#   kubectl -n fintrack port-forward svc/web 8080:8000   →  http://localhost:8080
+image:
+  registry: localhost
+  prefix: fintrack-
+  tag: dev
+  pullPolicy: Never          # images construites localement
+config:
+  cookieSecure: false
+  ticktickRedirectUri: http://localhost:8080/parametres/ticktick/callback
+  forwardedAllowIps: 127.0.0.1
+ingress:
+  enabled: false
+web:        { autoscaling: { enabled: false }, replicas: 1 }
+financeApi: { autoscaling: { enabled: false }, replicas: 1 }
+aiService:  { autoscaling: { enabled: false }, replicas: 1 }
+topologySpread: false

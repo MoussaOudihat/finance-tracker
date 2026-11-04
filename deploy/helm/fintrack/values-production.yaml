@@ -1,0 +1,16 @@
+# Production : images signées publiées par la CI (GHCR ou Docker Hub).
+#   kubectl -n fintrack create secret generic fintrack-secrets --from-env-file=secrets.env
+#   helm upgrade --install fintrack oci://registry-1.docker.io/<utilisateur>/fintrack \
+#     --version 2.0.0 -n fintrack -f values-production.yaml
+image:
+  registry: docker.io
+  prefix: <utilisateur-dockerhub>/fintrack-
+  # Épingler par digest (sortie de la CI) pour un déploiement immuable :
+  # digests: { web: "sha256:…", finance-api: "sha256:…", ai-service: "sha256:…", notifier: "sha256:…" }
+config:
+  supabaseUrl: https://xxxxxxxx.supabase.co
+  ticktickClientId: ""
+secrets:
+  existingSecret: fintrack-secrets
+ingress:
+  host: fintrack.example.com

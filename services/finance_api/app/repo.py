@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 import httpx
 from fastapi import HTTPException
@@ -45,8 +46,11 @@ class Repo:
 
     # ── Bas niveau ───────────────────────────────────────────
     def _check(self, r: httpx.Response) -> httpx.Response:
-        if r.status_code in (401, 403):
+        if r.status_code == 401:            # jeton refusé par PostgREST
             raise HTTPException(401, "Session Supabase expirée — reconnectez-vous.")
+        if r.status_code == 403:            # RLS / droits : erreur de données, pas de session
+            log.warning("PostgREST 403 sur %s %s", r.request.method, r.request.url.path)
+            raise HTTPException(403, "Opération refusée par la base de données.")
         if r.status_code >= 400:
             log.warning("PostgREST %s %s -> %s", r.request.method,
                         r.request.url.path, r.status_code)
@@ -62,8 +66,9 @@ class Repo:
                order: str | None = None, limit: int | None = None) -> list[dict]:
         params = self._params(filters)
         params["select"] = columns
-        if order:
-            params["order"] = order
+        # Ordre TOUJOURS déterminé : sans ORDER BY, Postgres peut renvoyer une
+        # ligne deux fois (ou jamais) d'une page à l'autre.
+        params["order"] = order or ("key.asc" if table == "app_settings" else "id.asc")
         rows: list[dict] = []
         offset = 0
         while True:
@@ -113,7 +118,7 @@ class Repo:
         """Signale aux autres appareils (desktop) que les données distantes
         ont changé : leur prochain envoi sera refusé tant qu'ils n'ont pas
         récupéré ces modifications."""
-        ts = dt.datetime.now(dt.timezone.utc).isoformat()
+        ts = dt.datetime.now(dt.UTC).isoformat()
         self.upsert("app_settings", {"key": SYNC_TS_KEY, "value": ts}, "user_id,key")
 
     # ── Mois ─────────────────────────────────────────────────

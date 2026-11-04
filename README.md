@@ -49,9 +49,9 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 - Envoi par **email SMTP** (résumé mensuel)
 
 ### Maintenance & récupération
-- **`reset_auth.py`** — récupération des identifiants (username oublié, mot de passe perdu, compte bloqué) sans toucher aux données
-- **`supabase_migration.sql`** — mise à jour du schéma Supabase existant vers la dernière version
-- **`supabase_schema.sql`** — schéma complet pour une nouvelle installation Supabase
+- **`desktop/tools/reset_auth.py`** — récupération des identifiants (username oublié, mot de passe perdu, compte bloqué) sans toucher aux données
+- **`supabase/migration_multiuser.sql`** — mise à jour d'un projet Supabase existant vers le schéma multi-utilisateur
+- **`supabase/schema.sql`** — schéma complet pour une nouvelle installation Supabase
 
 ### Synchronisation Supabase (optionnel)
 - ☁️ Sync multi-appareils via **Supabase PostgreSQL** (tables réelles, pas Storage)
@@ -111,10 +111,10 @@ python -m venv venv
 venv\Scripts\activate
 
 # 3. Installer les dépendances
-pip install -r requirements.txt
+pip install -r desktop/requirements.txt
 
-# 4. Lancer l'application
-python main.py
+# 4. Lancer l'application (ou double-clic sur desktop/run.bat)
+python desktop/main.py
 ```
 
 ### Dépendances principales
@@ -174,7 +174,7 @@ La sync est entièrement optionnelle. Elle vous permet d'accéder à vos donnée
 
 1. Créez un compte sur [supabase.com](https://supabase.com)
 2. Créez un nouveau projet
-3. Dans **SQL Editor**, copiez-collez et exécutez le contenu de [`supabase_schema.sql`](supabase_schema.sql)
+3. Dans **SQL Editor**, copiez-collez et exécutez le contenu de [`supabase/schema.sql`](supabase/schema.sql)
 
 ### 2. Récupérer vos identifiants
 
@@ -214,15 +214,31 @@ docker compose -f deploy/compose/compose.yaml up -d --build   # → http://local
 ```
 Réseau `backend` interne (sans Internet), seul `web` publié sur 127.0.0.1, conteneurs non-root en lecture seule, secrets en fichiers, healthchecks, limites de ressources.
 
-### Kubernetes (Kustomize)
+### Kubernetes (chart Helm)
+Le chart est publié à chaque release (OCI, signé cosign) sur GHCR et Docker Hub.
 ```bash
-python deploy/gen_secrets.py --k8s           # → deploy/k8s/overlays/local/secrets.env
-kubectl apply -k deploy/k8s/overlays/local   # cluster local (images localhost/…:dev)
-# Production : adapter hôte + SUPABASE_URL dans overlays/production, fournir secrets.env
-# (ou Sealed Secrets / External Secrets), puis :
-kubectl apply -k deploy/k8s/overlays/production
+kubectl create namespace fintrack
+kubectl label ns fintrack pod-security.kubernetes.io/enforce=restricted
+python deploy/gen_secrets.py --k8s                 # → deploy/helm/secrets.env (ignoré par git)
+kubectl -n fintrack create secret generic fintrack-secrets --from-env-file=deploy/helm/secrets.env
+
+helm upgrade --install fintrack oci://ghcr.io/moussaoudihat/charts/fintrack --version 2.0.0 -n fintrack \
+  --set config.supabaseUrl=https://<projet>.supabase.co \
+  --set secrets.existingSecret=fintrack-secrets \
+  --set ingress.host=fintrack.mondomaine.fr
+helm test fintrack -n fintrack
 ```
-NetworkPolicies « deny-all » + flux explicites (sortie Internet limitée au 443, plages privées et métadonnées cloud exclues), Pod Security `restricted`, ServiceAccounts sans jeton, HPA + PDB, Ingress TLS (cert-manager), images signées.
+Depuis les sources : `helm install fintrack deploy/helm/fintrack -f deploy/helm/fintrack/values-local.yaml …` (cluster local, images `localhost/fintrack-*:dev`). Exemple de production : [`values-production.yaml`](deploy/helm/fintrack/values-production.yaml).
+
+Le chart applique : NetworkPolicies « deny-all » + flux explicites (sortie Internet limitée au 443, plages privées et métadonnées cloud exclues), Pod Security `restricted`, ServiceAccounts sans jeton, HPA + PDB, topologySpread, Ingress TLS (cert-manager), redémarrage auto si la configuration change, clés internes générées une fois puis conservées, `values.schema.json`, `helm test`.
+
+### Registres d'images
+| Registre | Images | Chart |
+|---|---|---|
+| **GHCR** (toujours) | `ghcr.io/moussaoudihat/fintrack-{web,finance-api,ai-service,notifier}` | `oci://ghcr.io/moussaoudihat/charts/fintrack` |
+| **Docker Hub** (si configuré) | `docker.io/<utilisateur>/fintrack-…` | `oci://registry-1.docker.io/<utilisateur>/fintrack` |
+
+Pour activer Docker Hub : créer un jeton d'accès *Read & Write* sur hub.docker.com, puis dans GitHub → *Settings → Secrets and variables → Actions* : variable `DOCKERHUB_USERNAME`, secret `DOCKERHUB_TOKEN`.
 
 ### Intégrations
 - **Claude / Gemini** : clés serveur `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` (secrets de ai-service). Modèles : `CLAUDE_MODEL` (défaut `claude-opus-5-5`), `GEMINI_MODEL`. Quota `AI_DAILY_LIMIT` par utilisateur et par jour. Seul un **résumé agrégé** est envoyé au fournisseur, après consentement explicite.
@@ -303,7 +319,9 @@ git checkout develop
 git checkout -b feature/ma-fonctionnalite
 
 # 3. Faire vos modifications et tester
-python main.py
+python desktop/main.py                                   # app desktop
+(cd desktop && python -m pytest -q tests)                # tests desktop
+(cd services && python -m pytest -q tests)               # tests microservices
 
 # 4. Committer
 git commit -m "feat: ajouter l'import CSV bancaire"
@@ -325,42 +343,30 @@ release:  préparation d'une release
 
 ### Structure du projet
 ```
-fintrack/
-├── main.py              # Point d'entrée
-├── auth.py              # Authentification (hash, sessions)
-├── config.py            # Constantes, palette de couleurs
-├── database.py          # Toutes les opérations SQLite
-├── sync_supabase.py     # Synchronisation Supabase PostgreSQL
-├── supabase_schema.sql  # Schéma SQL à exécuter dans Supabase
-├── utils_ai.py          # Intégration Gemini (recommandations, projection)
-├── utils_pdf.py         # Génération de rapports PDF
-├── utils_email.py       # Envoi d'emails SMTP
-├── utils_taxes.py       # Export fiscal
-├── generate_icon.py     # Générateur d'icône Fintrack (Pillow)
-├── fintrack.ico         # Icône application
-├── requirements.txt
-├── Finance Tracker.spec # Configuration PyInstaller
-├── VERSION              # Version courante (ex : 1.1.0)
-├── CHANGELOG.md
-├── data/                # Base de données locale (non versionnée)
-└── ui/
-    ├── app.py           # Fenêtre principale + navigation
-    ├── login.py         # Écran d'authentification + bienvenue
-    ├── components.py    # Widgets réutilisables (cards, tables, render_ai_text…)
-    ├── dialogs.py       # Boîtes de dialogue (actifs, dépenses, récurrentes…)
-    └── pages/
-        ├── dashboard.py
-        ├── revenues.py
-        ├── expenses.py
-        ├── savings_entry.py
-        ├── budget.py
-        ├── objectifs.py
-        ├── analyses.py
-        ├── patrimoine.py
-        ├── projection.py
-        ├── historique.py
-        ├── recommandations.py
-        └── settings.py
+finance-tracker/
+├── desktop/                 # Application Windows (customtkinter, SQLite + synchro Supabase)
+│   ├── main.py              # Point d'entrée
+│   ├── config.py · database.py · auth.py · cloud_auth.py · sync_supabase.py
+│   ├── utils_*.py           # IA, PDF, email, Excel, fiscalité
+│   ├── ui/                  # Fenêtres, composants, pages
+│   ├── tools/               # reset_auth.py (récupération), generate_icon.py
+│   ├── tests/               # pytest (couche données, synchro)
+│   ├── fintrack.spec        # Build PyInstaller
+│   └── requirements.txt · run.bat · fintrack.ico
+├── services/                # Plateforme web (microservices FastAPI)
+│   ├── common/              # fintrack_common : auth JWT, logs, HTTP, quotas, formatage
+│   ├── web/ · finance_api/ · ai_service/ · notifier/
+│   ├── tests/               # pytest (dont bout en bout web → API)
+│   └── Dockerfile           # image commune (build-arg SERVICE)
+├── deploy/
+│   ├── compose/             # Docker / Podman Compose
+│   ├── helm/fintrack/       # Chart Helm (Kubernetes)
+│   └── gen_secrets.py       # génération des secrets
+├── supabase/                # schema.sql, migration_multiuser.sql
+├── docs/                    # ARCHITECTURE.md, ROADMAP.md
+├── .github/                 # CI DevSecOps, release, CodeQL, Dependabot
+├── data/                    # Base locale de l'app desktop (non versionnée)
+└── VERSION · CHANGELOG.md · SECURITY.md · pyproject.toml
 ```
 
 ---

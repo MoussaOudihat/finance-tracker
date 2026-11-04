@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Erreur{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Impossible d'afficher cette page</h1>
+  <div class="flash flash-error" role="alert">{{ message }}</div>
+  <p class="muted">Réessayez dans un instant. Si le problème persiste, déconnectez-vous puis reconnectez-vous.</p>
+  <a class="btn btn-ghost" href="/">Retour au tableau de bord</a>
+</section>
+{% endblock %}

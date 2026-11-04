@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 
 from fastapi import HTTPException
+
+from fintrack_common.fmt import shift_month
 
 from .repo import Repo, in_filter
 
@@ -15,11 +18,6 @@ log = logging.getLogger(__name__)
 
 ENTRY_TABLES = {"expenses": "expenses", "revenues": "revenues", "savings": "savings"}
 _MIN_MATCH_LEN = 3
-
-
-def _shift(y: int, m: int, delta: int) -> tuple[int, int]:
-    idx = y * 12 + (m - 1) + delta
-    return idx // 12, idx % 12 + 1
 
 
 # ── Mois / clôture ───────────────────────────────────────────
@@ -201,28 +199,61 @@ def apply_saving_to_asset(repo: Repo, year: int, month: int, asset_name: str,
 
 # ── Saisies ──────────────────────────────────────────────────
 
+@dataclass
+class BudgetCheck:
+    """Dépense d'une catégorie avant/après une écriture, pour les alertes."""
+    category: str
+    year: int
+    month: int
+    budget: float
+    before: float
+    after: float
+
+
+def _spent(repo: Repo, month_id: int, category_id: int) -> float:
+    return sum(r["amount"] for r in repo.select(
+        "expenses", {"month_id": f"eq.{month_id}", "category_id": f"eq.{category_id}"},
+        columns="amount"))
+
+
+def _budget_amount(repo: Repo, year: int, month: int, category: str) -> float:
+    b = repo.select("budgets", {"year": f"eq.{year}", "month": f"eq.{month}",
+                                "category": f"eq.{category}"}, columns="amount", limit=1)
+    return b[0]["amount"] if b else 0.0
+
+
 def add_expense(repo: Repo, year: int, month: int, category_id: int, amount: float,
-                label: str, payee: str) -> dict:
+                label: str, payee: str) -> tuple[dict, BudgetCheck]:
+    """Une seule lecture de la catégorie, du mois et du budget (avant : ~12
+    allers-retours PostgREST par saisie)."""
+    cat = category_id_or_404(repo, category_id)
     mo = ensure_open(repo, year, month)
-    category_id_or_404(repo, category_id)
+    before = _spent(repo, mo["id"], category_id)
     row = repo.insert("expenses", {"month_id": mo["id"], "category_id": category_id,
                                    "amount": amount, "label": label,
                                    "payee": payee.strip().upper()})
     repo.touch_sync_ts()
-    return row
+    return row, BudgetCheck(cat["name"], year, month,
+                            _budget_amount(repo, year, month, cat["name"]),
+                            before, before + amount)
 
 
 def update_expense(repo: Repo, entry_id: int, category_id: int, amount: float,
-                   label: str, payee: str) -> dict:
+                   label: str, payee: str) -> tuple[dict, BudgetCheck]:
     entry, mo = entry_with_month(repo, "expenses", entry_id)
     if mo.get("closed"):
         raise HTTPException(409, "Ce mois est clôturé : saisie verrouillée.")
-    category_id_or_404(repo, category_id)
+    cat = category_id_or_404(repo, category_id)
+    current = _spent(repo, mo["id"], category_id)        # inclut l'ancienne ligne si même catégorie
+    before = current
+    after = current - (entry["amount"] if entry["category_id"] == category_id else 0) + amount
     row = repo.update("expenses", {"id": f"eq.{entry_id}"},
                       {"category_id": category_id, "amount": amount, "label": label,
                        "payee": payee.strip().upper()})[0]
     repo.touch_sync_ts()
-    return row
+    return row, BudgetCheck(cat["name"], mo["year"], mo["month"],
+                            _budget_amount(repo, mo["year"], mo["month"], cat["name"]),
+                            before, after)
 
 
 def add_revenue(repo: Repo, year: int, month: int, source: str, amount: float,
@@ -308,31 +339,17 @@ def set_budget(repo: Repo, year: int, month: int, category: str, amount: float) 
 
 
 def copy_budgets(repo: Repo, year: int, month: int) -> int:
-    py, pm = _shift(year, month, -1)
+    py, pm = shift_month(year, month, -1)
     prev = repo.select("budgets", {"year": f"eq.{py}", "month": f"eq.{pm}"})
     for b in prev:
         set_budget(repo, year, month, b["category"], b["amount"])
     return len(prev)
 
 
-def category_spend(repo: Repo, year: int, month: int, category_id: int) -> tuple[str, float, float]:
-    """(nom catégorie, dépensé ce mois, budget) — pour les alertes."""
-    cat = category_id_or_404(repo, category_id)
-    mo = repo.month(year, month, create=False)
-    spent = 0.0
-    if mo:
-        spent = sum(r["amount"] for r in repo.select(
-            "expenses", {"month_id": f"eq.{mo['id']}", "category_id": f"eq.{category_id}"},
-            columns="amount"))
-    b = repo.select("budgets", {"year": f"eq.{year}", "month": f"eq.{month}",
-                                "category": f"eq.{cat['name']}"}, limit=1)
-    return cat["name"], spent, (b[0]["amount"] if b else 0.0)
-
-
 # ── Contexte agrégé pour l'IA (jamais les lignes brutes) ─────
 
 def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
-    periods = [_shift(year, month, -i) for i in range(nb_months - 1, -1, -1)]
+    periods = [shift_month(year, month, -i) for i in range(nb_months - 1, -1, -1)]
     rows = repo.select("months", {"year": in_filter(sorted({p[0] for p in periods}))})
     months = [m for m in rows if (m["year"], m["month"]) in set(periods)]
     ids = [m["id"] for m in months]
@@ -370,7 +387,14 @@ def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
         return [{"name": name, "per_month": round(v / n, 2)}
                 for name, v in sorted(d.items(), key=lambda kv: -kv[1])[:k]]
 
-    cur = month_summary(repo, year, month)
+    # Budgets du mois courant à partir des dépenses déjà chargées (pas de
+    # second aller-retour via month_summary).
+    cur_ids = {m["id"] for m in months if (m["year"], m["month"]) == (year, month)}
+    spent_cur: dict[str, float] = defaultdict(float)
+    for e in exp:
+        if e["month_id"] in cur_ids:
+            spent_cur[cats.get(e["category_id"], "?")] += e["amount"]
+    budgets_cur = budget_status(repo, year, month, spent_cur)
     pat = patrimoine(repo)
     return {
         "period_end": f"{year}-{month:02d}", "months_with_data": len(mid_to_month),
@@ -378,7 +402,7 @@ def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
         "top_categories": top(by_cat, 8), "top_expenses": top(by_label, 8),
         "top_payees": top(by_payee, 8), "revenue_sources": top(by_src, 5),
         "current_month_budgets": [{k: round(v, 2) if isinstance(v, float) else v
-                                   for k, v in b.items()} for b in cur["budgets"]],
+                                   for k, v in b.items()} for b in budgets_cur],
         "patrimoine": {"by_type": pat["by_type"], "net_worth": round(pat["net_worth"], 2),
                        "liabilities_total": round(pat["total_liabilities"], 2)},
     }

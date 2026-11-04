@@ -1,0 +1,18 @@
+Fintrack {{ .Chart.AppVersion }} déployé dans le namespace {{ .Release.Namespace }}.
+
+{{- if .Values.ingress.enabled }}
+  URL : {{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}
+{{- else }}
+  Accès : kubectl -n {{ .Release.Namespace }} port-forward svc/web 8080:8000  →  http://localhost:8080
+{{- end }}
+
+Vérifier :  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if not .Values.networkPolicy.enabled }}
+⚠️  NetworkPolicies désactivées : tous les pods du namespace peuvent se joindre.
+{{- end }}
+{{- if not .Values.config.cookieSecure }}
+⚠️  cookieSecure=false : réservé aux tests en http://localhost.
+{{- end }}
+Pod Security : appliquer le profil « restricted » au namespace :
+  kubectl label ns {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=restricted --overwrite

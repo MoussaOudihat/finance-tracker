@@ -131,8 +131,10 @@ class Providers:
         if provider == "claude":
             import anthropic
             try:
+                # Marge large : la pensée adaptative (toujours active sur ce
+                # modèle) consomme des tokens AVANT le JSON de réponse.
                 resp = self._claude().beta.messages.create(
-                    model=self.cfg.claude_model, max_tokens=1024,
+                    model=self.cfg.claude_model, max_tokens=16000,
                     betas=[CLAUDE_FALLBACK_BETA], fallbacks="default",
                     system=[{"type": "text", "text": system,
                              "cache_control": {"type": "ephemeral"}}],
@@ -144,6 +146,8 @@ class Providers:
                 raise ProviderError("Claude est indisponible pour le moment.") from exc
             if resp.stop_reason == "refusal":
                 raise ProviderError("Claude a décliné cette demande.")
+            if resp.stop_reason == "max_tokens":
+                raise ProviderError("Réponse de Claude incomplète — réessayez.")
             raw = next((b.text for b in resp.content if b.type == "text"), "{}")
         elif provider == "gemini":
             from google.genai import types

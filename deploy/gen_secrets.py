@@ -5,7 +5,9 @@ pas ; les secrets fournisseurs (clé anon Supabase, clés IA, TickTick) sont
 demandés de façon interactive (laisser vide = fonctionnalité désactivée).
 
     python deploy/gen_secrets.py            # Compose : deploy/compose/secrets/
-    python deploy/gen_secrets.py --k8s      # + deploy/k8s/overlays/local/secrets.env
+    python deploy/gen_secrets.py --k8s      # + deploy/helm/secrets.env, puis :
+        kubectl -n fintrack create secret generic fintrack-secrets --from-env-file=deploy/helm/secrets.env
+        helm install … --set secrets.existingSecret=fintrack-secrets
 
 Les fichiers produits sont ignorés par git. Ne jamais les committer.
 """
@@ -20,7 +22,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPOSE_DIR = os.path.join(HERE, "compose", "secrets")
-K8S_ENV = os.path.join(HERE, "k8s", "overlays", "local", "secrets.env")
+K8S_ENV = os.path.join(HERE, "helm", "secrets.env")
 
 GENERATED = {
     "session_encryption_key": lambda: base64.urlsafe_b64encode(os.urandom(32)).decode(),
@@ -44,7 +46,7 @@ def _write(path: str, value: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--k8s", action="store_true", help="écrire aussi le fichier pour Kustomize")
+    ap.add_argument("--k8s", action="store_true", help="écrire aussi secrets.env pour un Secret Kubernetes")
     ap.add_argument("--non-interactive", action="store_true",
                     help="ne rien demander : secrets fournisseurs laissés vides (CI, scripts)")
     args = ap.parse_args()

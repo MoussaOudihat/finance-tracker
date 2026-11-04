@@ -120,18 +120,16 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
         except httpx.HTTPError as exc:
             log.warning("notifier injoignable : %s", exc.__class__.__name__)
 
-    def _check_budget(r: Repo, year: int, month: int, category_id: int,
-                      before: float) -> None:
-        name, spent, budget = ledger.category_spend(r, year, month, category_id)
-        if budget <= 0:
+    def _check_budget(r: Repo, chk: ledger.BudgetCheck) -> None:
+        if chk.budget <= 0:
             return
         for t in BUDGET_THRESHOLDS:
-            limit = budget * t / 100
-            if before < limit <= spent:
+            limit = chk.budget * t / 100
+            if chk.before < limit <= chk.after:
                 _emit({"type": "budget.threshold", "user_id": r.user.id,
-                       "email": r.user.email, "year": year, "month": month,
-                       "category": name, "threshold": t,
-                       "spent": round(spent, 2), "budget": round(budget, 2)})
+                       "email": r.user.email, "year": chk.year, "month": chk.month,
+                       "category": chk.category, "threshold": t,
+                       "spent": round(chk.after, 2), "budget": round(chk.budget, 2)})
 
     # ── Lecture ──────────────────────────────────────────────
     @app.get("/v1/categories")
@@ -180,19 +178,16 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
     # ── Écriture ─────────────────────────────────────────────
     @app.post("/v1/expenses", status_code=201)
     def post_expense(body: ExpenseIn, r: Repo = Depends(repo)):
-        _, before, _ = ledger.category_spend(r, body.year, body.month, body.category_id)
-        row = ledger.add_expense(r, body.year, body.month, body.category_id, body.amount,
-                                 body.label, body.payee)
-        _check_budget(r, body.year, body.month, body.category_id, before)
+        row, chk = ledger.add_expense(r, body.year, body.month, body.category_id,
+                                      body.amount, body.label, body.payee)
+        _check_budget(r, chk)
         return row
 
     @app.put("/v1/expenses/{entry_id}")
     def put_expense(entry_id: int, body: ExpenseUpdate, r: Repo = Depends(repo)):
-        _, mo = ledger.entry_with_month(r, "expenses", entry_id)
-        _, before, _ = ledger.category_spend(r, mo["year"], mo["month"], body.category_id)
-        row = ledger.update_expense(r, entry_id, body.category_id, body.amount,
-                                    body.label, body.payee)
-        _check_budget(r, mo["year"], mo["month"], body.category_id, before)
+        row, chk = ledger.update_expense(r, entry_id, body.category_id, body.amount,
+                                         body.label, body.payee)
+        _check_budget(r, chk)
         return row
 
     @app.post("/v1/revenues", status_code=201)

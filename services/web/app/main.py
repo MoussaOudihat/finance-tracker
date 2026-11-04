@@ -25,6 +25,8 @@ from markupsafe import Markup
 
 from fintrack_common.auth import secure_equals
 from fintrack_common.config import VERSION, env, env_bool, env_int
+from fintrack_common.fmt import MONTHS_FR as _MONTHS
+from fintrack_common.fmt import fmt_eur, shift_month
 from fintrack_common.http import RequestContextMiddleware, add_health_routes, service_client
 from fintrack_common.logs import setup_logging
 from fintrack_common.ratelimit import Counter, redis_from_url
@@ -35,8 +37,7 @@ from .session import SessionStore
 log = setup_logging("web")
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
-MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août",
-             "Septembre", "Octobre", "Novembre", "Décembre"]
+MONTHS_FR = [n.capitalize() for n in _MONTHS]
 ASSET_LABEL = {"bourse": "Bourse / ETF / PEA", "immobilier": "Immobilier", "crypto": "Crypto",
                "or_metaux": "Or & Métaux", "compte": "Compte / Épargne", "autre": "Autre"}
 LIABILITY_LABEL = {"voiture": "Prêt voiture", "conso": "Prêt conso/perso", "autre": "Autre"}
@@ -59,12 +60,6 @@ class CategorizeReq(BaseModel):
 class _Redirect(Exception):
     def __init__(self, url: str):
         self.url = url
-
-
-def fmt_eur(v, sign: bool = False) -> str:
-    v = float(v or 0)
-    prefix = "+" if sign and v > 0 else ""
-    return f"{prefix}{v:,.2f} €".replace(",", " ").replace(".", ",")
 
 
 def render_ai_text(text: str) -> Markup:  # sûr : chaque ligne passe par html.escape()
@@ -146,18 +141,19 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
 
     def call(sid: str, sess: dict, service: str, method: str, path: str, **kw):
         if backends.fresh_token(sess):
-            sessions.save(sid, sess)
+            sessions.update(sid, access_token=sess["access_token"],
+                            refresh_token=sess["refresh_token"], expires_at=sess["expires_at"])
         return backends.call(sess, service, method, path, **kw)
 
     def flash(sid: str, sess: dict, message: str, kind: str = "ok") -> None:
         sess["flash"] = {"message": message, "kind": kind}
-        sessions.save(sid, sess)
+        sessions.update(sid, flash=sess["flash"])
 
     def render(request: Request, name: str, sid: str | None, sess: dict | None,
                status_code: int = 200, **ctx) -> HTMLResponse:
         if sess is not None:
             ctx.setdefault("flash", sess.pop("flash", None))
-            sessions.save(sid, sess)
+            sessions.update(sid, flash=None)     # consomme le message, prolonge la session
             ctx["csrf"] = sess["csrf"]
             ctx["user_email"] = sess.get("email", "")
         ctx.setdefault("active", "")
@@ -192,10 +188,6 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             raise BackendError(400, "Mois invalide.")
         return yi, mi
 
-    def shift(y: int, m: int, d: int) -> tuple[int, int]:
-        i = y * 12 + m - 1 + d
-        return i // 12, i % 12 + 1
-
     @app.exception_handler(_Redirect)
     async def _on_redirect(request, exc: _Redirect):
         return redirect(exc.url)
@@ -215,11 +207,17 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         sess = sessions.get(sid)
         if sess is None:
             return redirect("/connexion")
-        flash(sid, sess, exc.message, "error")
-        target = back_url(request)
         if exc.message == "Mois invalide.":
-            target = request.url.path
-        return redirect(target)
+            flash(sid, sess, exc.message, "error")
+            return redirect(request.url.path)
+        if request.method == "GET":
+            # Afficher l'erreur sur place : rediriger vers la page précédente
+            # pourrait reproduire la même erreur et boucler indéfiniment.
+            return render(request, "error.html", sid, sess,
+                          status_code=exc.status if 400 <= exc.status < 600 else 502,
+                          active="erreur", message=exc.message)
+        flash(sid, sess, exc.message, "error")   # POST : retour au formulaire
+        return redirect(back_url(request))
 
     # ── Connexion ────────────────────────────────────────────
     def client_ip(request: Request) -> str:
@@ -291,7 +289,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         hist = call(sid, sess, "finance", "GET", "/v1/history", params={"limit": 12})
         pat = call(sid, sess, "finance", "GET", "/v1/patrimoine")
         return render(request, "dashboard.html", sid, sess, active="dashboard", y=yy, m=mm,
-                      prev=shift(yy, mm, -1), next=shift(yy, mm, 1), s=s, history=hist,
+                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), s=s, history=hist,
                       closed=s["closed"], net_worth=pat["net_worth"],
                       max_cat=max((c["total"] for c in s["by_category"]), default=0) or 1,
                       max_hist=max((max(h["rev"], h["exp"]) for h in hist), default=0) or 1)
@@ -326,7 +324,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         budgeted = {b["category"] for b in s["budgets"]}
         spent = {c["name"]: c["total"] for c in s["by_category"]}
         return render(request, "budgets.html", sid, sess, active="budgets", y=yy, m=mm,
-                      prev=shift(yy, mm, -1), next=shift(yy, mm, 1), s=s, closed=False,
+                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), s=s, closed=False,
                       unbudgeted=[{"name": c["name"], "spent": spent.get(c["name"], 0.0)}
                                   for c in cats if c["name"] not in budgeted])
 
@@ -389,9 +387,9 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         res = call(sid, sess, "ai", "POST", "/v1/insights", timeout=120.0,
                    json={"provider": provider, "year": y, "month": m,
                          "months": max(1, min(months, 12))})
-        sess["insight"] = {"text": res["text"], "provider": provider,
-                           "period": f"{MONTHS_FR[m - 1]} {y}", "months": months}
-        sessions.save(sid, sess)
+        sessions.update(sid, ai_consent=True, ai_provider=provider,
+                        insight={"text": res["text"], "provider": provider,
+                                 "period": f"{MONTHS_FR[m - 1]} {y}", "months": months})
         return redirect(f"/ia?y={y}&m={m}")
 
     @app.post("/ia/chat")
@@ -409,8 +407,8 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             history = history[1:]
         res = call(sid, sess, "ai", "POST", "/v1/chat", timeout=120.0,
                    json={"provider": provider, "year": y, "month": m, "messages": history})
-        sess["chat"] = (history + [{"role": "assistant", "content": res["text"]}])[-CHAT_MAX_MESSAGES:]
-        sessions.save(sid, sess)
+        sessions.update(sid, ai_consent=True, ai_provider=provider,
+                        chat=(history + [{"role": "assistant", "content": res["text"]}])[-CHAT_MAX_MESSAGES:])
         return redirect(f"/ia?y={y}&m={m}#chat")
 
     @app.post("/ia/chat/effacer")
@@ -418,8 +416,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
                       csrf: str = Form("")):
         sid, sess = load(request)
         check_csrf(sess, csrf)
-        sess["chat"] = []
-        sessions.save(sid, sess)
+        sessions.update(sid, chat=[])
         return redirect(f"/ia?y={y}&m={m}#chat")
 
     @app.post("/api/categorize")
@@ -529,7 +526,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         cats = call(sid, sess, "finance", "GET", "/v1/categories") if kind == "expenses" else []
         payees = call(sid, sess, "finance", "GET", "/v1/payees") if kind == "expenses" else []
         return render(request, "entries.html", sid, sess, active=section, section=section,
-                      title=title, y=yy, m=mm, prev=shift(yy, mm, -1), next=shift(yy, mm, 1),
+                      title=title, y=yy, m=mm, prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
                       rows=rows, total=sum(r["amount"] for r in rows), categories=cats,
                       payees=payees, closed=data["closed"],
                       ai_enabled=bool(sess.get("ai_consent")))

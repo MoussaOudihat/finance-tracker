@@ -1,0 +1,29 @@
+{{- if not .Values.config.supabaseUrl }}
+{{- fail "config.supabaseUrl est obligatoire (https://<projet>.supabase.co)" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "fintrack.labelsAll" . | nindent 4 }}
+data:
+  SUPABASE_URL: {{ .Values.config.supabaseUrl | quote }}
+  FINTRACK_COOKIE_SECURE: {{ ternary "1" "0" .Values.config.cookieSecure | quote }}
+  FINTRACK_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  FINANCE_API_URL: "http://finance-api:8000"
+  {{- if .Values.aiService.enabled }}
+  AI_SERVICE_URL: "http://ai-service:8000"
+  {{- end }}
+  {{- if .Values.notifier.enabled }}
+  NOTIFIER_URL: "http://notifier:8000"
+  {{- end }}
+  CLAUDE_MODEL: {{ .Values.config.claudeModel | quote }}
+  GEMINI_MODEL: {{ .Values.config.geminiModel | quote }}
+  AI_DAILY_LIMIT: {{ .Values.config.aiDailyLimit | quote }}
+  NOTIFIER_DB_PATH: "/data/notifier.db"
+  NOTIFIER_ALLOWED_HOSTS: {{ .Values.config.notifierAllowedHosts | quote }}
+  TICKTICK_CLIENT_ID: {{ .Values.config.ticktickClientId | quote }}
+  TICKTICK_REDIRECT_URI: {{ include "fintrack.ticktickRedirect" . | quote }}
+  FORWARDED_ALLOW_IPS: {{ .Values.config.forwardedAllowIps | quote }}
+  FINTRACK_VERSION: {{ .Chart.AppVersion | quote }}

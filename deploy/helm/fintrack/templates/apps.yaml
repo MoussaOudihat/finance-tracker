@@ -1,0 +1,196 @@
+{{- /*
+  Les 4 services applicatifs, générés depuis un modèle unique : sécurité,
+  sondes et ressources identiques partout.
+  key : clé dans values.yaml ; secrets : clés du Secret injectées en env.
+*/ -}}
+{{- $apps := list
+  (dict "name" "web" "key" "web" "enabled" true "stateful" false
+        "secrets" (list (list "SUPABASE_ANON_KEY" false) (list "SESSION_ENCRYPTION_KEY" false) (list "REDIS_URL" false)))
+  (dict "name" "finance-api" "key" "financeApi" "enabled" true "stateful" false
+        "secrets" (list (list "SUPABASE_ANON_KEY" false) (list "NOTIFIER_INTERNAL_TOKEN" false)))
+  (dict "name" "ai-service" "key" "aiService" "enabled" .Values.aiService.enabled "stateful" false
+        "secrets" (list (list "REDIS_URL" false) (list "ANTHROPIC_API_KEY" true) (list "GEMINI_API_KEY" true)))
+  (dict "name" "notifier" "key" "notifier" "enabled" .Values.notifier.enabled "stateful" true
+        "secrets" (list (list "NOTIFIER_INTERNAL_TOKEN" false) (list "NOTIFIER_ENCRYPTION_KEY" false) (list "TICKTICK_CLIENT_SECRET" true)))
+-}}
+{{- range $app := $apps }}
+{{- if $app.enabled }}
+{{- $v := get $.Values $app.key }}
+{{- $sel := include "fintrack.selector" (dict "ctx" $ "name" $app.name) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $app.name }}
+  labels:
+    {{- include "fintrack.labels" $ | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  {{- if $app.stateful }}
+  replicas: 1                     # SQLite + planificateur : une seule instance
+  strategy: { type: Recreate }
+  {{- else }}
+  {{- if not $v.autoscaling.enabled }}
+  replicas: {{ $v.replicas }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  {{- end }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fintrack.labels" $ | nindent 8 }}
+        {{- $sel | nindent 8 }}
+      annotations:
+        # Redémarrage automatique si la configuration change
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") $ | sha256sum }}
+    spec:
+      serviceAccountName: {{ $app.name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "fintrack.podSecurity" dict | nindent 8 }}
+      {{- if and $.Values.topologySpread (not $app.stateful) }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- $sel | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: {{ $app.name }}
+          image: {{ include "fintrack.image" (dict "ctx" $ "name" $app.name) | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8000 }
+          envFrom:
+            - configMapRef: { name: {{ $.Release.Name }}-config }
+          env:
+            {{- range $s := $app.secrets }}
+            - name: {{ index $s 0 }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fintrack.secretName" $ }}
+                  key: {{ index $s 0 }}
+                  {{- if index $s 1 }}
+                  optional: true
+                  {{- end }}
+            {{- end }}
+          securityContext:
+            {{- include "fintrack.containerSecurity" $ | nindent 12 }}
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- if $app.stateful }}
+            - { name: data, mountPath: /data }
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 32Mi }
+        {{- if $app.stateful }}
+        - name: data
+          persistentVolumeClaim: { claimName: {{ $app.name }}-data }
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $app.name }}
+  labels:
+    {{- include "fintrack.labels" $ | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - { name: http, port: 8000, targetPort: http }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $app.name }}
+  labels:
+    {{- include "fintrack.labelsAll" $ | nindent 4 }}
+automountServiceAccountToken: false
+{{- if not $app.stateful }}
+{{- if $v.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $app.name }}
+  labels:
+    {{- include "fintrack.labelsAll" $ | nindent 4 }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $app.name }} }
+  minReplicas: {{ $v.autoscaling.minReplicas }}
+  maxReplicas: {{ $v.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ $v.autoscaling.targetCPU }} }
+{{- end }}
+{{- if $v.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $app.name }}
+  labels:
+    {{- include "fintrack.labelsAll" $ | nindent 4 }}
+spec:
+  # Une seule instance possible -> maxUnavailable pour ne jamais bloquer un drain
+  {{- if or (and $v.autoscaling.enabled (gt (int $v.autoscaling.minReplicas) 1)) (and (not $v.autoscaling.enabled) (gt (int $v.replicas) 1)) }}
+  minAvailable: 1
+  {{- else }}
+  maxUnavailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+{{- end }}
+{{- else }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $app.name }}-data
+  labels:
+    {{- include "fintrack.labelsAll" $ | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep        # données conservées après `helm uninstall`
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $v.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests: { storage: {{ $v.persistence.size }} }
+{{- end }}
+{{- end }}
+{{- end }}

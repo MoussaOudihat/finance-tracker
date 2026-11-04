@@ -17,9 +17,12 @@ INTERNAL = "i" * 40
 class Recorder:
     def __init__(self):
         self.calls = []
+        self.fail = False          # simule une panne de tous les canaux
 
     def handler(self, request: httpx.Request):
         self.calls.append(request)
+        if self.fail:
+            return httpx.Response(503)
         if request.url.host == "ticktick.com" and request.url.path == "/oauth/token":
             return httpx.Response(200, json={"access_token": "tt-token", "token_type": "bearer"})
         if request.url.path == "/open/v1/project":
@@ -119,4 +122,26 @@ def test_monthly_reminder(env):
     assert run(dt.date(2026, 11, 3)) == 1
     assert run(dt.date(2026, 11, 3)) == 0          # une seule fois par mois
     sent = [x for x in rec.calls if x.url.host == "ntfy.sh"][-1]
-    assert "octobre 2026".encode() in sent.content
+    assert b"octobre 2026" in sent.content
+
+
+def test_failed_delivery_is_retried(env):
+    c, rec, store, _ = env
+    p = store.get("u1")
+    p.ntfy_url = "https://ntfy.sh/t"
+    store.save(p)
+    ev = {"type": "budget.threshold", "user_id": "u1", "year": 2026, "month": 5,
+          "category": "LOGEMENT", "threshold": 80, "spent": 85.0, "budget": 100.0}
+    hdr = {"X-Internal-Token": INTERNAL}
+    rec.fail = True                                         # ntfy en panne
+    assert c.post("/internal/v1/events", json=ev, headers=hdr).json()["status"] == "failed"
+    rec.fail = False                                        # rétabli : l'alerte repart
+    assert c.post("/internal/v1/events", json=ev, headers=hdr).json()["status"] == "sent"
+    assert c.post("/internal/v1/events", json=ev, headers=hdr).json()["status"] == "duplicate"
+
+
+def test_reminder_without_channel_is_not_marked_sent(env):
+    c, _, store, app = env
+    c.put("/v1/prefs", headers=H, json={"reminder_enabled": True, "reminder_day": 9})
+    assert app.state.run_reminders(dt.date(2026, 11, 9)) == 0
+    assert store.mark_once("reminder:u1:2026-11")           # clé non consommée

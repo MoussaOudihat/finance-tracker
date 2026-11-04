@@ -37,11 +37,11 @@ flowchart LR
 
 ## Sécurité de la plateforme
 
-| Couche | Compose | Kubernetes |
+| Couche | Compose | Kubernetes (chart Helm) |
 |---|---|---|
 | Réseau | `backend` interne sans Internet ; seul web publié (127.0.0.1) | NetworkPolicy deny-all + flux explicites ; sortie 443 uniquement, plages privées et 169.254.0.0/16 exclues |
 | Conteneurs | non-root, rootfs RO, `cap_drop: ALL`, `no-new-privileges`, PIDs/CPU/mémoire limités | Pod Security `restricted`, seccomp RuntimeDefault, mêmes durcissements |
-| Secrets | fichiers montés `/run/secrets` (`*_FILE`) | Secret Kubernetes (secretGenerator / Sealed Secrets / ESO), clés optionnelles |
+| Secrets | fichiers montés `/run/secrets` (`*_FILE`) | Secret existant (Sealed Secrets / ESO) ou généré par le chart (clés internes conservées aux mises à jour) |
 | Identité | — | 1 ServiceAccount par service, jeton d'API non monté |
 | Disponibilité | healthchecks + `depends_on: service_healthy` | startup/liveness/readiness, HPA, PDB, topologySpread, RollingUpdate sans indisponibilité |
-| Chaîne logicielle | images de base épinglées par digest | images signées cosign, provenance SLSA + SBOM attestées |
+| Chaîne logicielle | images de base épinglées par digest | images et chart signés cosign (GHCR + Docker Hub), provenance SLSA + SBOM attestées |
