@@ -1,0 +1,25 @@
+# Lancement local de l'interface web :
+#   cp .env.example .env    # puis remplir les valeurs
+#   docker compose up --build
+#   → http://localhost:8000
+services:
+  fintrack-web:
+    build: .
+    image: ghcr.io/moussaoudihat/fintrack-web:latest
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - fintrack-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    # Laisse le temps au push final vers Supabase à l'arrêt
+    stop_grace_period: 60s
+
+volumes:
+  fintrack-data:

@@ -119,27 +119,17 @@ def build_financial_summary(db, nb_months: int) -> str:
 
     # ── Dépenses individuelles notables (labels/enseignes) ────
     # Permet à l'IA de commenter des postes concrets, pas seulement des totaux.
-    indiv_rows = []
-    for (y, mo) in periods:
-        indiv_rows.extend(db.get_expenses(y, mo))
-    if indiv_rows:
-        top_indiv = sorted(indiv_rows, key=lambda r: -float(r["amount"]))[:5]
-        parts = [
-            f"{(r['label'] or r['payee'] or r['cat'] or '').strip()}={float(r['amount']):.0f}€"
-            for r in top_indiv
-        ]
+    # Regroupés par libellé et sommés sur la période (1 requête SQL) : un
+    # poste récurrent (loyer, salaire) n'occupe qu'une place, en €/mois.
+    top_indiv = db.get_top_expense_labels_range(periods, limit=5)
+    if top_indiv:
+        parts = [f"{r['name']}={float(r['total'])/nb:.0f}€/m" for r in top_indiv]
         lines.append("depenses_notables: " + " | ".join(parts))
 
     # ── Sources de revenus notables ────────────────────────────
-    indiv_rev = []
-    for (y, mo) in periods:
-        indiv_rev.extend(db.get_revenues(y, mo))
-    if indiv_rev:
-        top_rev = sorted(indiv_rev, key=lambda r: -float(r["amount"]))[:3]
-        rev_parts = [
-            f"{(r['source'] or r['label'] or '').strip()}={float(r['amount']):.0f}€"
-            for r in top_rev
-        ]
+    top_rev = db.get_top_revenue_sources_range(periods, limit=3)
+    if top_rev:
+        rev_parts = [f"{r['name']}={float(r['total'])/nb:.0f}€/m" for r in top_rev]
         lines.append("revenus_sources: " + " | ".join(rev_parts))
 
     # ── Patrimoine (compact) ──────────────────────────────────

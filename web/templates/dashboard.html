@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Tableau de bord{% endblock %}
+{% block content %}
+{% include "_month_nav.html" %}
+
+<section class="kpis">
+  <div class="card kpi"><span class="muted">Revenus</span><strong class="pos">{{ rev|eur }}</strong></div>
+  <div class="card kpi"><span class="muted">Dépenses</span><strong class="neg">{{ exp|eur }}</strong></div>
+  <div class="card kpi"><span class="muted">Épargne</span><strong>{{ sav|eur }}</strong></div>
+  <div class="card kpi"><span class="muted">Reste</span><strong class="{{ 'pos' if balance >= 0 else 'neg' }}">{{ balance|eur(true) }}</strong></div>
+  <div class="card kpi"><span class="muted">Valeur nette</span><strong>{{ net_worth|eur }}</strong></div>
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <h2>Dépenses par catégorie</h2>
+    {% if by_cat %}
+    <ul class="bars">
+      {% for c in by_cat %}
+      <li>
+        <span class="bar-label">{{ c.name }}</span>
+        <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="bar-bg" width="100" height="8" rx="2"/>
+          <rect class="bar-fg" width="{{ (c.total / max_cat * 100)|round(1) }}" height="8" rx="2"/>
+        </svg>
+        <span class="bar-value">{{ c.total|eur }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">Aucune dépense ce mois-ci.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Budget</h2>
+    {% if budgets %}
+    <ul class="bars">
+      {% for b in budgets %}
+      {% set pct = [b.pct, 100]|min %}
+      <li>
+        <span class="bar-label">{{ b.category }}</span>
+        <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="bar-bg" width="100" height="8" rx="2"/>
+          <rect class="{{ 'bar-over' if b.pct > 100 else 'bar-fg' }}" width="{{ pct|round(1) }}" height="8" rx="2"/>
+        </svg>
+        <span class="bar-value {{ 'neg' if b.pct > 100 else '' }}">{{ b.actual|eur }} / {{ b.budget|eur }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">Aucun budget défini pour ce mois (à configurer dans l'application desktop).</p>{% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>12 derniers mois</h2>
+  {% if history %}
+  {% set n = history|length %}
+  {% set w = 100 / n %}
+  <svg class="history" viewBox="0 0 100 42" preserveAspectRatio="none" role="img"
+       aria-label="Revenus et dépenses des 12 derniers mois">
+    {% for h in history %}
+    {% set x = loop.index0 * w %}
+    {% set hr = h.rev / max_hist * 38 %}
+    {% set he = h.exp / max_hist * 38 %}
+    <rect class="h-rev" x="{{ (x + w * 0.12)|round(2) }}" y="{{ (40 - hr)|round(2) }}" width="{{ (w * 0.36)|round(2) }}" height="{{ hr|round(2) }}"><title>{{ MONTHS_FR[h.month - 1] }} {{ h.year }} — revenus {{ h.rev|eur }}</title></rect>
+    <rect class="h-exp" x="{{ (x + w * 0.52)|round(2) }}" y="{{ (40 - he)|round(2) }}" width="{{ (w * 0.36)|round(2) }}" height="{{ he|round(2) }}"><title>{{ MONTHS_FR[h.month - 1] }} {{ h.year }} — dépenses {{ h.exp|eur }}</title></rect>
+    {% endfor %}
+    <line class="h-axis" x1="0" y1="40" x2="100" y2="40"/>
+  </svg>
+  <div class="history-labels">
+    {% for h in history %}<span>{{ MONTHS_FR[h.month - 1][:3] }}</span>{% endfor %}
+  </div>
+  <p class="legend"><span class="dot dot-rev"></span>Revenus <span class="dot dot-exp"></span>Dépenses</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Mois</th><th class="num">Revenus</th><th class="num">Dépenses</th><th class="num">Épargne</th><th class="num">Reste</th></tr></thead>
+    <tbody>
+      {% for h in history|reverse %}
+      {% set bal = h.rev - h.exp - h.sav %}
+      <tr>
+        <td><a href="/?y={{ h.year }}&m={{ h.month }}">{{ MONTHS_FR[h.month - 1] }} {{ h.year }}</a></td>
+        <td class="num">{{ h.rev|eur }}</td><td class="num">{{ h.exp|eur }}</td>
+        <td class="num">{{ h.sav|eur }}</td>
+        <td class="num {{ 'pos' if bal >= 0 else 'neg' }}">{{ bal|eur(true) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}<p class="muted">Pas encore d'historique.</p>{% endif %}
+</section>
+{% endblock %}

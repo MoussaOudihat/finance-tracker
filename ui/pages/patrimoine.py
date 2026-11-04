@@ -743,7 +743,7 @@ def _asset_row(parent, asset, db, app):
     var_prev_pct = (var_prev / prev_value * 100) if prev_value else None
 
     accent = _TYPE_ACCENT.get(asset["asset_type"], C["primary"])
-    row_bg = "#FAFBFC" if is_sold else C["card"]
+    row_bg = C["light"] if is_sold else C["card"]
 
     row_f = ctk.CTkFrame(parent, fg_color=row_bg, corner_radius=8,
                           border_width=1, border_color=C["border"])

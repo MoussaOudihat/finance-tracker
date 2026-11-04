@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+{% include "_month_nav.html" %}
+
+<div class="grid-2 entries">
+  <section class="card">
+    <h2>{{ title }} <span class="muted total">{{ total|eur }}</span></h2>
+    {% if rows %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        {% if section == 'depenses' %}<th>Catégorie</th><th>Libellé</th><th>Enseigne</th>
+        {% elif section == 'revenus' %}<th>Source</th><th>Libellé</th>
+        {% else %}<th>Compte</th><th>Libellé</th>{% endif %}
+        <th class="num">Montant</th>{% if not closed %}<th><span class="sr-only">Actions</span></th>{% endif %}
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          {% if section == 'depenses' %}<td>{{ r.cat }}</td><td>{{ r.label }}</td><td>{{ r.payee }}</td>
+          {% elif section == 'revenus' %}<td>{{ r.source }}</td><td>{{ r.label }}</td>
+          {% else %}<td>{{ r.account }}{% if r.linked_asset_name %} <span class="badge" title="Synchronisé avec le patrimoine">↔ {{ r.linked_asset_name }}</span>{% endif %}</td><td>{{ r.label }}</td>{% endif %}
+          <td class="num">{{ r.amount|eur }}</td>
+          {% if not closed %}
+          <td class="actions">
+            <a class="btn btn-ghost btn-sm" href="/{{ section }}/{{ r.id }}/modifier">Modifier</a>
+            <form method="post" action="/{{ section }}/{{ r.id }}/supprimer">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button type="submit" class="btn btn-danger btn-sm">Supprimer</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}<p class="muted">Rien de saisi pour ce mois.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Ajouter</h2>
+    {% if closed %}
+    <p class="muted">Ce mois est clôturé : saisie verrouillée.</p>
+    {% else %}
+    <form method="post" action="/{{ section }}" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}">
+      <input type="hidden" name="m" value="{{ m }}">
+      {% include "_entry_fields.html" %}
+      <button type="submit" class="btn btn-primary">Ajouter</button>
+    </form>
+    {% endif %}
+  </section>
+</div>
+{% if payees %}
+<datalist id="payees">{% for p in payees %}<option value="{{ p }}">{% endfor %}</datalist>
+{% endif %}
+{% endblock %}

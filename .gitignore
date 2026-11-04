@@ -12,6 +12,9 @@ data/*.sql
 *.xls
 
 # Secrets / identifiants (ne jamais committer)
+.env
+!.env.example
+deploy/k8s/secret.yaml
 secret.*
 *.pem
 *.key

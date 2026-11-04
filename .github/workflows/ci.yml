@@ -66,6 +66,51 @@ jobs:
           "
 
   # ──────────────────────────────────────────────────────────
+  #  Tests (couche données + interface web)
+  # ──────────────────────────────────────────────────────────
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install web dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-web.txt pytest
+      - name: Run tests
+        run: python -m pytest -q
+
+  # ──────────────────────────────────────────────────────────
+  #  Image Docker + manifestes Kubernetes
+  # ──────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker image & K8s manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --build-arg VERSION=ci -t fintrack-web:ci .
+      - name: Smoke test (/healthz)
+        # Hash bcrypt factice : seul le démarrage (validation de la config) est testé.
+        run: |
+          docker run -d --name fw -p 8000:8000 \
+            -e FINTRACK_SECRET_KEY="$(openssl rand -hex 32)" \
+            -e FINTRACK_AUTH_MODE=local -e FINTRACK_WEB_USER=ci \
+            -e FINTRACK_WEB_PASSWORD_HASH='$2b$12$C6UzMDM.H6dfI/f/IKcEeO5b6hFqZ3kZ1lZ7w3o6bq3O0D1Jx6M5e' \
+            --read-only --tmpfs /tmp fintrack-web:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8000/healthz && exit 0
+            sleep 1
+          done
+          docker logs fw; exit 1
+      - name: Validate Kubernetes manifests
+        run: kubectl kustomize deploy/k8s > /dev/null
+
+  # ──────────────────────────────────────────────────────────
   #  Vérification build PyInstaller (dry-run, sans upx)
   # ──────────────────────────────────────────────────────────
   build-check:

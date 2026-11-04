@@ -24,7 +24,9 @@ try:
 except Exception:
     APP_VERSION = "dev"
 
-DB_PATH = os.path.join(_BASE_DIR, "data", "finance_tracker.db")
+# FINTRACK_DATA_DIR : dossier de données monté en volume (Docker/Kubernetes).
+DATA_DIR = os.environ.get("FINTRACK_DATA_DIR") or os.path.join(_BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "finance_tracker.db")
 
 MONTHS_FR = [
     "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",

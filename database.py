@@ -321,6 +321,21 @@ class Database:
             return cur.lastrowid
         return None
 
+    _ENTRY_TABLES = {"expense": "expenses", "revenue": "revenues", "saving": "savings"}
+
+    def get_entry(self, kind: str, entry_id: int) -> dict | None:
+        """Retourne une saisie (dépense/revenu/épargne) avec son année et son
+        mois, ou None si elle n'existe pas. `kind` ∈ expense|revenue|saving."""
+        table = self._ENTRY_TABLES.get(kind)
+        if table is None:
+            raise ValueError(f"Type de saisie inconnu : {kind!r}")
+        row = self.con.execute(
+            f"SELECT t.*, m.year, m.month FROM {table} t "
+            "JOIN months m ON t.month_id = m.id WHERE t.id=?",
+            (entry_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
     def get_last_month_with_data(self) -> tuple[int, int] | None:
         """Retourne (year, month) du dernier mois qui a des revenus ou dépenses."""
         row = self.con.execute("""
@@ -403,6 +418,9 @@ class Database:
         self._invalidate()
 
     def update_expense(self, exp_id, cat_id, amount, label, payee):
+        if amount is None or float(amount) <= 0:
+            raise ValueError(f"Montant dépense invalide : {amount!r} (doit être > 0)")
+        amount = float(amount)
         payee = payee.strip().upper() if payee else ""
         self.con.execute(
             "UPDATE expenses SET category_id=?, amount=?, label=?, payee=? WHERE id=?",
@@ -514,6 +532,48 @@ class Database:
             self._cache[ck] = result
         return result
 
+    def _top_by_label_range(self, months, label_sql: str, table: str,
+                            join: str, limit: int) -> list:
+        """Top-N lignes regroupées par libellé et sommées sur une liste de
+        (year, month) — 1 seule requête. `table`/`join`/`label_sql` sont des
+        constantes internes, jamais des entrées utilisateur."""
+        if not months:
+            return []
+        placeholders = ",".join("(?,?)" for _ in months)
+        params = [val for pair in months for val in pair] + [limit]
+        q = f"""
+            SELECT {label_sql} AS name, SUM(t.amount) AS total
+            FROM {table} t
+            {join}
+            JOIN months mo ON t.month_id = mo.id
+            WHERE (mo.year, mo.month) IN ({placeholders})
+            GROUP BY UPPER({label_sql})
+            HAVING name <> ''
+            ORDER BY total DESC
+            LIMIT ?
+        """
+        return [dict(r) for r in self.con.execute(q, params).fetchall()]
+
+    def get_top_expense_labels_range(self, months: list[tuple[int, int]],
+                                     limit: int = 5) -> list:
+        """Top-N postes de dépense (libellé, sinon enseigne, sinon catégorie)
+        sommés sur la période. Regroupés : un poste récurrent (loyer…)
+        n'occupe qu'une place au lieu de toutes."""
+        return self._top_by_label_range(
+            months,
+            "TRIM(COALESCE(NULLIF(TRIM(t.label),''), NULLIF(TRIM(t.payee),''), c.name))",
+            "expenses", "JOIN categories c ON t.category_id = c.id", limit,
+        )
+
+    def get_top_revenue_sources_range(self, months: list[tuple[int, int]],
+                                      limit: int = 3) -> list:
+        """Top-N sources de revenus sommées sur la période — 1 requête."""
+        return self._top_by_label_range(
+            months,
+            "TRIM(COALESCE(NULLIF(TRIM(t.source),''), t.label, ''))",
+            "revenues", "", limit,
+        )
+
     def get_expenses_by_year(self, year: int) -> list:
         """
         Retourne TOUTES les dépenses de l'année avec cat + mois.
@@ -589,6 +649,9 @@ class Database:
         self._invalidate()
 
     def update_revenue(self, rev_id, source, amount, label):
+        if amount is None or float(amount) <= 0:
+            raise ValueError(f"Montant revenu invalide : {amount!r} (doit être > 0)")
+        amount = float(amount)
         self.con.execute(
             "UPDATE revenues SET source=?, amount=?, label=? WHERE id=?",
             (source, amount, label, rev_id),
@@ -1271,13 +1334,12 @@ class Database:
         Importe un export ZIP Notion (revenus, dépenses ou épargnes).
         Retourne (nb_revenus, nb_dépenses, nb_épargnes) importés.
 
-        Restructuré en deux passes sous batch_mode() : les catégories sont
-        toutes résolues en amont (au lieu d'un add_category()+get_categories()
-        par ligne), ce qui évite une rafale de vidages de cache complets sur
-        un import de N lignes ET rend la résolution de catégories inédites
-        indépendante de l'ordre d'invalidation (plus robuste qu'avant, où une
-        catégorie ajoutée en cours de boucle dépendait d'une invalidation
-        immédiate pour être vue par les lignes suivantes).
+        Deux passes sous batch_mode() : les catégories sont toutes créées en
+        amont, puis relues DIRECTEMENT en SQL — pas via get_categories(), dont
+        le cache n'est pas invalidé à l'intérieur d'un batch_mode(). Les noms
+        sont normalisés comme add_category() les stocke (strip + upper), sinon
+        une catégorie Notion « Courses » (stockée « COURSES ») n'était jamais
+        retrouvée.
         """
         rev_count = exp_count = sav_count = 0
 
@@ -1295,11 +1357,15 @@ class Database:
                     row = {k.strip(): (v or "").strip() for k, v in raw_row.items()}
                     parsed_rows.append((is_expense, is_saving, row))
                     if is_expense:
-                        needed_cats.add(row.get("Category", "Autres").strip() or "Autres")
+                        needed_cats.add(self._norm_cat(row.get("Category", "")))
 
             for cat_name in needed_cats:
                 self.add_category(cat_name)
-            cats = {c["name"]: c["id"] for c in self.get_categories()}
+            # Lecture hors cache : le cache "cats" peut être périmé ici.
+            cats = {
+                r["name"]: r["id"]
+                for r in self.con.execute("SELECT id, name FROM categories")
+            }
 
             for is_expense, is_saving, row in parsed_rows:
                 mois_raw = row.get("Mois", "")
@@ -1313,10 +1379,10 @@ class Database:
                     continue
 
                 if is_expense:
-                    cat_name = row.get("Category", "Autres").strip() or "Autres"
+                    cat_name = self._norm_cat(row.get("Category", ""))
                     payee    = row.get("à qui", "").strip().upper()
                     label    = row.get("Nom", "").strip()
-                    cat_id = cats.get(cat_name) or cats.get("Autres")
+                    cat_id = cats.get(cat_name) or cats.get("AUTRES")
                     if cat_id:
                         self.add_expense(year, month, cat_id, amount, label, payee)
                         exp_count += 1
@@ -1332,6 +1398,11 @@ class Database:
                     rev_count += 1
 
         return rev_count, exp_count, sav_count
+
+    @staticmethod
+    def _norm_cat(name: str) -> str:
+        """Normalise un nom de catégorie comme add_category() le stocke."""
+        return (name or "").strip().upper() or "AUTRES"
 
     def _iter_csv_from_zip(self, zip_path: str):
         """Itère sur les fichiers *_all.csv dans un ZIP (potentiellement imbriqué)."""
@@ -1529,13 +1600,12 @@ class Database:
             (key, value),
         )
         self.con.commit()
-        # Ne pas invalider le cache IA quand c'est justement lui qu'on écrit,
-        # sinon save_cached_result() efface sa propre valeur juste après l'avoir écrite.
-        if not key.startswith("ai_cache_") and not key.startswith("ui_"):
+        # ai_cache_* (le cache IA lui-même) et ui_* (état d'affichage :
+        # sections repliées…) n'influencent aucune requête mise en cache :
+        # inutile de vider le cache. Pour ai_cache_*, _invalidate()
+        # effacerait en plus la valeur qu'on vient d'écrire.
+        if not key.startswith(("ai_cache_", "ui_")):
             self._invalidate()
-        else:
-            with self._cache_lock:
-                self._cache.clear()
 
     def get_all_payees(self) -> list:
         """Retourne tous les enseignes distincts triés par fréquence d'utilisation."""

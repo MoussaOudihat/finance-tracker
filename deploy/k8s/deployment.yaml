@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fintrack-web
+  labels:
+    app.kubernetes.io/name: fintrack-web
+spec:
+  # 1 seul réplica : les sessions et les bases SQLite par utilisateur vivent
+  # dans le pod (volume ReadWriteOnce). Recreate évite deux pods simultanés
+  # sur le même volume pendant une mise à jour.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fintrack-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fintrack-web
+    spec:
+      automountServiceAccountToken: false
+      # Laisse le temps au push final vers Supabase à l'arrêt du pod
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: ghcr.io/moussaoudihat/fintrack-web:2.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: fintrack-web-config
+            - secretRef:
+                name: fintrack-web-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: fintrack-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

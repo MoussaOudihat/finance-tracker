@@ -425,6 +425,7 @@ class App(ctk.CTk):
     def _build_sidebar(self):
         sb = ctk.CTkFrame(self, width=220, fg_color=C["sidebar"],
                           corner_radius=0)
+        self._sidebar = sb
         sb.grid(row=0, column=0, rowspan=2, sticky="nsew")
         sb.grid_propagate(False)
         sb.grid_columnconfigure(0, weight=1)
@@ -490,7 +491,7 @@ class App(ctk.CTk):
                 gkey = _NAV_GROUP_KEYS.get(item)
                 expanded = self.db.get_setting(f"ui_navgroup_{gkey}", "1") != "0" if gkey else True
                 content, chevron, header = collapsible_nav_group(
-                    nav_scroll, item, expanded=expanded, key=gkey, db=self.db,
+                    nav_scroll, item, expanded=expanded,
                 )
                 self._nav_groups[item] = {
                     "content": content, "chevron": chevron, "header": header,
@@ -536,6 +537,7 @@ class App(ctk.CTk):
     # ────────────────────────────────────────────────────────
     def _build_topbar(self):
         topbar = ctk.CTkFrame(self, height=40, fg_color=C["bg"], corner_radius=0)
+        self._topbar = topbar
         topbar.grid(row=0, column=1, sticky="new")
         topbar.grid_propagate(False)
 
@@ -661,9 +663,8 @@ class App(ctk.CTk):
         # Appliquer immédiatement sans redémarrage
         apply_palette(enable)
         ctk.set_appearance_mode("dark" if enable else "light")
-        # Avant tout redessin : évite que Windows affiche son chrome natif
-        # clair par défaut pendant la reconstruction (flash blanc, cf.
-        # _set_windows_titlebar_dark).
+        # Avant tout redessin : évite le flash blanc du chrome natif Windows
+        # pendant la reconstruction (cf. _set_windows_titlebar_dark).
         _set_windows_titlebar_dark(self, enable)
 
         def _rebuild():
@@ -677,8 +678,13 @@ class App(ctk.CTk):
             # le "glitch" de recolorisation partielle/à moitié faite.
             page_to_restore = self._current_page or "dashboard"
             self.configure(fg_color=C["bg"])
-            for w in self.winfo_children():
-                w.destroy()
+            # Ne détruire QUE les 3 zones reconstruites ci-dessous : détruire
+            # tous les enfants de la fenêtre fermait aussi les dialogues et
+            # toasts (CTkToplevel) ouverts, dont les callbacks visaient
+            # ensuite des widgets détruits.
+            for w in (self._sidebar, self._topbar, self._content):
+                if w.winfo_exists():
+                    w.destroy()
             self._build_sidebar()
             self._build_topbar()
             self._build_content_area()
