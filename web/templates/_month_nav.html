@@ -1,0 +1,5 @@
+<div class="month-nav">
+  <a class="btn btn-ghost" href="?y={{ prev[0] }}&m={{ prev[1] }}" aria-label="Mois précédent">‹</a>
+  <h1>{{ MONTHS_FR[m - 1] }} {{ y }}{% if closed %} <span class="badge">Clôturé</span>{% endif %}</h1>
+  <a class="btn btn-ghost" href="?y={{ next[0] }}&m={{ next[1] }}" aria-label="Mois suivant">›</a>
+</div>

@@ -1,0 +1,12 @@
+# Tout exclure, puis n'autoriser que ce dont l'image a besoin :
+# aucune donnée personnelle (data/, *.db, *.sql) ne doit entrer dans l'image.
+*
+!requirements-web.txt
+!config.py
+!logger.py
+!utils.py
+!database.py
+!sync_supabase.py
+!cloud_auth.py
+!web/
+web/**/__pycache__

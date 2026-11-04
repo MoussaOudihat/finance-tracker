@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Patrimoine{% endblock %}
+{% block content %}
+<h1>Patrimoine</h1>
+<section class="kpis">
+  <div class="card kpi"><span class="muted">Actifs</span><strong class="pos">{{ total_assets|eur }}</strong></div>
+  <div class="card kpi"><span class="muted">Passifs</span><strong class="neg">{{ total_liab|eur }}</strong></div>
+  <div class="card kpi"><span class="muted">Valeur nette</span><strong>{{ (total_assets - total_liab)|eur }}</strong></div>
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <h2>Répartition</h2>
+    {% if by_type %}
+    <ul class="bars">
+      {% for t, v in by_type %}
+      <li>
+        <span class="bar-label">{{ ASSET_LABEL.get(t, t) }}</span>
+        <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="bar-bg" width="100" height="8" rx="2"/>
+          <rect class="bar-fg" width="{{ (v / max_type * 100)|round(1) }}" height="8" rx="2"/>
+        </svg>
+        <span class="bar-value">{{ v|eur }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">Aucun actif suivi.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Passifs</h2>
+    {% if liabilities %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Nom</th><th>Type</th><th class="num">Capital restant</th><th class="num">Mensualité</th></tr></thead>
+      <tbody>
+      {% for l in liabilities %}
+      <tr><td>{{ l.liability_name }}</td><td>{{ LIABILITY_LABEL.get(l.liability_type, l.liability_type) }}</td>
+          <td class="num">{{ l.remaining_capital|eur }}</td><td class="num">{{ l.monthly_payment|eur }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}<p class="muted">Aucun passif.</p>{% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Actifs <span class="muted total">dernière valeur connue</span></h2>
+  {% if assets %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Nom</th><th>Type</th><th>Mise à jour</th><th class="num">Investi</th><th class="num">Valeur</th><th class="num">+/- value</th></tr></thead>
+    <tbody>
+    {% for a in assets %}
+    {% set pnl = a.value - a.cost_basis if a.cost_basis else none %}
+    <tr>
+      <td>{{ a.asset_name }}</td><td>{{ ASSET_LABEL.get(a.asset_type, a.asset_type) }}</td>
+      <td>{{ MONTHS_FR[a.month - 1][:3] }} {{ a.year }}</td>
+      <td class="num">{{ a.cost_basis|eur if a.cost_basis else '—' }}</td>
+      <td class="num">{{ a.value|eur }}</td>
+      <td class="num {{ '' if pnl is none else ('pos' if pnl >= 0 else 'neg') }}">{{ '—' if pnl is none else pnl|eur(true) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Les mises à jour de valeurs, transactions et ventes se font depuis l'application desktop.</p>
+  {% else %}<p class="muted">Aucun actif suivi.</p>{% endif %}
+</section>
+{% endblock %}

@@ -1359,30 +1359,36 @@ class RecurringApplyDialog(ctk.CTkToplevel):
             })
 
     def _on_apply(self):
-        applied = 0
-        errors = []
-        with self._db.batch_mode():
-            for row in self._rows:
-                if not row["checked"].get():
-                    continue
-                raw = row["amount_entry"].get().replace(",", ".").strip()
-                try:
-                    amount = float(raw)
-                    if amount <= 0:
-                        raise ValueError
-                except ValueError:
-                    row["amount_entry"].configure(border_color=C["red"])
-                    errors.append(row["rec_id"])
-                    continue
-                row["amount_entry"].configure(border_color=C["border"])
-                self._db.apply_recurring(row["rec_id"], self._year, self._month, amount)
-                applied += 1
+        # 1) Valider TOUTES les lignes cochées avant d'écrire quoi que ce soit :
+        #    appliquer les valides puis rester ouvert sur une erreur faisait
+        #    ré-appliquer (en double) les lignes valides au clic suivant.
+        to_apply = []
+        has_error = False
+        for row in self._rows:
+            if not row["checked"].get():
+                continue
+            raw = row["amount_entry"].get().replace(",", ".").strip()
+            try:
+                amount = float(raw)
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                row["amount_entry"].configure(border_color=C["red"])
+                has_error = True
+                continue
+            row["amount_entry"].configure(border_color=C["border"])
+            to_apply.append((row["rec_id"], amount))
 
-        if errors:
-            return  # ne ferme pas si des montants sont invalides
+        if has_error:
+            return  # rien n'a été écrit — l'utilisateur corrige puis réessaie
+
+        # 2) Tout est valide : appliquer en un seul lot.
+        with self._db.batch_mode():
+            for rec_id, amount in to_apply:
+                self._db.apply_recurring(rec_id, self._year, self._month, amount)
 
         if self._on_applied:
-            self._on_applied(applied)
+            self._on_applied(len(to_apply))
         self.destroy()
 
 

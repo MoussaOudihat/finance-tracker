@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Modifier — {{ title }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Modifier · {{ title }} · {{ MONTHS_FR[entry.month - 1] }} {{ entry.year }}</h1>
+  {% if closed %}
+  <p class="muted">Ce mois est clôturé : modification impossible.</p>
+  <a class="btn btn-ghost" href="/{{ section }}?y={{ entry.year }}&m={{ entry.month }}">Retour</a>
+  {% else %}
+  <form method="post" action="/{{ section }}/{{ entry.id }}/modifier" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% include "_entry_fields.html" %}
+    <div class="row">
+      <button type="submit" class="btn btn-primary">Enregistrer</button>
+      <a class="btn btn-ghost" href="/{{ section }}?y={{ entry.year }}&m={{ entry.month }}">Annuler</a>
+    </div>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

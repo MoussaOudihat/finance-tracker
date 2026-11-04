@@ -25,7 +25,8 @@ if getattr(sys, "frozen", False):
 else:
     _BASE = os.path.dirname(os.path.abspath(__file__))
 
-_LOG_DIR  = os.path.join(_BASE, "data")
+# FINTRACK_DATA_DIR : dossier de données monté en volume (Docker/Kubernetes).
+_LOG_DIR  = os.environ.get("FINTRACK_DATA_DIR") or os.path.join(_BASE, "data")
 _LOG_FILE = os.path.join(_LOG_DIR, "app.log")
 
 os.makedirs(_LOG_DIR, exist_ok=True)

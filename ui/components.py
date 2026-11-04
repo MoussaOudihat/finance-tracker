@@ -3,6 +3,7 @@ ui/components.py — Widgets et helpers UI réutilisables
 """
 import re
 import tkinter as tk
+from datetime import date
 import customtkinter as ctk
 from config import C, PALETTE
 
@@ -159,8 +160,7 @@ def nav_button(parent, text: str, command, tooltip: str = "") -> ctk.CTkButton:
     return btn
 
 
-def collapsible_nav_group(parent, label: str, *, expanded: bool = True,
-                           key: str = None, db=None):
+def collapsible_nav_group(parent, label: str, *, expanded: bool = True):
     """
     En-tête de groupe de navigation repliable (barre latérale sombre).
     Retourne (content_frame, chevron_label, header_frame) :
@@ -170,11 +170,6 @@ def collapsible_nav_group(parent, label: str, *, expanded: bool = True,
     Ne gère ni l'état ni la persistance — c'est à l'appelant (App) de le faire,
     ce composant ne fait que construire les widgets et les retourner.
     """
-    if db is not None and key:
-        stored = db.get_setting(f"ui_navgroup_{key}", None)
-        if stored is not None:
-            expanded = (stored == "1")
-
     header = ctk.CTkFrame(parent, fg_color="transparent", cursor="hand2")
     header.pack(fill="x", padx=14, pady=(7, 1))
     txt = ctk.CTkLabel(header, text=label, font=ctk.CTkFont(size=9, weight="bold"),
@@ -204,7 +199,7 @@ def month_selector(parent, months_fr, sel_year, sel_month, on_change) -> ctk.CTk
 
     ctk.CTkOptionMenu(sel, values=months_fr, variable=m_var, command=_cb,
                       width=135, height=34).pack(side="left", padx=6, pady=6)
-    ctk.CTkOptionMenu(sel, values=[str(y) for y in range(2022, 2030)],
+    ctk.CTkOptionMenu(sel, values=[str(y) for y in range(2022, max(date.today().year, sel_year) + 2)],
                       variable=y_var, command=_cb,
                       width=90, height=34).pack(side="left", padx=(0, 6), pady=6)
     return sel

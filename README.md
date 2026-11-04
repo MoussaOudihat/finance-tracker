@@ -3,7 +3,7 @@
 > Application desktop Windows pour suivre ses finances personnelles — **locale, sécurisée, open source.**  
 > Synchronisation Supabase optionnelle pour le multi-appareils.
 
-![Version](https://img.shields.io/badge/Version-1.2.3-4F46E5)
+![Version](https://img.shields.io/badge/Version-2.0.0-4F46E5)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-22C55E)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows)
@@ -180,19 +180,76 @@ La sync est entièrement optionnelle. Elle vous permet d'accéder à vos donnée
 
 Dans votre projet Supabase → **Settings → API** :
 - **URL du projet** : `https://xxxx.supabase.co`
-- **Secret key** : section *Secret keys* (commence par `sb_secret_…` ou `eyJ…` pour les clés legacy)
+- **Clé anon / publishable** : les comptes sont gérés par Supabase Auth et protégés par Row Level Security. La clé `service_role` n'est plus jamais utilisée (depuis la v1.3.0).
 
 ### 3. Activer dans l'application
 
-**Au premier lancement** → cliquez *Restaurer mon compte* et entrez vos identifiants.
+**Au premier lancement** → choisissez le mode en ligne, puis créez votre compte ou connectez-vous (email + mot de passe).
 
 **Ou depuis les Paramètres** → section *Synchronisation Supabase* → activez et entrez vos identifiants.
 
 ---
 
+## 🌐 Interface web (Docker / Kubernetes) — v2.0
+
+Accédez à Fintrack depuis un navigateur, y compris sur mobile, en hébergeant l'interface web dans un conteneur. Elle utilise **les mêmes comptes et les mêmes données Supabase** que l'application desktop.
+
+**Disponible dans le navigateur** : tableau de bord du mois (KPI, dépenses par catégorie, budget, historique sur 12 mois), saisie, modification et suppression des **dépenses, revenus et épargnes**, et consultation du **patrimoine**. Les fonctions avancées (analyses, projection, IA, exports, clôture de mois, transactions de patrimoine) restent dans l'application desktop.
+
+### Fonctionnement
+- Chaque utilisateur connecté a sa propre base SQLite dans le volume `/data`. Elle est récupérée depuis Supabase à la connexion.
+- Les modifications sont renvoyées vers Supabase environ 20 s après la dernière saisie, puis à la déconnexion, après 1 h d'inactivité et à l'arrêt du pod.
+- ⚠️ La synchronisation reste de type « dernier envoi gagnant », comme entre deux PC. Évitez de modifier le même compte dans l'app desktop et dans le navigateur au même moment. Fermez l'une avant d'utiliser l'autre.
+- Mode `local` : un compte unique défini par variables d'environnement, sans Supabase. Les données restent alors uniquement dans le volume, pensez à le sauvegarder.
+
+### Lancer avec Docker
+```bash
+cp .env.example .env          # remplir FINTRACK_SECRET_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
+docker compose up --build     # → http://localhost:8000
+```
+
+### Déployer sur Kubernetes
+```bash
+kubectl create namespace fintrack
+kubectl -n fintrack create secret generic fintrack-web-secret \
+  --from-literal=FINTRACK_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  --from-literal=SUPABASE_ANON_KEY="<clé anon>"
+# Adapter SUPABASE_URL (configmap.yaml) et l'hôte (ingress.yaml), puis :
+kubectl apply -k deploy/k8s
+```
+Image publiée à chaque release : `ghcr.io/moussaoudihat/fintrack-web:<version>`.
+
+Les manifestes appliquent par défaut : 1 réplica (stratégie `Recreate`, les sessions vivent dans le pod), volume `ReadWriteOnce` de 1 Gi, utilisateur non-root, système de fichiers en lecture seule, profil Pod Security `restricted`, NetworkPolicy, HTTPS via cert-manager et ingress-nginx, sondes `/healthz` et `/readyz`.
+
+### Sécurité
+Cookie de session signé (`HttpOnly`, `Secure`, `SameSite=Lax`), protection CSRF sur tous les formulaires, limitation des tentatives de connexion, en-têtes CSP/HSTS stricts, `Cache-Control: no-store`. Aucune donnée n'est incluse dans l'image (voir `.dockerignore`).
+
+### Variables d'environnement
+| Variable | Rôle |
+|---|---|
+| `FINTRACK_SECRET_KEY` | **Obligatoire.** Signature des cookies (32+ caractères aléatoires) |
+| `FINTRACK_AUTH_MODE` | `supabase` (défaut) ou `local` |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Projet Supabase (mode `supabase`) |
+| `FINTRACK_WEB_USER` / `FINTRACK_WEB_PASSWORD_HASH` | Compte unique (mode `local`), hash généré par `python -m web.hash_password` |
+| `FINTRACK_COOKIE_SECURE` | `1` (défaut, HTTPS requis) ; `0` pour tester en `http://localhost` |
+| `FINTRACK_SYNC_DELAY` / `FINTRACK_IDLE_TIMEOUT` | Délai d'envoi vers Supabase (20 s) et d'inactivité (3600 s) |
+
+### Développement
+```bash
+pip install -r requirements-web.txt pytest
+python -m pytest -q
+FINTRACK_SECRET_KEY=... FINTRACK_COOKIE_SECURE=0 uvicorn web.main:app --reload
+```
+
+---
+
 ## 🗺️ Roadmap
 
-### ✅ v1.2 — Actuel
+### ✅ v2.0 — Actuel
+- [x] Interface web hébergeable (Docker / Kubernetes), mêmes comptes Supabase que l'app desktop
+- [x] Saisie des dépenses, revenus et épargnes, tableau de bord et patrimoine depuis le navigateur
+
+### ✅ v1.2
 - [x] Import / export Excel par page (Dépenses et Revenus)
 - [x] Template Excel avec liste déroulante de catégories
 - [x] Autocomplétion sur le champ Enseigne (suggestions basées sur l'historique)

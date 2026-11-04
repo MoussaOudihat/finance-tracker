@@ -6,6 +6,34 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [2.0.0] — 2026-11-04
+
+### Ajouté
+- 🌐 **Interface web hébergeable (Docker / Kubernetes)** : Fintrack est maintenant accessible depuis un navigateur, y compris sur mobile. On s'y connecte avec le même compte Supabase que l'application desktop. Disponible : tableau de bord du mois (KPI, dépenses par catégorie, budget, historique sur 12 mois), saisie, modification et suppression des dépenses, revenus et épargnes (avec la même synchronisation Épargne → Patrimoine), consultation du patrimoine. Les mois clôturés sont en lecture seule.
+- 🐳 **Image Docker** `ghcr.io/moussaoudihat/fintrack-web`, publiée à chaque release. Elle tourne en utilisateur non-root sur un système de fichiers en lecture seule, avec un healthcheck, et n'embarque aucune donnée personnelle. `docker-compose.yml` permet de la lancer localement.
+- ☸️ **Manifestes Kubernetes** (`deploy/k8s`, Kustomize) : Deployment, volume persistant, Service, Ingress HTTPS, NetworkPolicy, profil Pod Security `restricted`, sondes de santé.
+- 🔐 **Sécurité web** : cookie de session signé, protection CSRF, limitation des tentatives de connexion, en-têtes CSP/HSTS stricts. Un mode `local` (compte unique, sans Supabase) est aussi proposé.
+- ✅ **Tests automatisés** (`tests/`, pytest), exécutés par la CI avec le build de l'image et la validation des manifestes.
+
+### Corrigé
+- 🐛 **Import Notion : nouvelles catégories rangées dans « Autres »** : depuis la v1.4.0, l'import utilisait une liste de catégories en cache, sans celles qu'il venait de créer. Toutes les dépenses d'une catégorie inédite partaient dans « Autres ».
+- 🐛 **Import Notion : catégories en minuscules non reconnues** : « Courses » (enregistrée « COURSES ») n'était jamais retrouvée, et les dépenses étaient rangées dans « Autres » ou ignorées.
+- 🐛 **Transactions récurrentes appliquées en double** : si l'une des lignes cochées avait un montant invalide, les lignes valides étaient enregistrées quand même et restaient cochées. Elles étaient donc ajoutées une deuxième fois au clic suivant. Désormais, rien n'est enregistré tant que tout n'est pas valide.
+- 🌙 **Changement de thème** : basculer le mode sombre fermait aussi les fenêtres et notifications ouvertes.
+- 🌙 **Positions vendues (Patrimoine) illisibles en mode sombre** : fond clair figé sous du texte clair.
+- 🤖 **Analyse IA** : les « dépenses notables » et « sources de revenus » répétaient le même poste récurrent (« Loyer=900€ | Loyer=900€ | … »). Elles sont maintenant regroupées par libellé, en €/mois.
+- 📅 **Sélecteur d'année limité à 2029** : il s'étend désormais automatiquement.
+
+### Performance / nettoyage
+- Replier une section ou un groupe du menu ne vide plus tout le cache de requêtes.
+- Résumé IA : 1 requête SQL groupée au lieu de 2 requêtes par mois analysé.
+- Le dépli des groupes du menu n'est plus lu deux fois en base, et le composant ne gère plus lui-même la persistance.
+- La modification d'une dépense ou d'un revenu refuse désormais un montant nul ou négatif, comme à la création.
+- README : la section Supabase décrivait encore la clé `service_role`, supprimée en v1.3.0.
+- `FINTRACK_DATA_DIR` permet de placer la base et les logs dans un autre dossier (volume de conteneur).
+
+---
+
 ## [1.4.0] — 2026-09-06
 
 ### Ajouté
