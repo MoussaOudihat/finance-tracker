@@ -120,6 +120,7 @@ class Channels:
         validate_user_url(url, self.allowed_hosts)
         host = urllib.parse.urlsplit(url).hostname or ""
         text = f"**{msg.title}**\n{msg.body}"
-        payload = {"text": text} if host.endswith("slack.com") else {"content": text[:1900]}
+        is_slack = host == "slack.com" or host.endswith(".slack.com")   # pas « evilslack.com »
+        payload = {"text": text} if is_slack else {"content": text[:1900]}
         r = self.http.post(url, json=payload)
         r.raise_for_status()

@@ -217,3 +217,13 @@ def test_backend_403_is_not_a_logout(setup):
     r = c.get("/depenses?y=2026&m=1", headers={"referer": "http://testserver/"})
     assert sessions.get(sid) is not None                   # toujours connecté
     assert r.status_code == 403 and "Opération refusée" in r.text
+
+
+@pytest.mark.parametrize("referer", ["https://evil.example/x", "http://testserver//evil.example/x"])
+def test_no_open_redirect_via_referer(setup, referer):
+    c, *_ = setup
+    login(c)
+    r = c.post("/revenus", data={"y": 2026, "m": 3, "amount": "10", "source": "X", "csrf": "forged"},
+               headers={"referer": referer}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/")
+    assert not r.headers["location"].startswith("//")

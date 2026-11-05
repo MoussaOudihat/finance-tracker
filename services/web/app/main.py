@@ -160,6 +160,17 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
 
     def redirect(url: str) -> RedirectResponse:
+        """Redirection LOCALE uniquement (anti open-redirect) : un chemin
+        absolu du site, jamais « //hôte » ni une barre oblique inverse."""
+        if not url.startswith("/") or url.startswith(("//", "/\\")):
+            url = "/"
+        return RedirectResponse(url, status_code=303)
+
+    def redirect_ticktick(url: str) -> RedirectResponse:
+        """Seule redirection externe : la page d'autorisation OAuth TickTick."""
+        p = urlsplit(url)
+        if p.scheme != "https" or p.netloc != "ticktick.com" or p.path != "/oauth/authorize":
+            raise BackendError(502, "URL d'autorisation inattendue.")
         return RedirectResponse(url, status_code=303)
 
     def check_csrf(sess: dict, token: str) -> None:
@@ -488,9 +499,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         sid, sess = load(request)
         check_csrf(sess, csrf)
         url = call(sid, sess, "notifier", "POST", "/v1/ticktick/authorize")["url"]
-        if not url.startswith("https://ticktick.com/oauth/authorize?"):
-            raise BackendError(502, "URL d'autorisation inattendue.")
-        return redirect(url)
+        return redirect_ticktick(url)
 
     @app.get("/parametres/ticktick/callback")
     def ticktick_callback(request: Request, code: str = "", state: str = "",

@@ -4,7 +4,9 @@
 # explicitement. Nécessite un CNI qui applique les NetworkPolicy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-default-deny }
+metadata:
+  name: {{ $inst }}-default-deny
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector:
     matchLabels: { app.kubernetes.io/instance: {{ $inst }} }
@@ -12,7 +14,9 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-allow-dns }
+metadata:
+  name: {{ $inst }}-allow-dns
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector:
     matchLabels: { app.kubernetes.io/instance: {{ $inst }} }
@@ -26,7 +30,9 @@ spec:
 # Sortie Internet en HTTPS uniquement, sans plages privées ni métadonnées
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-allow-internet-https }
+metadata:
+  name: {{ $inst }}-allow-internet-https
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector:
     matchExpressions:
@@ -42,7 +48,9 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-web }
+metadata:
+  name: {{ $inst }}-web
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: web } }
   policyTypes: [Ingress, Egress]
@@ -63,7 +71,9 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-finance-api }
+metadata:
+  name: {{ $inst }}-finance-api
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: finance-api } }
   policyTypes: [Ingress, Egress]
@@ -79,7 +89,9 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-ai-service }
+metadata:
+  name: {{ $inst }}-ai-service
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: ai-service } }
   policyTypes: [Ingress, Egress]
@@ -97,7 +109,9 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-notifier }
+metadata:
+  name: {{ $inst }}-notifier
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: notifier } }
   policyTypes: [Ingress]
@@ -109,7 +123,9 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: {{ $inst }}-redis }
+metadata:
+  name: {{ $inst }}-redis
+  namespace: {{ .Release.Namespace }}
 spec:
   podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: redis } }
   policyTypes: [Ingress]
