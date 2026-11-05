@@ -3,7 +3,7 @@
 > Application desktop Windows pour suivre ses finances personnelles — **locale, sécurisée, open source.**  
 > Synchronisation Supabase optionnelle pour le multi-appareils.
 
-![Version](https://img.shields.io/badge/Version-1.2.3-4F46E5)
+![Version](https://img.shields.io/badge/Version-2.0.0-4F46E5)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-22C55E)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows)
@@ -49,9 +49,9 @@ Aucun abonnement, aucune inscription obligatoire. Vos données restent sur votre
 - Envoi par **email SMTP** (résumé mensuel)
 
 ### Maintenance & récupération
-- **`reset_auth.py`** — récupération des identifiants (username oublié, mot de passe perdu, compte bloqué) sans toucher aux données
-- **`supabase_migration.sql`** — mise à jour du schéma Supabase existant vers la dernière version
-- **`supabase_schema.sql`** — schéma complet pour une nouvelle installation Supabase
+- **`desktop/tools/reset_auth.py`** — récupération des identifiants (username oublié, mot de passe perdu, compte bloqué) sans toucher aux données
+- **`supabase/migration_multiuser.sql`** — mise à jour d'un projet Supabase existant vers le schéma multi-utilisateur
+- **`supabase/schema.sql`** — schéma complet pour une nouvelle installation Supabase
 
 ### Synchronisation Supabase (optionnel)
 - ☁️ Sync multi-appareils via **Supabase PostgreSQL** (tables réelles, pas Storage)
@@ -111,10 +111,10 @@ python -m venv venv
 venv\Scripts\activate
 
 # 3. Installer les dépendances
-pip install -r requirements.txt
+pip install -r desktop/requirements.txt
 
-# 4. Lancer l'application
-python main.py
+# 4. Lancer l'application (ou double-clic sur desktop/run.bat)
+python desktop/main.py
 ```
 
 ### Dépendances principales
@@ -174,25 +174,94 @@ La sync est entièrement optionnelle. Elle vous permet d'accéder à vos donnée
 
 1. Créez un compte sur [supabase.com](https://supabase.com)
 2. Créez un nouveau projet
-3. Dans **SQL Editor**, copiez-collez et exécutez le contenu de [`supabase_schema.sql`](supabase_schema.sql)
+3. Dans **SQL Editor**, copiez-collez et exécutez le contenu de [`supabase/schema.sql`](supabase/schema.sql)
 
 ### 2. Récupérer vos identifiants
 
 Dans votre projet Supabase → **Settings → API** :
 - **URL du projet** : `https://xxxx.supabase.co`
-- **Secret key** : section *Secret keys* (commence par `sb_secret_…` ou `eyJ…` pour les clés legacy)
+- **Clé anon / publishable** : les comptes sont gérés par Supabase Auth et protégés par Row Level Security. La clé `service_role` n'est plus jamais utilisée (depuis la v1.3.0).
 
 ### 3. Activer dans l'application
 
-**Au premier lancement** → cliquez *Restaurer mon compte* et entrez vos identifiants.
+**Au premier lancement** → choisissez le mode en ligne, puis créez votre compte ou connectez-vous (email + mot de passe).
 
 **Ou depuis les Paramètres** → section *Synchronisation Supabase* → activez et entrez vos identifiants.
 
 ---
 
+## 🌐 Interface web — microservices (Docker / Kubernetes) — v2.0
+
+Accédez à Fintrack depuis un navigateur (mobile compris) avec **le même compte Supabase** que l'application desktop. Architecture détaillée : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Sécurité : [SECURITY.md](SECURITY.md).
+
+| Service | Rôle | État |
+|---|---|---|
+| **web** | Pages HTML, sessions (Redis), orchestration | sans état · HPA |
+| **finance-api** | Données : écrit ligne par ligne dans Supabase Postgres avec le jeton de l'utilisateur (RLS) | sans état · HPA |
+| **ai-service** | Analyse, assistant conversationnel, catégorisation — Claude ou Gemini | sans état · HPA |
+| **notifier** | TickTick (OAuth), ntfy, Discord/Slack : alertes budget, rappel mensuel | volume · 1 réplica |
+| **redis** | Sessions et compteurs (quotas IA, tentatives de connexion) | éphémère |
+
+**Dans le navigateur** : tableau de bord, dépenses / revenus / épargne (avec la synchro Épargne → Patrimoine), **budgets** (alertes à 80 % et 100 %), patrimoine, **assistant IA** (analyse de la période, questions libres, suggestion de catégorie), **notifications** (TickTick, ntfy, webhooks). L'analyse avancée, la projection, les exports et la clôture de mois restent dans l'app desktop.
+
+> **Desktop + web** : le web écrit ligne par ligne et ne peut plus écraser les données. L'app desktop refuse désormais d'envoyer sa base si des modifications ont été faites ailleurs depuis sa dernière synchro : elle demande de récupérer d'abord.
+
+### Docker Compose (ou Podman Compose)
+```bash
+python deploy/gen_secrets.py                 # secrets dans deploy/compose/secrets/ (ignorés par git)
+cp deploy/compose/.env.example deploy/compose/.env   # SUPABASE_URL, TickTick, modèles IA…
+docker compose -f deploy/compose/compose.yaml up -d --build   # → http://localhost:8080
+```
+Réseau `backend` interne (sans Internet), seul `web` publié sur 127.0.0.1, conteneurs non-root en lecture seule, secrets en fichiers, healthchecks, limites de ressources.
+
+### Kubernetes (chart Helm)
+Le chart est publié à chaque release (OCI, signé cosign) sur GHCR et Docker Hub.
+```bash
+kubectl create namespace fintrack
+kubectl label ns fintrack pod-security.kubernetes.io/enforce=restricted
+python deploy/gen_secrets.py --k8s                 # → deploy/helm/secrets.env (ignoré par git)
+kubectl -n fintrack create secret generic fintrack-secrets --from-env-file=deploy/helm/secrets.env
+
+helm upgrade --install fintrack oci://ghcr.io/moussaoudihat/charts/fintrack --version 2.0.0 -n fintrack \
+  --set config.supabaseUrl=https://<projet>.supabase.co \
+  --set secrets.existingSecret=fintrack-secrets \
+  --set ingress.host=fintrack.mondomaine.fr
+helm test fintrack -n fintrack
+```
+Depuis les sources : `helm install fintrack deploy/helm/fintrack -f deploy/helm/fintrack/values-local.yaml …` (cluster local, images `localhost/fintrack-*:dev`). Exemple de production : [`values-production.yaml`](deploy/helm/fintrack/values-production.yaml).
+
+Le chart applique : NetworkPolicies « deny-all » + flux explicites (sortie Internet limitée au 443, plages privées et métadonnées cloud exclues), Pod Security `restricted`, ServiceAccounts sans jeton, HPA + PDB, topologySpread, Ingress TLS (cert-manager), redémarrage auto si la configuration change, clés internes générées une fois puis conservées, `values.schema.json`, `helm test`.
+
+### Registres d'images
+| Registre | Images | Chart |
+|---|---|---|
+| **GHCR** (toujours) | `ghcr.io/moussaoudihat/fintrack-{web,finance-api,ai-service,notifier}` | `oci://ghcr.io/moussaoudihat/charts/fintrack` |
+| **Docker Hub** (si configuré) | `docker.io/<utilisateur>/fintrack-…` | `oci://registry-1.docker.io/<utilisateur>/fintrack` |
+
+Pour activer Docker Hub : créer un jeton d'accès *Read & Write* sur hub.docker.com, puis dans GitHub → *Settings → Secrets and variables → Actions* : variable `DOCKERHUB_USERNAME`, secret `DOCKERHUB_TOKEN`.
+
+### Intégrations
+- **Claude / Gemini** : clés serveur `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` (secrets de ai-service). Modèles : `CLAUDE_MODEL` (défaut `claude-opus-5-5`), `GEMINI_MODEL`. Quota `AI_DAILY_LIMIT` par utilisateur et par jour. Seul un **résumé agrégé** est envoyé au fournisseur, après consentement explicite.
+- **TickTick** : créer une application sur [developer.ticktick.com](https://developer.ticktick.com), URL de redirection `https://<votre-hôte>/parametres/ticktick/callback`, puis renseigner `TICKTICK_CLIENT_ID`, `TICKTICK_REDIRECT_URI` et le secret `ticktick_client_secret`. L'utilisateur clique ensuite « Connecter TickTick » dans Notifications.
+- **ntfy / Discord / Slack** : URL saisie par l'utilisateur, limitée aux hôtes de `NOTIFIER_ALLOWED_HOSTS` (anti-SSRF).
+
+### Développement
+```bash
+pip install -r services/requirements-dev.txt
+cd services && python -m pytest -q tests      # tests des 4 services (dont bout en bout web → API)
+```
+
+---
+
 ## 🗺️ Roadmap
 
-### ✅ v1.2 — Actuel
+### ✅ v2.0 — Actuel
+- [x] Interface web en 4 microservices (Docker Compose / Kubernetes), mêmes comptes Supabase que l'app desktop
+- [x] Assistant IA (Claude, Gemini) : analyse, questions libres, catégorisation automatique
+- [x] Budgets depuis le web avec alertes 80 % / 100 %, rappel mensuel — TickTick, ntfy, Discord/Slack
+- [x] Pipeline DevSecOps : SAST, SCA, secrets, scan d'images et d'IaC, images signées + SBOM
+
+### ✅ v1.2
 - [x] Import / export Excel par page (Dépenses et Revenus)
 - [x] Template Excel avec liste déroulante de catégories
 - [x] Autocomplétion sur le champ Enseigne (suggestions basées sur l'historique)
@@ -250,7 +319,9 @@ git checkout develop
 git checkout -b feature/ma-fonctionnalite
 
 # 3. Faire vos modifications et tester
-python main.py
+python desktop/main.py                                   # app desktop
+(cd desktop && python -m pytest -q tests)                # tests desktop
+(cd services && python -m pytest -q tests)               # tests microservices
 
 # 4. Committer
 git commit -m "feat: ajouter l'import CSV bancaire"
@@ -272,42 +343,30 @@ release:  préparation d'une release
 
 ### Structure du projet
 ```
-fintrack/
-├── main.py              # Point d'entrée
-├── auth.py              # Authentification (hash, sessions)
-├── config.py            # Constantes, palette de couleurs
-├── database.py          # Toutes les opérations SQLite
-├── sync_supabase.py     # Synchronisation Supabase PostgreSQL
-├── supabase_schema.sql  # Schéma SQL à exécuter dans Supabase
-├── utils_ai.py          # Intégration Gemini (recommandations, projection)
-├── utils_pdf.py         # Génération de rapports PDF
-├── utils_email.py       # Envoi d'emails SMTP
-├── utils_taxes.py       # Export fiscal
-├── generate_icon.py     # Générateur d'icône Fintrack (Pillow)
-├── fintrack.ico         # Icône application
-├── requirements.txt
-├── Finance Tracker.spec # Configuration PyInstaller
-├── VERSION              # Version courante (ex : 1.1.0)
-├── CHANGELOG.md
-├── data/                # Base de données locale (non versionnée)
-└── ui/
-    ├── app.py           # Fenêtre principale + navigation
-    ├── login.py         # Écran d'authentification + bienvenue
-    ├── components.py    # Widgets réutilisables (cards, tables, render_ai_text…)
-    ├── dialogs.py       # Boîtes de dialogue (actifs, dépenses, récurrentes…)
-    └── pages/
-        ├── dashboard.py
-        ├── revenues.py
-        ├── expenses.py
-        ├── savings_entry.py
-        ├── budget.py
-        ├── objectifs.py
-        ├── analyses.py
-        ├── patrimoine.py
-        ├── projection.py
-        ├── historique.py
-        ├── recommandations.py
-        └── settings.py
+finance-tracker/
+├── desktop/                 # Application Windows (customtkinter, SQLite + synchro Supabase)
+│   ├── main.py              # Point d'entrée
+│   ├── config.py · database.py · auth.py · cloud_auth.py · sync_supabase.py
+│   ├── utils_*.py           # IA, PDF, email, Excel, fiscalité
+│   ├── ui/                  # Fenêtres, composants, pages
+│   ├── tools/               # reset_auth.py (récupération), generate_icon.py
+│   ├── tests/               # pytest (couche données, synchro)
+│   ├── fintrack.spec        # Build PyInstaller
+│   └── requirements.txt · run.bat · fintrack.ico
+├── services/                # Plateforme web (microservices FastAPI)
+│   ├── common/              # fintrack_common : auth JWT, logs, HTTP, quotas, formatage
+│   ├── web/ · finance_api/ · ai_service/ · notifier/
+│   ├── tests/               # pytest (dont bout en bout web → API)
+│   └── Dockerfile           # image commune (build-arg SERVICE)
+├── deploy/
+│   ├── compose/             # Docker / Podman Compose
+│   ├── helm/fintrack/       # Chart Helm (Kubernetes)
+│   └── gen_secrets.py       # génération des secrets
+├── supabase/                # schema.sql, migration_multiuser.sql
+├── docs/                    # ARCHITECTURE.md, ROADMAP.md
+├── .github/                 # CI DevSecOps, release, CodeQL, Dependabot
+├── data/                    # Base locale de l'app desktop (non versionnée)
+└── VERSION · CHANGELOG.md · SECURITY.md · pyproject.toml
 ```
 
 ---

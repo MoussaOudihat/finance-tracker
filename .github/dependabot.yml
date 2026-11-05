@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directories: ["/", "/services", "/services/web", "/services/finance_api",
+                  "/services/ai_service", "/services/notifier"]
+    schedule: { interval: weekly, day: monday }
+    groups:
+      python-minor:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: docker
+    directories: ["/services"]
+    schedule: { interval: weekly }
+
+  - package-ecosystem: docker-compose
+    directories: ["/deploy/compose"]
+    schedule: { interval: weekly }
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+    groups:
+      actions:
+        patterns: ["*"]

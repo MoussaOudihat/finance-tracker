@@ -1,0 +1,30 @@
+{% set e = entry if entry is defined else {} %}
+{% if section == 'depenses' %}
+<label>Catégorie
+  <select name="category_id" required>
+    {% for c in categories %}
+    <option value="{{ c.id }}" {% if e.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+    {% endfor %}
+  </select>
+</label>
+{% elif section == 'revenus' %}
+<label>Source
+  <input name="source" value="{{ e.source or '' }}" required maxlength="120" placeholder="Salaire, prime…">
+</label>
+{% else %}
+<label>Compte
+  <input name="account" value="{{ e.account or '' }}" maxlength="80" placeholder="Livret A, PEA…">
+</label>
+{% endif %}
+<label>Montant (€)
+  <input name="amount" value="{{ ('%.2f'|format(e.amount)).replace('.', ',') if e.amount else '' }}"
+         required inputmode="decimal" pattern="[0-9 ]+([,.][0-9]{1,2})?" placeholder="42,50">
+</label>
+<label>Libellé
+  <input name="label" value="{{ e.label or '' }}" maxlength="120">
+</label>
+{% if section == 'depenses' %}
+<label>Enseigne
+  <input name="payee" value="{{ e.payee or '' }}" maxlength="60" list="payees" autocomplete="off">
+</label>
+{% endif %}

@@ -6,10 +6,8 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
-permissions:
-  contents: write      # Nécessaire pour créer la GitHub Release
-  id-token: write      # Nécessaire pour Sigstore (OIDC token)
-  attestations: write  # Nécessaire pour persister l'attestation
+# Moindre privilège : rien par défaut, chaque job déclare ce dont il a besoin.
+permissions: {}
 
 jobs:
   # ──────────────────────────────────────────────────────────
@@ -18,21 +16,27 @@ jobs:
   build-and-release:
     name: Build & Release (Windows)
     runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write      # créer la GitHub Release
+      id-token: write      # Sigstore (OIDC)
+      attestations: write  # attestation de provenance
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: desktop/requirements.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r desktop/requirements.txt
           pip install pyinstaller reportlab bcrypt
 
       - name: Write version to VERSION file
@@ -42,14 +46,13 @@ jobs:
           Write-Host "✅ VERSION = $version"
 
       - name: Build executable with PyInstaller
-        run: |
-          pyinstaller "Finance Tracker.spec"
-          echo "Build terminé."
+        working-directory: desktop
+        run: pyinstaller fintrack.spec
 
       - name: Verify build output
         run: |
-          if (Test-Path "dist\Fintrack\Fintrack.exe") {
-            $size = (Get-Item "dist\Fintrack\Fintrack.exe").Length / 1MB
+          if (Test-Path "desktop\dist\Fintrack\Fintrack.exe") {
+            $size = (Get-Item "desktop\dist\Fintrack\Fintrack.exe").Length / 1MB
             Write-Host "✅ Fintrack.exe — $([math]::Round($size, 1)) MB"
           } else {
             Write-Host "❌ Exe non trouvé"
@@ -60,12 +63,12 @@ jobs:
         run: |
           $version = "${{ github.ref_name }}"
           $zipName = "Fintrack-$version-windows.zip"
-          Compress-Archive -Path "dist\Fintrack" -DestinationPath $zipName
+          Compress-Archive -Path "desktop\dist\Fintrack" -DestinationPath $zipName
           Write-Host "✅ Archive créée : $zipName"
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Attest build provenance (Sigstore)
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
         with:
           subject-path: ${{ env.ZIP_NAME }}
 
@@ -96,14 +99,14 @@ jobs:
               out.write("EOF\n")
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: "Fintrack ${{ github.ref_name }}"
           tag_name: ${{ github.ref_name }}
           body: |
             ## 💜 Fintrack ${{ github.ref_name }}
 
-            Application desktop Windows de suivi financier personnel — locale, open source, sans cloud.
+            Suivi financier personnel : application desktop Windows + interface web en microservices (images signées sur GHCR).
 
             ### 📦 Installation
 
@@ -126,18 +129,210 @@ jobs:
           generate_release_notes: false
 
   # ──────────────────────────────────────────────────────────
+  #  Images des 4 microservices → GHCR (+ Docker Hub si configuré)
+  #  Docker Hub : variable de dépôt DOCKERHUB_USERNAME + secret DOCKERHUB_TOKEN
+  #  (jeton d'accès Docker Hub « Read & Write »). Sans eux : GHCR seulement.
+  #  Chaîne d'approvisionnement : scan Trivy AVANT publication, SBOM SPDX,
+  #  provenance SLSA et SBOM attestées, signature cosign sans clé (OIDC).
+  # ──────────────────────────────────────────────────────────
+  images:
+    name: Image ${{ matrix.service.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        service:
+          - { dir: web, name: web }
+          - { dir: finance_api, name: finance-api }
+          - { dir: ai_service, name: ai-service }
+          - { dir: notifier, name: notifier }
+    env:
+      DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - name: Noms d'images (minuscules obligatoires dans les registres)
+        env: { NAME: "${{ matrix.service.name }}" }
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "GHCR_IMAGE=ghcr.io/${owner}/fintrack-${NAME}" >> "$GITHUB_ENV"
+          if [ -n "${DOCKERHUB_USERNAME}" ]; then
+            echo "HUB_IMAGE=docker.io/${DOCKERHUB_USERNAME,,}/fintrack-${NAME}" >> "$GITHUB_ENV"
+          fi
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            name=${{ env.HUB_IMAGE }},enable=${{ env.HUB_IMAGE != '' }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      - name: Build (local, pour le scan)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: services
+          file: services/Dockerfile
+          build-args: |
+            SERVICE=${{ matrix.service.dir }}
+            VERSION=${{ steps.meta.outputs.version }}
+          tags: scan:${{ matrix.service.dir }}
+          load: true
+          cache-from: type=gha,scope=${{ matrix.service.dir }}
+      - name: Trivy — bloque la publication sur CRITICAL/HIGH corrigeable
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: scan:${{ matrix.service.dir }}
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - name: Connexion GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Connexion Docker Hub
+        if: env.HUB_IMAGE != ''
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: push
+        name: Build & push (multi-registres)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: services
+          file: services/Dockerfile
+          build-args: |
+            SERVICE=${{ matrix.service.dir }}
+            VERSION=${{ steps.meta.outputs.version }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.service.dir }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service.dir }}
+      - name: SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.GHCR_IMAGE }}@${{ steps.push.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - name: Attestation SBOM (GHCR)
+        uses: actions/attest-sbom@5026d3663739160db546203eeaffa6aa1c51a4d6 # v1
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+      - name: Attestation de provenance (GHCR)
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Attestation de provenance (Docker Hub)
+        if: env.HUB_IMAGE != ''
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        with:
+          subject-name: ${{ env.HUB_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Signature cosign (keyless) — même digest dans chaque registre
+        env: { DIGEST: "${{ steps.push.outputs.digest }}" }
+        run: |
+          cosign sign --yes "${GHCR_IMAGE}@${DIGEST}"
+          if [ -n "${HUB_IMAGE:-}" ]; then cosign sign --yes "${HUB_IMAGE}@${DIGEST}"; fi
+      - name: Résumé
+        env:
+          DIGEST: "${{ steps.push.outputs.digest }}"
+          NAME: "${{ matrix.service.name }}"
+        run: |
+          {
+            echo "### ${NAME}"
+            echo "- GHCR : ${GHCR_IMAGE}@${DIGEST}"
+            if [ -n "${HUB_IMAGE:-}" ]; then echo "- Docker Hub : ${HUB_IMAGE}@${DIGEST}"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ──────────────────────────────────────────────────────────
+  #  Chart Helm → registres OCI (GHCR + Docker Hub si configuré), signé
+  #    helm install fintrack oci://ghcr.io/<owner>/charts/fintrack --version X.Y.Z
+  #    helm install fintrack oci://registry-1.docker.io/<utilisateur>/fintrack --version X.Y.Z
+  # ──────────────────────────────────────────────────────────
+  helm-chart:
+    name: Chart Helm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: images                 # le chart ne référence que des images publiées
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with: { version: v3.17.3 }
+      - name: Lint + package (version du chart = tag)
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          helm lint deploy/helm/fintrack --strict \
+            --set config.supabaseUrl=https://ci.supabase.co --set secrets.supabaseAnonKey=ci
+          helm package deploy/helm/fintrack --version "$version" --app-version "$version" -d dist
+          echo "CHART=dist/fintrack-${version}.tgz" >> "$GITHUB_ENV"
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Publier sur GHCR (OCI) et signer
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          echo "$GH_TOKEN" | cosign login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          out=$(helm push "$CHART" "oci://ghcr.io/${owner}/charts" 2>&1); echo "$out"
+          digest=$(echo "$out" | sed -n 's/^Digest: //p')
+          cosign sign --yes "ghcr.io/${owner}/charts/fintrack@${digest}"
+          echo "- Chart GHCR : oci://ghcr.io/${owner}/charts/fintrack (${digest})" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publier sur Docker Hub (OCI) et signer
+        if: env.DOCKERHUB_USERNAME != ''
+        env: { HUB_TOKEN: "${{ secrets.DOCKERHUB_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          user="${DOCKERHUB_USERNAME,,}"
+          echo "$HUB_TOKEN" | helm registry login registry-1.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          echo "$HUB_TOKEN" | cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          out=$(helm push "$CHART" "oci://registry-1.docker.io/${user}" 2>&1); echo "$out"
+          digest=$(echo "$out" | sed -n 's/^Digest: //p')
+          cosign sign --yes "docker.io/${user}/fintrack@${digest}"
+          echo "- Chart Docker Hub : oci://registry-1.docker.io/${user}/fintrack (${digest})" >> "$GITHUB_STEP_SUMMARY"
+
+  # ──────────────────────────────────────────────────────────
   #  Nettoyage : supprime le tag si le build a échoué
   # ──────────────────────────────────────────────────────────
   cleanup-on-failure:
     name: Supprimer le tag si échec
     runs-on: ubuntu-latest
-    needs: build-and-release
+    needs: [build-and-release, images, helm-chart]
     if: failure()
     permissions:
       contents: write
     steps:
       - name: Delete tag ${{ github.ref_name }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '')

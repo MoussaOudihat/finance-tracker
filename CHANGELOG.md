@@ -6,6 +6,45 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [2.0.0] — 2026-11-04
+
+### Ajouté
+- 🌐 **Interface web en microservices** (Docker Compose / Kubernetes) : Fintrack est accessible depuis un navigateur, y compris sur mobile, avec le même compte Supabase que l'application desktop. Quatre services : **web** (pages, sessions), **finance-api** (données, écrites ligne par ligne dans Supabase avec la RLS de l'utilisateur), **ai-service** (IA), **notifier** (notifications). Disponible : tableau de bord, dépenses / revenus / épargne (avec la synchro Épargne → Patrimoine), budgets, patrimoine. Les mois clôturés sont en lecture seule. Voir `docs/ARCHITECTURE.md`.
+- 🤖 **Assistant IA avec Claude ou Gemini** : analyse de la période (1, 3 ou 6 mois), questions libres sur ses finances (« combien je dépense en restaurants ? »), suggestion automatique de la catégorie d'une dépense. Seul un résumé agrégé est envoyé, après consentement, avec un quota quotidien par utilisateur.
+- 💰 **Budgets depuis le web** : définir, modifier et copier les budgets du mois précédent. Une alerte est envoyée quand un budget atteint 80 % puis 100 %.
+- 🔔 **Notifications** : **TickTick** (connexion OAuth, les alertes et rappels deviennent des tâches dans la liste choisie), **ntfy**, webhooks **Discord / Slack**. Rappel mensuel de saisie, au jour choisi.
+- ☸️ **Déploiement** : Compose durci (réseau interne sans Internet, secrets en fichiers, conteneurs non-root en lecture seule) et **chart Helm** `fintrack` (NetworkPolicies deny-all, Pod Security `restricted`, HPA, PDB, Ingress TLS, `helm test`, schéma de valeurs). Images et chart publiés et signés sur **GHCR** et, si configuré, **Docker Hub**.
+- 🛡️ **Pipeline DevSecOps** : Ruff, Bandit, Semgrep, CodeQL, pip-audit, Gitleaks, Hadolint, Trivy (images et IaC), kubeconform, Dependabot. Actions épinglées par SHA. Images publiées sur GHCR signées avec cosign, avec provenance SLSA et SBOM attestés. Voir `SECURITY.md`.
+- ✅ **Tests** : 71 pour les services (dont des tests de bout en bout web → finance-api → base) et 8 pour le desktop.
+
+### Réorganisation
+- 📁 Dépôt séparé en `desktop/` (application Windows), `services/` (plateforme web), `deploy/` (Compose, Helm), `supabase/` (schémas SQL) et `docs/`. En mode source, la base locale (`data/`) et `VERSION` restent à la racine : rien ne change pour une installation existante. Lancement : `python desktop/main.py`.
+- 🧹 Nettoyage : code mort supprimé (méthodes jamais appelées de `database.py`, utilitaires et imports inutilisés, mécanisme de rafraîchissement jamais déclenché), manifestes Kustomize remplacés par le chart Helm, helpers dupliqués (mois, euros, décalage de mois) regroupés dans `fintrack_common`.
+
+### Sécurité
+- 🛡️ **Plus d'écrasement entre appareils** : l'app desktop vérifie avant d'envoyer que les données Supabase n'ont pas été modifiées ailleurs (web ou autre PC) depuis sa dernière synchronisation. Si c'est le cas, elle refuse au lieu d'effacer ces modifications.
+- 🔐 **Déconnexion limitée à l'appareil** : se déconnecter (desktop ou web) ne ferme plus les sessions Supabase des autres appareils.
+- 🤖 L'appel Claude de l'app desktop n'envoie plus `temperature`, refusé par l'API Messages depuis la version 2026-10-21.
+
+### Corrigé
+- 🐛 **Import Notion : nouvelles catégories rangées dans « Autres »** : depuis la v1.4.0, l'import utilisait une liste de catégories en cache, sans celles qu'il venait de créer. Toutes les dépenses d'une catégorie inédite partaient dans « Autres ».
+- 🐛 **Import Notion : catégories en minuscules non reconnues** : « Courses » (enregistrée « COURSES ») n'était jamais retrouvée, et les dépenses étaient rangées dans « Autres » ou ignorées.
+- 🐛 **Transactions récurrentes appliquées en double** : si l'une des lignes cochées avait un montant invalide, les lignes valides étaient enregistrées quand même et restaient cochées. Elles étaient donc ajoutées une deuxième fois au clic suivant. Désormais, rien n'est enregistré tant que tout n'est pas valide.
+- 🌙 **Changement de thème** : basculer le mode sombre fermait aussi les fenêtres et notifications ouvertes.
+- 🌙 **Positions vendues (Patrimoine) illisibles en mode sombre** : fond clair figé sous du texte clair.
+- 🤖 **Analyse IA** : les « dépenses notables » et « sources de revenus » répétaient le même poste récurrent (« Loyer=900€ | Loyer=900€ | … »). Elles sont maintenant regroupées par libellé, en €/mois.
+- 📅 **Sélecteur d'année limité à 2029** : il s'étend désormais automatiquement.
+
+### Performance / nettoyage
+- Replier une section ou un groupe du menu ne vide plus tout le cache de requêtes.
+- Résumé IA : 1 requête SQL groupée au lieu de 2 requêtes par mois analysé.
+- Le dépli des groupes du menu n'est plus lu deux fois en base, et le composant ne gère plus lui-même la persistance.
+- La modification d'une dépense ou d'un revenu refuse désormais un montant nul ou négatif, comme à la création.
+- README : la section Supabase décrivait encore la clé `service_role`, supprimée en v1.3.0.
+- `FINTRACK_DATA_DIR` permet de placer la base et les logs dans un autre dossier (volume de conteneur).
+
+---
+
 ## [1.4.0] — 2026-09-06
 
 ### Ajouté
