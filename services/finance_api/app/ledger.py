@@ -5,6 +5,7 @@ saisies, synchronisation Épargne → Patrimoine, budgets, agrégats.
 from __future__ import annotations
 
 import logging
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -396,6 +397,7 @@ def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
             spent_cur[cats.get(e["category_id"], "?")] += e["amount"]
     budgets_cur = budget_status(repo, year, month, spent_cur)
     pat = patrimoine(repo)
+    an = analytics(repo, year, month, months=1)
     return {
         "period_end": f"{year}-{month:02d}", "months_with_data": len(mid_to_month),
         "per_month": per_month,
@@ -405,6 +407,9 @@ def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
                                    for k, v in b.items()} for b in budgets_cur],
         "patrimoine": {"by_type": pat["by_type"], "net_worth": round(pat["net_worth"], 2),
                        "liabilities_total": round(pat["total_liabilities"], 2)},
+        # Signaux déjà calculés (seuils prudents) : l'IA s'appuie dessus au
+        # lieu de deviner ce qui est « inhabituel ».
+        "unusual_this_month": {k: an[k] for k in ("unusual", "large_expenses")},
     }
 
 
@@ -553,3 +558,99 @@ def search(repo: Repo, kind: str, q: str = "", category_id: int | None = None,
         out.append(r)
     out.sort(key=lambda r: (r["year"], r["month"], r["id"]), reverse=True)
     return out[:limit]
+
+
+# ── Analyses : tendances, comparaisons, dépenses inhabituelles ──
+# Référence = les 6 mois précédents AYANT des données (un mois absent n'est
+# pas compté comme un mois à 0 €). Seuils volontairement prudents : une
+# alerte doit être rare pour rester utile.
+REF_MONTHS = 6
+UNUSUAL_RATIO = 1.5            # catégorie : mois courant ≥ 1,5 × la moyenne…
+UNUSUAL_MIN_DIFF = 30.0        # … et au moins 30 € au-dessus
+UNUSUAL_MIN_HISTORY = 3        # mois de référence avec données, au minimum
+LARGE_RATIO = 3.0              # dépense isolée ≥ 3 × la médiane de sa catégorie…
+LARGE_MIN_AMOUNT = 50.0        # … et ≥ 50 €
+LARGE_MIN_SAMPLES = 5          # dépenses de référence, au minimum
+
+
+def _period_months(repo: Repo, periods: set[tuple[int, int]]) -> dict[tuple[int, int], dict]:
+    rows = repo.select("months", {"year": in_filter(sorted({p[0] for p in periods}))})
+    return {(m["year"], m["month"]): m for m in rows if (m["year"], m["month"]) in periods}
+
+
+def analytics(repo: Repo, year: int, month: int, months: int = 12) -> dict:
+    cur = (year, month)
+    periods = [shift_month(year, month, -i) for i in range(months - 1, -1, -1)]
+    ref = [shift_month(year, month, -i) for i in range(1, REF_MONTHS + 1)]
+    yoy = (year - 1, month)
+    mo = _period_months(repo, set(periods) | set(ref) | {yoy})
+    id2p = {m["id"]: p for p, m in mo.items()}
+    ids = sorted(id2p)
+    cats = {c["id"]: c["name"] for c in categories(repo)}
+    exp = repo.rows_for_months("expenses", ids, "id,month_id,category_id,amount,label,payee")
+    totals: dict[str, dict[tuple[int, int], float]] = {
+        k: defaultdict(float) for k in ("rev", "exp", "sav")}
+    for table, key in (("revenues", "rev"), ("savings", "sav")):
+        for r in repo.rows_for_months(table, ids, "month_id,amount"):
+            totals[key][id2p[r["month_id"]]] += r["amount"]
+    by_cat: dict[str, dict[tuple[int, int], float]] = defaultdict(lambda: defaultdict(float))
+    samples: dict[str, list[float]] = defaultdict(list)       # dépenses de référence
+    months_with_exp: set[tuple[int, int]] = set()
+    for e in exp:
+        p = id2p[e["month_id"]]
+        name = cats.get(e["category_id"], "?")
+        by_cat[name][p] += e["amount"]
+        totals["exp"][p] += e["amount"]
+        months_with_exp.add(p)
+        if p in ref:
+            samples[name].append(e["amount"])
+    ref_data = [p for p in ref if p in months_with_exp]
+    n_ref = len(ref_data)
+
+    rows, unusual = [], []
+    for name, series in by_cat.items():
+        avg = sum(series[p] for p in ref_data) / n_ref if n_ref else 0.0
+        c = series[cur]
+        row = {"category": name, "current": round(c, 2), "prev": round(series[ref[0]], 2),
+               "yoy": round(series[yoy], 2), "average": round(avg, 2),
+               "series": [round(series[p], 2) for p in periods]}
+        if not any(row["series"]) and not row["yoy"]:
+            continue
+        row["unusual"] = (n_ref >= UNUSUAL_MIN_HISTORY and c >= avg * UNUSUAL_RATIO
+                          and c - avg >= UNUSUAL_MIN_DIFF)
+        if row["unusual"]:
+            unusual.append({"category": name, "spent": row["current"], "average": row["average"],
+                            "ratio": round(c / avg, 2) if avg else None})
+        rows.append(row)
+    rows.sort(key=lambda r: (-r["current"], -r["average"], r["category"]))
+    unusual.sort(key=lambda u: -(u["spent"] - u["average"]))
+
+    large = []
+    for e in exp:
+        if id2p[e["month_id"]] != cur:
+            continue
+        name = cats.get(e["category_id"], "?")
+        ref_samples = samples.get(name, [])
+        if len(ref_samples) < LARGE_MIN_SAMPLES:
+            continue
+        med = statistics.median(ref_samples)
+        if e["amount"] >= LARGE_MIN_AMOUNT and e["amount"] >= LARGE_RATIO * med:
+            large.append({"id": e["id"], "category": name, "amount": round(e["amount"], 2),
+                          "label": e.get("label") or "", "payee": e.get("payee") or "",
+                          "median": round(med, 2)})
+    large.sort(key=lambda x: -x["amount"])
+
+    def total(key: str, p: tuple[int, int]) -> float | None:
+        return round(totals[key][p], 2) if p in mo else None
+
+    return {
+        "year": year, "month": month, "reference_months": n_ref,
+        "per_month": [{"year": p[0], "month": p[1], "rev": round(totals["rev"][p], 2),
+                       "exp": round(totals["exp"][p], 2), "sav": round(totals["sav"][p], 2)}
+                      for p in periods],
+        "totals": {k: {"current": total(k, cur), "prev": total(k, ref[0]), "yoy": total(k, yoy),
+                       "average": round(sum(totals[k][p] for p in ref_data) / n_ref, 2)
+                       if n_ref else None}
+                   for k in ("rev", "exp", "sav")},
+        "categories": rows, "unusual": unusual, "large_expenses": large[:10],
+    }

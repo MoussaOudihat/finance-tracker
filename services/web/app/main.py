@@ -103,6 +103,19 @@ def _static_hashes(directory: str) -> dict[str, str]:
     return out
 
 
+def line_points(values: list[float], vmax: float, *, width: float = 100.0,
+                height: float = 40.0, pad: float = 2.0) -> str:
+    """Attribut `points` d'une polyline SVG (viewBox 0 0 width height)."""
+    if not values:
+        return ""
+    vmax = vmax or 1.0
+    step = width / max(len(values) - 1, 1)
+    def y(v: float) -> float:
+        ratio = min(max(v / vmax, 0.0), 1.0)         # écrêté : jamais hors du cadre
+        return height - pad - ratio * (height - 2 * pad)
+    return " ".join(f"{i * step:.2f},{y(v):.2f}" for i, v in enumerate(values))
+
+
 def parse_amount(raw: str) -> str:
     """Normalise la saisie ('1 234,50') ; la validation (> 0, fini) est
     faite par finance-api (pydantic : NaN/inf refusés)."""
@@ -526,6 +539,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
 
     @app.post("/parametres/notifications")
     def save_prefs(request: Request, budget_alerts: str = Form(""),
+                   unusual_alerts: str = Form(""),
                    reminder_enabled: str = Form(""), reminder_day: int = Form(1),
                    ntfy_url: str = Form(""), webhook_url: str = Form(""),
                    clear_ntfy: str = Form(""), clear_webhook: str = Form(""),
@@ -533,6 +547,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         sid, sess = load(request)
         check_csrf(sess, csrf)
         body = {"budget_alerts": budget_alerts == "1",
+                "unusual_alerts": unusual_alerts == "1",
                 "reminder_enabled": reminder_enabled == "1",
                 "reminder_day": max(1, min(reminder_day, 28)),
                 # champ vide = inchangé (les URLs enregistrées ne sont jamais réaffichées)
@@ -581,6 +596,54 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         call(sid, sess, "notifier", "DELETE", "/v1/ticktick")
         flash(sid, sess, "TickTick déconnecté.")
         return redirect("/parametres")
+
+    # ── Analyses ─────────────────────────────────────────────
+    @app.get("/analyses", response_class=HTMLResponse)
+    def analyses(request: Request, y: Optional[str] = None, m: Optional[str] = None):
+        sid, sess = load(request)
+        yy, mm = month_params(sid, sess, y, m)
+        an = call(sid, sess, "finance", "GET", "/v1/analytics",
+                  params={"year": yy, "month": mm, "months": 12})
+        pm = an["per_month"]
+        top = max((max(p["rev"], p["exp"], p["sav"]) for p in pm), default=0.0)
+        lines = {k: line_points([p[k] for p in pm], top) for k in ("rev", "exp", "sav")}
+        lines["max"] = top
+        sparks = {c["category"]: line_points(c["series"], max(c["series"]) or 1.0)
+                  for c in an["categories"]}
+        report = sess.get("report") or {}
+        return render(request, "analyses.html", sid, sess, active="analyses", y=yy, m=mm,
+                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), closed=False,
+                      an=an, lines=lines, sparks=sparks, ai_enabled=bool(sess.get("ai_consent")),
+                      period=f"{yy}-{mm:02d}", report=report,
+                      report_html=render_ai_text(report.get("text", "")))
+
+    @app.post("/analyses/bilan")
+    def analyses_report(request: Request, y: int = Form(...), m: int = Form(...),
+                        send: str = Form(""), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        yy, mm = month_params(sid, sess, str(y), str(m))
+        if not sess.get("ai_consent"):
+            raise BackendError(400, "Activez d'abord l'IA depuis la page « Assistant IA ».")
+        provider = sess.get("ai_provider") or "claude"
+        res = call(sid, sess, "ai", "POST", "/v1/insights", timeout=120.0,
+                   json={"provider": provider, "year": yy, "month": mm, "months": 3})
+        report = {"text": res["text"], "provider": provider, "period": f"{yy}-{mm:02d}",
+                  "sent": False}
+        message, kind = "Bilan généré.", "ok"
+        if send == "1":
+            try:
+                out = call(sid, sess, "notifier", "POST", "/v1/report",
+                           json={"year": yy, "month": mm, "text": res["text"]})
+                report["sent"] = True
+                message = "Bilan généré et envoyé sur vos notifications."
+                if out.get("failures"):
+                    message += f" Échec sur : {', '.join(out['failures'])}."
+            except BackendError as exc:              # le bilan reste affiché
+                message, kind = f"Bilan généré, mais non envoyé : {exc.message}", "error"
+        sessions.update(sid, report=report)
+        flash(sid, sess, message, kind)
+        return redirect(f"/analyses?y={yy}&m={mm}")
 
     # ── Thème ────────────────────────────────────────────────
     @app.post("/theme")

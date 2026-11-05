@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Annotated, Literal, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from fintrack_common.auth import TokenVerifier, User, user_dependency
@@ -182,6 +182,23 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
                    "category": chk.category, "threshold": max(crossed),
                    "spent": round(chk.after, 2), "budget": round(chk.budget, 2)})
 
+    def _check_unusual(r: Repo, year: int, month: int, categories: set[str]) -> None:
+        """Après la réponse (BackgroundTasks) : la saisie ne paie pas le coût
+        de l'analyse. Une alerte par catégorie et par mois (anti-doublon
+        côté notifier)."""
+        if notifier is None or not categories:
+            return
+        try:
+            an = ledger.analytics(r, year, month, months=1)
+        except Exception:                    # best effort, jamais d'erreur visible
+            log.warning("analyse des dépenses inhabituelles impossible", exc_info=True)
+            return
+        for u in an["unusual"]:
+            if u["category"] in categories:
+                _emit({"type": "spending.unusual", "user_id": r.user.id, "email": r.user.email,
+                       "year": year, "month": month, "category": u["category"],
+                       "spent": u["spent"], "average": u["average"]})
+
     # ── Lecture ──────────────────────────────────────────────
     @app.get("/v1/categories")
     def get_categories(r: Repo = Depends(repo)):
@@ -228,10 +245,11 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
 
     # ── Écriture ─────────────────────────────────────────────
     @app.post("/v1/expenses", status_code=201)
-    def post_expense(body: ExpenseIn, r: Repo = Depends(repo)):
+    def post_expense(body: ExpenseIn, bg: BackgroundTasks, r: Repo = Depends(repo)):
         row, chk = ledger.add_expense(r, body.year, body.month, body.category_id,
                                       body.amount, body.label, body.payee)
         _check_budget(r, chk)
+        bg.add_task(_check_unusual, r, body.year, body.month, {chk.category})
         return row
 
     @app.put("/v1/expenses/{entry_id}")
@@ -242,11 +260,12 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
         return row
 
     @app.post("/v1/expenses/batch", status_code=201)
-    def post_expenses_batch(body: ExpenseBatch, r: Repo = Depends(repo)):
+    def post_expenses_batch(body: ExpenseBatch, bg: BackgroundTasks, r: Repo = Depends(repo)):
         created, checks = ledger.add_expenses_batch(
             r, body.year, body.month, [row.model_dump() for row in body.rows])
         for chk in checks:
             _check_budget(r, chk)
+        bg.add_task(_check_unusual, r, body.year, body.month, {c.category for c in checks})
         return {"created": len(created)}
 
     @app.post("/v1/revenues/batch", status_code=201)
@@ -254,6 +273,12 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
         created = ledger.add_revenues_batch(r, body.year, body.month,
                                             [row.model_dump() for row in body.rows])
         return {"created": len(created)}
+
+    @app.get("/v1/analytics")
+    def get_analytics(year: Year, month: Month,
+                      months: Annotated[int, Query(ge=1, le=24)] = 12,
+                      r: Repo = Depends(repo)):
+        return ledger.analytics(r, year, month, months)
 
     @app.get("/v1/recurring")
     def get_recurring(year: Year, month: Month, r: Repo = Depends(repo)):
@@ -278,11 +303,12 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
         ledger.delete_recurring(r, rec_id)
 
     @app.post("/v1/recurring/apply")
-    def post_recurring_apply(body: ApplyIn, r: Repo = Depends(repo)):
+    def post_recurring_apply(body: ApplyIn, bg: BackgroundTasks, r: Repo = Depends(repo)):
         n, checks = ledger.apply_recurring(r, body.year, body.month,
                                            [i.model_dump() for i in body.items])
         for chk in checks:
             _check_budget(r, chk)
+        bg.add_task(_check_unusual, r, body.year, body.month, {c.category for c in checks})
         return {"applied": n}
 
     @app.get("/v1/search/{kind}")

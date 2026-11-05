@@ -18,7 +18,8 @@
         ('dashboard', '/', 'Tableau de bord'), ('depenses', '/depenses', 'Dépenses'),
         ('revenus', '/revenus', 'Revenus'), ('epargne', '/epargne', 'Épargne'),
         ('recurrentes', '/recurrentes', 'Récurrentes'), ('budgets', '/budgets', 'Budgets'),
-        ('patrimoine', '/patrimoine', 'Patrimoine'), ('recherche', '/recherche', 'Recherche'),
+        ('analyses', '/analyses', 'Analyses'), ('patrimoine', '/patrimoine', 'Patrimoine'),
+        ('recherche', '/recherche', 'Recherche'),
         ('ia', '/ia', 'Assistant IA'), ('parametres', '/parametres', 'Notifications')] %}
     <a href="{{ href }}" {% if active == key %}aria-current="page"{% endif %}>{{ label }}</a>
     {% endfor %}
