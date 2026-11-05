@@ -192,7 +192,7 @@ Dans votre projet Supabase → **Settings → API** :
 
 ## 🌐 Interface web — microservices (Docker / Kubernetes) — v2.0
 
-Accédez à Fintrack depuis un navigateur (mobile compris) avec **le même compte Supabase** que l'application desktop. Architecture détaillée : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Sécurité : [SECURITY.md](SECURITY.md).
+Accédez à Fintrack depuis un navigateur (mobile compris) avec **le même compte Supabase** que l'application desktop. Architecture détaillée : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Sécurité : [SECURITY.md](SECURITY.md) · Chaîne DevSecOps : [docs/DEVSECOPS.md](docs/DEVSECOPS.md).
 
 | Service | Rôle | État |
 |---|---|---|
