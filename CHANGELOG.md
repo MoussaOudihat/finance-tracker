@@ -6,6 +6,28 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [2.0.2] — 2026-11-05
+
+### Corrigé
+- ☸️ **`helm test` échouait** : le pod de test se présentait avec l'identité de `web`. Il était donc bloqué par les NetworkPolicies (web ne s'appelle pas lui-même), devenait un endpoint du Service `web` (risque de recevoir du trafic réel) et était compté par son PDB. Il a désormais sa propre identité (`fintrack-test`) et une NetworkPolicy dédiée, limitée à `web` et `finance-api`.
+- 📜 **Logs en partie en texte brut** : le démarrage et le journal d'accès d'uvicorn ne passaient pas par le formateur JSON. Tout est maintenant en JSON, et le journal d'accès uvicorn, en doublon du middleware (qui journalise chaque requête avec son `request_id`) et contenant l'IP client en clair, est désactivé.
+- 🔒 **bcrypt 5** : troncature explicite à 72 octets. Sans elle, un mot de passe ou une réponse secrète longue bloquait la connexion à l'app desktop.
+
+### Mises à jour
+- customtkinter 6.0, supabase 2.33+, openpyxl 3.1.5, bcrypt 5, Redis 8.10 (Compose et chart Helm alignés).
+- Toutes les GitHub Actions passent sur Node.js 24 (Node 20 est déprécié).
+- Release : une seule release à la fois par tag ; la GitHub Release n'est publiée qu'en dernier, si tout a réussi.
+
+Validé sur un cluster kind (3 nœuds, kindnet) : pods répartis sur les workers, NetworkPolicies effectivement appliquées, durcissement des conteneurs et signatures cosign v3 vérifiés.
+
+---
+
+## [2.0.1] — 2026-11-05
+
+Publiée par erreur avant la fusion de ses correctifs : contenu fonctionnellement **identique à 2.0.0**. Utiliser **2.0.2**.
+
+---
+
 ## [2.0.0] — 2026-11-04
 
 ### Ajouté

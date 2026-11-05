@@ -44,4 +44,17 @@ def setup_logging(service: str) -> logging.Logger:
     root.setLevel(level)
     for name in _NOISY:
         logging.getLogger(name).setLevel(logging.WARNING)
+    # uvicorn installe ses propres handlers texte au démarrage (avant l'import
+    # de l'application) : on les retire pour que tout passe par le JSON.
+    for name in ("uvicorn", "uvicorn.error"):
+        lg = logging.getLogger(name)
+        lg.handlers.clear()
+        lg.propagate = True
+    # Journal d'accès uvicorn désactivé : doublon du middleware de requêtes
+    # (fintrack_common.http), qui journalise déjà chaque requête avec son
+    # request_id — et sans l'IP client en clair.
+    access = logging.getLogger("uvicorn.access")
+    access.handlers.clear()
+    access.propagate = False
+    access.disabled = True
     return logging.getLogger(service)
