@@ -6,7 +6,7 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
-## [2.0.1] — 2026-11-05
+## [2.0.2] — 2026-11-05
 
 ### Corrigé
 - ☸️ **`helm test` échouait** : le pod de test se présentait avec l'identité de `web`. Il était donc bloqué par les NetworkPolicies (web ne s'appelle pas lui-même), devenait un endpoint du Service `web` (risque de recevoir du trafic réel) et était compté par son PDB. Il a désormais sa propre identité (`fintrack-test`) et une NetworkPolicy dédiée, limitée à `web` et `finance-api`.
@@ -19,6 +19,12 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 - Release : une seule release à la fois par tag ; la GitHub Release n'est publiée qu'en dernier, si tout a réussi.
 
 Validé sur un cluster kind (3 nœuds, kindnet) : pods répartis sur les workers, NetworkPolicies effectivement appliquées, durcissement des conteneurs et signatures cosign v3 vérifiés.
+
+---
+
+## [2.0.1] — 2026-11-05
+
+Publiée par erreur avant la fusion de ses correctifs : contenu fonctionnellement **identique à 2.0.0**. Utiliser **2.0.2**.
 
 ---
 
