@@ -188,3 +188,4 @@ details.card[open] > summary { margin-bottom: .75rem; }
 .grid .input-sm { min-width: 6rem; }
 tr.row-error td { background: var(--red-soft); }
 tr.row-error-msg td { border-top: 0; padding-top: 0; }
+.badge-ai { color: var(--primary); border-color: var(--primary); white-space: nowrap; }

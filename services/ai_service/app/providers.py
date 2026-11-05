@@ -121,13 +121,11 @@ class Providers:
         return text
 
     # ── Choix contraint dans une liste (catégorisation) ──────
-    def choose(self, provider: str, system: str, prompt: str, choices: list[str]) -> str:
-        schema = {
-            "type": "object",
-            "properties": {"category": {"type": "string", "enum": choices}},
-            "required": ["category"],
-            "additionalProperties": False,
-        }
+    def _structured(self, provider: str, system: str, prompt: str, schema: dict,
+                    gemini_schema: dict, gemini_max_tokens: int = 256) -> dict:
+        """Réponse JSON contrainte par un schéma (sortie structurée). Le
+        résultat reste à valider par l'appelant : on ne fait jamais
+        confiance à la sortie brute."""
         if provider == "claude":
             import anthropic
             try:
@@ -155,12 +153,9 @@ class Providers:
                 resp = self._gem().models.generate_content(
                     model=self.cfg.gemini_model, contents=prompt,
                     config=types.GenerateContentConfig(
-                        system_instruction=system, max_output_tokens=256,
+                        system_instruction=system, max_output_tokens=gemini_max_tokens,
                         response_mime_type="application/json",
-                        response_schema={"type": "OBJECT",
-                                         "properties": {"category": {"type": "STRING",
-                                                                     "enum": choices}},
-                                         "required": ["category"]},
+                        response_schema=gemini_schema,
                     ),
                 )
             except Exception as exc:
@@ -169,9 +164,57 @@ class Providers:
         else:
             raise ProviderError("Fournisseur inconnu.")
         try:
-            value = json.loads(raw).get("category", "")
-        except (json.JSONDecodeError, AttributeError):
-            value = ""
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = None
+        return data if isinstance(data, dict) else {}
+
+    def choose(self, provider: str, system: str, prompt: str, choices: list[str]) -> str:
+        schema = {
+            "type": "object",
+            "properties": {"category": {"type": "string", "enum": choices}},
+            "required": ["category"],
+            "additionalProperties": False,
+        }
+        gemini = {"type": "OBJECT",
+                  "properties": {"category": {"type": "STRING", "enum": choices}},
+                  "required": ["category"]}
+        value = self._structured(provider, system, prompt, schema, gemini).get("category", "")
         if value not in choices:        # on ne fait jamais confiance à la sortie brute
             raise ProviderError("Catégorie non reconnue.")
         return value
+
+    def choose_many(self, provider: str, system: str, prompt: str, choices: list[str],
+                    count: int) -> list[str | None]:
+        """Une catégorie par élément numéroté 0..count-1, en UN appel. Les
+        contraintes de taille de tableau ne sont pas exprimables dans le
+        schéma : index hors plage, doublons ou valeurs inconnues sont écartés
+        ici (élément laissé à None)."""
+        schema = {
+            "type": "object",
+            "properties": {"items": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"i": {"type": "integer"},
+                               "category": {"type": "string", "enum": choices}},
+                "required": ["i", "category"],
+                "additionalProperties": False}}},
+            "required": ["items"],
+            "additionalProperties": False,
+        }
+        gemini = {"type": "OBJECT", "properties": {"items": {"type": "ARRAY", "items": {
+            "type": "OBJECT",
+            "properties": {"i": {"type": "INTEGER"},
+                           "category": {"type": "STRING", "enum": choices}},
+            "required": ["i", "category"]}}}, "required": ["items"]}
+        data = self._structured(provider, system, prompt, schema, gemini,
+                                gemini_max_tokens=64 + 40 * count)
+        out: list[str | None] = [None] * count
+        items = data.get("items")
+        for it in items if isinstance(items, list) else []:
+            if not isinstance(it, dict):
+                continue
+            i, cat = it.get("i"), it.get("category")
+            if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < count \
+                    and out[i] is None and cat in choices:
+                out[i] = cat
+        return out

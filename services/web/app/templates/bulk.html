@@ -9,6 +9,7 @@
 {% else %}
 
 {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+{% for i in infos %}<div class="flash flash-ok" role="status">{{ i }}</div>{% endfor %}
 {% for w in warnings %}<div class="flash flash-error" role="note">{{ w }}</div>{% endfor %}
 
 <details class="card" {% if not rows_filled %}open{% endif %}>
@@ -26,6 +27,14 @@
       sinon le montant et {% if section == 'depenses' %}la catégorie sont détectés{% else %}la source est déduite{% endif %} automatiquement.
       Les dates sont ignorées, les montants négatifs des relevés pris en valeur absolue. {{ max_rows }} lignes max.
     </p>
+    {% if section == 'depenses' %}
+    {% if ai_enabled %}
+    <label class="check"><input type="checkbox" name="ai" value="1" checked>
+      ✨ Suggérer par IA les catégories non reconnues ({{ ai_max }} lignes max, compte pour une requête IA)</label>
+    {% else %}
+    <p class="muted small">Astuce : <a href="/ia">activez l'assistant IA</a> pour que les catégories non reconnues soient suggérées automatiquement.</p>
+    {% endif %}
+    {% endif %}
     <div class="row"><button type="submit" class="btn btn-primary">Prévisualiser</button></div>
   </form>
 </details>
@@ -58,7 +67,7 @@
           <td><select name="cat" aria-label="Catégorie ligne {{ i + 1 }}">
             <option value="">— choisir —</option>
             {% for c in categories %}<option value="{{ c.id }}" {% if r.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
-          </select></td>
+          </select>{% if r.suggested %} <span class="badge badge-ai" title="Suggérée par l'IA : à vérifier">✨ IA</span>{% endif %}</td>
           {% endif %}
           <td class="num"><input class="input-sm" name="amount" value="{{ r.amount }}" inputmode="decimal"
               aria-label="Montant ligne {{ i + 1 }}"></td>
@@ -82,6 +91,9 @@
       seule fois : si une ligne est refusée, rien n'est écrit.</p>
     <div class="row">
       <button type="submit" class="btn btn-primary">Enregistrer les lignes</button>
+      {% if section == 'depenses' and ai_enabled %}
+      <button type="submit" class="btn btn-ghost" formaction="/depenses/saisie/suggestion">✨ Suggérer les catégories manquantes</button>
+      {% endif %}
       <a class="btn btn-ghost" href="/{{ section }}?y={{ y }}&m={{ m }}">Annuler</a>
     </div>
   </form>

@@ -18,6 +18,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 MAX_ROWS = 200                 # limite de l'API (une seule insertion)
+AI_BATCH_MAX = 50              # lignes envoyées à l'IA par suggestion (1 requête du quota)
 MAX_PASTE_CHARS = 100_000
 GRID_BLANK_ROWS = 12
 
@@ -81,6 +82,7 @@ class Row:
     label: str = ""
     extra: str = ""                  # enseigne (dépense) ou source (revenu)
     keep: bool = True
+    suggested: bool = False          # catégorie proposée par l'IA (à vérifier)
     errors: list[str] = field(default_factory=list)
 
     @property

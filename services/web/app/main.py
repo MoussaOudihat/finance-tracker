@@ -744,8 +744,42 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
     # ── Saisie en masse (dépenses, revenus) ──────────────────
     BULK_SECTIONS = ("depenses", "revenus")
 
+    def suggest_categories(sid, sess, rows: list) -> tuple[list[str], list[str]]:
+        """Catégories manquantes proposées par l'IA, en UN appel (une requête
+        du quota quotidien). Jamais bloquant : en cas d'échec, la grille
+        reste telle quelle avec un avertissement. -> (infos, avertissements)"""
+        missing = [r for r in rows if r.keep and not r.blank and r.category_id is None
+                   and (r.label.strip() or r.extra.strip())]
+        if not missing:
+            return [], []
+        if not sess.get("ai_consent"):
+            return [], ["Activez d'abord l'IA depuis la page « Assistant IA » pour obtenir "
+                        "des suggestions de catégorie."]
+        todo = missing[:bulk.AI_BATCH_MAX]
+        try:
+            res = call(sid, sess, "ai", "POST", "/v1/categorize/batch", timeout=90.0, json={
+                "provider": sess.get("ai_provider") or "claude",
+                "items": [{"label": r.label[:120], "payee": r.extra[:60]} for r in todo]})
+        except BackendError as exc:
+            return [], [f"Suggestion IA indisponible : {exc.message}"]
+        found = 0
+        for r, s in zip(todo, res.get("results") or [], strict=False):
+            if s and s.get("category_id") is not None:
+                r.category_id, r.suggested = int(s["category_id"]), True
+                found += 1
+        infos = [f"✨ {found} catégorie(s) suggérée(s) par l'IA, signalée(s) par « IA » : "
+                 "vérifiez-les avant d'enregistrer."] if found else []
+        warns = []
+        if len(missing) > len(todo):
+            warns.append(f"Suggestion limitée aux {bulk.AI_BATCH_MAX} premières lignes : "
+                         "relancez « Suggérer » pour les suivantes.")
+        if found < len(todo):
+            warns.append(f"{len(todo) - found} ligne(s) sans suggestion : catégorie à choisir.")
+        return infos, warns
+
     def bulk_page(request, sid, sess, section, yy, mm, rows, *, categories, payees=(),
-                  closed=False, paste="", warnings=(), error=None, status_code=200):
+                  closed=False, paste="", warnings=(), error=None, status_code=200,
+                  infos=()):
         filled = any(not r.blank for r in rows)
         grid = rows + [bulk.Row() for _ in range(3 if filled else bulk.GRID_BLANK_ROWS)]
         return render(request, "bulk.html", sid, sess, status_code=status_code, active=section,
@@ -753,6 +787,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
                       prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
                       closed=closed, rows=grid, rows_filled=filled, categories=categories,
                       payees=payees, paste=paste, warnings=list(warnings), error=error,
+                      infos=list(infos), ai_enabled=bool(sess.get("ai_consent")), ai_max=bulk.AI_BATCH_MAX,
                       max_rows=bulk.MAX_ROWS, max_paste=bulk.MAX_PASTE_CHARS)
 
     @app.get("/{section}/saisie", response_class=HTMLResponse)
@@ -772,7 +807,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
 
     @app.post("/{section}/saisie/apercu", response_class=HTMLResponse)
     def bulk_preview(request: Request, section: str, y: int = Form(...), m: int = Form(...),
-                     paste: str = Form(""), csrf: str = Form("")):
+                     paste: str = Form(""), ai: str = Form(""), csrf: str = Form("")):
         if section not in BULK_SECTIONS:
             return Response(status_code=404)
         sid, sess = load(request)
@@ -785,9 +820,36 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
                              status_code=413, error="Collage trop volumineux : découpez-le en "
                              f"plusieurs fois ({bulk.MAX_ROWS} lignes max).")
         rows, warnings = bulk.parse_paste(paste, kind, cats)
+        infos: list[str] = []
+        if ai == "1" and kind == "expenses":
+            infos, more = suggest_categories(sid, sess, rows)
+            warnings += more
         bulk.validate(rows, kind, cats)            # signale les lignes à corriger
         return bulk_page(request, sid, sess, section, yy, mm, rows, categories=cats,
-                         paste=paste, warnings=warnings)
+                         paste=paste, warnings=warnings, infos=infos)
+
+    @app.post("/depenses/saisie/suggestion", response_class=HTMLResponse)
+    def bulk_suggest(request: Request, y: int = Form(...), m: int = Form(...),
+                     keep: list[str] = Form([]), amount: list[str] = Form([]),
+                     cat: list[str] = Form([]), label: list[str] = Form([]),
+                     extra: list[str] = Form([]), csrf: str = Form("")):
+        """Bouton « Suggérer » de la grille : complète les catégories
+        manquantes sans rien enregistrer."""
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        yy, mm = month_params(sid, sess, str(y), str(m))
+        try:
+            rows = bulk.rows_from_form(keep, amount, cat, label, extra)
+        except ValueError as exc:
+            raise BackendError(400, str(exc)) from None
+        cats = call(sid, sess, "finance", "GET", "/v1/categories")
+        rows = [r for r in rows if not r.blank]
+        infos, warnings = suggest_categories(sid, sess, rows)
+        if not infos and not warnings:
+            infos = ["Aucune catégorie manquante à suggérer."]
+        bulk.validate(rows, "expenses", cats)
+        return bulk_page(request, sid, sess, "depenses", yy, mm, rows, categories=cats,
+                         infos=infos, warnings=warnings)
 
     @app.post("/{section}/saisie", response_class=HTMLResponse)
     def bulk_save(request: Request, section: str, y: int = Form(...), m: int = Form(...),

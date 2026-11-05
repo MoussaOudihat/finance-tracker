@@ -142,3 +142,70 @@ def test_bulk_guards(setup):  # noqa: F811
     r = c.post("/depenses/saisie/apercu", data={"y": 2026, "m": 11, "csrf": tok,
                                                "paste": "<script>alert(1)</script>\t5"})
     assert "<script>alert" not in r.text
+
+
+# ── Suggestion IA des catégories ─────────────────────────────
+
+def _with_ai(c, sessions, *, consent=True, fail=False):
+    """Branche un faux ai-service et (dés)active le consentement IA."""
+    import json as _json
+
+    import httpx
+
+    from fintrack_common.http import service_client
+    calls = []
+
+    def ai(request):
+        body = _json.loads(request.content)
+        calls.append(body)
+        if fail:
+            return httpx.Response(429, json={"detail": "Limite quotidienne de 40 requêtes IA atteinte."})
+        res = [{"category_id": 4, "category": "RESTAURANTS"} if "pizz" in it["label"].lower()
+               else None for it in body["items"]]
+        return httpx.Response(200, json={"provider": "claude", "results": res})
+
+    c.app.state.backends.clients["ai"] = service_client("http://ai", transport=httpx.MockTransport(ai))
+    sessions.update(c.cookies["fintrack_sid"], ai_consent=consent, ai_provider="gemini")
+    return calls
+
+
+def test_paste_with_ai_suggestion(setup):  # noqa: F811
+    c, _, sessions = setup
+    login(c)
+    calls = _with_ai(c, sessions)
+    page = c.get("/depenses/saisie?y=2026&m=11").text
+    assert 'name="ai" value="1" checked' in page
+    r = c.post("/depenses/saisie/apercu", data={
+        "y": 2026, "m": 11, "ai": "1", "csrf": csrf(page),
+        "paste": "ALIMENTATION\t10\tCourses\n12\tPizzeria du coin\n7\tTruc bizarre"})
+    assert r.status_code == 200
+    assert len(calls) == 1 and calls[0]["provider"] == "gemini"
+    assert [it["label"] for it in calls[0]["items"]] == ["Pizzeria du coin", "Truc bizarre"]
+    assert "1 catégorie(s) suggérée(s)" in r.text and "✨ IA" in r.text
+    assert "1 ligne(s) sans suggestion" in r.text
+    assert re.search(r'<option value="4" selected>RESTAURANTS', r.text)
+    # sans la case : aucun appel à l'IA
+    c.post("/depenses/saisie/apercu", data={"y": 2026, "m": 11, "csrf": csrf(page),
+                                           "paste": "12\tPizza"})
+    assert len(calls) == 1
+
+
+def test_grid_suggest_button_and_failures(setup):  # noqa: F811
+    c, _, sessions = setup
+    login(c)
+    calls = _with_ai(c, sessions)
+    tok = csrf(c.get("/depenses/saisie?y=2026&m=11").text)
+    form = {"y": 2026, "m": 11, "keep": ["0", "1"], "amount": ["9", ""], "cat": ["", ""],
+            "label": ["Pizza", ""], "extra": ["", ""], "csrf": tok}
+    r = c.post("/depenses/saisie/suggestion", data=form)
+    assert r.status_code == 200 and "✨ IA" in r.text and len(calls) == 1
+    assert "Rien de saisi" in c.get("/depenses?y=2026&m=11").text      # rien enregistré
+    # quota atteint : avertissement, la grille reste intacte
+    _with_ai(c, sessions, fail=True)
+    r = c.post("/depenses/saisie/suggestion", data=form)
+    assert r.status_code == 200 and "Suggestion IA indisponible" in r.text and 'value="Pizza"' in r.text
+    # sans consentement : pas d'appel, une explication
+    calls = _with_ai(c, sessions, consent=False)
+    r = c.post("/depenses/saisie/suggestion", data=form)
+    assert calls == [] and "Activez d" in r.text
+    assert "formaction" not in c.get("/depenses/saisie?y=2026&m=11").text
