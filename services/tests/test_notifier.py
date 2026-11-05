@@ -160,3 +160,77 @@ def test_slack_format_only_for_real_slack_hosts():
     ch.webhook("https://hooks.slack.com/services/x", Message("t", "b"))
     ch.webhook("https://evilslack.com/x", Message("t", "b"))
     assert b'"text"' in sent[0].content and b'"content"' in sent[1].content
+
+
+# ── Dépenses inhabituelles, bilan IA ─────────────────────────
+
+UNUSUAL = {"type": "spending.unusual", "user_id": "u1", "year": 2026, "month": 10,
+           "category": "ALIMENTATION", "spent": 310.0, "average": 100.0}
+
+
+def test_unusual_event_sent_once_and_can_be_disabled(env):
+    c, rec, store, _ = env
+    c.put("/v1/prefs", headers=H, json={"ntfy_url": "https://ntfy.sh/t"})
+    hdr = {"X-Internal-Token": INTERNAL}
+    r = c.post("/internal/v1/events", json=UNUSUAL, headers=hdr)
+    assert r.json()["status"] == "sent"
+    sent = [x for x in rec.calls if x.url.host == "ntfy.sh"][-1]
+    import json as _json
+    payload = _json.loads(sent.content)
+    assert payload["title"] == "Dépenses inhabituelles : ALIMENTATION"
+    assert "310,00" in payload["message"] and "100,00" in payload["message"]
+    assert c.post("/internal/v1/events", json=UNUSUAL, headers=hdr).json()["status"] == "duplicate"
+    # désactivé : rien n'est envoyé ; les autres préférences ne bougent pas
+    c.put("/v1/prefs", headers=H, json={"unusual_alerts": False})
+    assert store.get("u1").ntfy_url and store.get("u1").budget_alerts
+    other = {**UNUSUAL, "category": "LOISIRS"}
+    assert c.post("/internal/v1/events", json=other, headers=hdr).json()["status"] == "disabled"
+    # un PUT sans le champ ne le réactive pas
+    c.put("/v1/prefs", headers=H, json={"budget_alerts": True})
+    assert c.get("/v1/prefs", headers=H).json()["unusual_alerts"] is False
+    assert c.post("/internal/v1/events", json={**UNUSUAL, "type": "bogus"},
+                  headers=hdr).status_code == 422
+
+
+def test_report_needs_channel_and_is_rate_limited(env):
+    c, rec, *_ = env
+    body = {"year": 2026, "month": 10, "text": "- **Bien** : épargne en hausse"}
+    assert c.post("/v1/report", json=body).status_code == 401
+    assert c.post("/v1/report", headers=H, json=body).status_code == 409       # aucun canal
+    c.put("/v1/prefs", headers=H, json={"ntfy_url": "https://ntfy.sh/t"})
+    for _ in range(5):
+        assert c.post("/v1/report", headers=H, json=body).status_code == 200
+    assert b"**" not in [x for x in rec.calls if x.url.host == "ntfy.sh"][-1].content
+    assert c.post("/v1/report", headers=H, json=body).status_code == 429
+    assert c.post("/v1/report", headers=H, json={**body, "text": "x" * 6001}).status_code == 422
+
+
+def test_report_failure_does_not_consume_quota(env):
+    c, rec, *_ = env
+    c.put("/v1/prefs", headers=H, json={"ntfy_url": "https://ntfy.sh/t"})
+    rec.fail = True
+    body = {"year": 2026, "month": 10, "text": "bilan"}
+    for _ in range(6):
+        assert c.post("/v1/report", headers=H, json=body).status_code == 502
+    rec.fail = False
+    assert c.post("/v1/report", headers=H, json=body).status_code == 200
+
+
+def test_store_migrates_old_database(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.execute("""CREATE TABLE prefs (user_id TEXT PRIMARY KEY, email TEXT DEFAULT '',
+        budget_alerts INTEGER DEFAULT 1, reminder_enabled INTEGER DEFAULT 0,
+        reminder_day INTEGER DEFAULT 1, ticktick_token TEXT DEFAULT '',
+        ticktick_project TEXT DEFAULT '', ntfy_url TEXT DEFAULT '', webhook_url TEXT DEFAULT '',
+        updated_at REAL DEFAULT 0)""")
+    con.execute("INSERT INTO prefs(user_id, budget_alerts) VALUES('old', 0)")
+    con.commit()
+    con.close()
+    st = Store(path, Fernet.generate_key().decode())
+    p = st.get("old")
+    assert p.unusual_alerts is True and p.budget_alerts is False
+    p.unusual_alerts = False
+    st.save(p)
+    assert Store(path, Fernet.generate_key().decode()).get("old").unusual_alerts is False

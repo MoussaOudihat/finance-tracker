@@ -25,7 +25,7 @@ flowchart LR
 |---|---|
 | **Un propriétaire par donnée** | Seul finance-api lit/écrit les données financières ; notifier possède ses préférences ; web ne possède que les sessions. |
 | **Identité propagée, jamais supposée** | Le JWT Supabase de l'utilisateur est transmis à chaque appel et **vérifié localement par chaque service** (JWKS ES256 : signature, expiration, émetteur, audience). PostgreSQL applique ensuite la RLS : même un service compromis ne voit que les lignes de l'utilisateur dont il porte le jeton. |
-| **Moindre privilège** | Aucune clé `service_role`. Appel service → service sans utilisateur (finance-api → notifier) : secret partagé dédié. Clés IA uniquement dans ai-service, secret TickTick uniquement dans notifier. |
+| **Moindre privilège** | Aucune clé `service_role`. Appel service → service sans utilisateur (finance-api → notifier) : secret partagé dédié. Clés IA uniquement dans ai-service, secret TickTick uniquement dans notifier. Conséquence assumée : aucun traitement planifié ne lit les données financières (le bilan IA est généré à la demande, les alertes partent lors d'une saisie). |
 | **Sans état quand c'est possible** | web, finance-api, ai-service : réplicables (HPA). notifier (planificateur + SQLite) et Redis : 1 instance. |
 | **Défaillance isolée** | web fonctionne sans ai-service / notifier (fonctions masquées) ; une alerte qui échoue n'empêche jamais une saisie. |
 | **Données minimales vers l'IA** | ai-service ne reçoit qu'un contexte agrégé (totaux, moyennes, top postes), jamais les opérations une à une ; consentement explicite dans l'interface ; sortie de catégorisation validée contre la liste réelle. |

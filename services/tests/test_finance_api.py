@@ -241,3 +241,59 @@ def test_search_is_isolated_per_user(api, user_id):
         "year": 2026, "month": 1, "category_id": 1, "amount": 5, "label": "secret"})
     other = str(uuid.uuid4())
     assert api.get("/v1/search/expenses?q=secret", headers=h(other)).json() == []
+
+
+# ── Analyses et dépenses inhabituelles ───────────────────────
+
+def _add(api, uid, y, m, cat, amount, label=""):
+    r = api.post("/v1/expenses", headers=h(uid), json={
+        "year": y, "month": m, "category_id": cat, "amount": amount, "label": label})
+    assert r.status_code == 201, r.text
+
+
+def _history(api, uid):
+    """Avril → septembre 2026 : alimentation ~100 €/mois, loyer 800 €,
+    restaurants 4 × 20 €/mois ; octobre 2025 pour la comparaison annuelle."""
+    for m in range(4, 10):
+        _add(api, uid, 2026, m, 1, 100)
+        _add(api, uid, 2026, m, 3, 800)
+        for _ in range(4):
+            _add(api, uid, 2026, m, 4, 20)
+    _add(api, uid, 2025, 10, 1, 90)
+
+
+def test_analytics_trends_comparisons_and_anomalies(api, user_id, notifier):
+    _history(api, user_id)
+    _add(api, user_id, 2026, 10, 1, 310)             # alimentation ×3,1 et +210 €
+    _add(api, user_id, 2026, 10, 3, 800)
+    _add(api, user_id, 2026, 10, 4, 150, "Anniversaire")   # dépense isolée ≥ 3 × médiane (20)
+    an = api.get("/v1/analytics?year=2026&month=10", headers=h(user_id)).json()
+    assert len(an["per_month"]) == 12 and an["per_month"][-1]["exp"] == 1260
+    assert an["reference_months"] == 6
+    assert an["totals"]["exp"]["prev"] == 980 and an["totals"]["exp"]["yoy"] == 90
+    assert an["totals"]["exp"]["average"] == 980
+    cats = {c["category"]: c for c in an["categories"]}
+    assert cats["ALIMENTATION"]["unusual"] and not cats["LOGEMENT"]["unusual"]
+    assert cats["ALIMENTATION"]["yoy"] == 90 and cats["ALIMENTATION"]["series"][-1] == 310
+    assert [u["category"] for u in an["unusual"]] == ["ALIMENTATION", "RESTAURANTS"]
+    # la dépense qui explique l'anomalie est aussi désignée (triées par montant)
+    assert [(e["amount"], e["label"]) for e in an["large_expenses"]] == [(310, ""), (150, "Anniversaire")]
+    # le contexte IA reprend ces signaux
+    ctx = api.get("/v1/ai-context?year=2026&month=10&months=3", headers=h(user_id)).json()
+    assert ctx["unusual_this_month"]["unusual"][0]["category"] == "ALIMENTATION"
+    # alerte automatique, une fois par catégorie (en tâche de fond, après la réponse)
+    unusual = [e for e in notifier.events if e["type"] == "spending.unusual"]
+    assert {e["category"] for e in unusual} == {"ALIMENTATION", "RESTAURANTS"}
+    assert all(e["user_id"] == user_id and e["month"] == 10 for e in unusual)
+
+
+def test_analytics_needs_enough_history(api, user_id, notifier):
+    for m in (8, 9):
+        _add(api, user_id, 2026, m, 1, 50)
+    _add(api, user_id, 2026, 10, 1, 500)
+    an = api.get("/v1/analytics?year=2026&month=10&months=3", headers=h(user_id)).json()
+    assert an["reference_months"] == 2 and an["unusual"] == [] and an["large_expenses"] == []
+    assert not any(e["type"] == "spending.unusual" for e in notifier.events)
+    assert api.get("/v1/analytics?year=2026&month=10&months=25", headers=h(user_id)).status_code == 422
+    empty = api.get("/v1/analytics?year=2020&month=1", headers=h(user_id)).json()
+    assert empty["categories"] == [] and empty["totals"]["exp"]["current"] is None

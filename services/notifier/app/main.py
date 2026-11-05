@@ -4,7 +4,9 @@ notifier — Notifications Fintrack : TickTick, ntfy, Discord/Slack.
   • API utilisateur (jeton Supabase) : préférences, connexion TickTick
     (OAuth2), choix de la liste TickTick, envoi de test.
   • API interne (X-Internal-Token) : événements émis par finance-api
-    (franchissement de budget 80 % / 100 %), avec anti-doublon.
+    (franchissement de budget 80 % / 100 %, dépense inhabituelle), avec
+    anti-doublon.
+  • Bilan IA du mois, envoyé à la demande de l'utilisateur (5 par jour).
   • Planificateur : rappel mensuel de saisie, le jour choisi.
 
 Avec état (SQLite sur volume) et planificateur : 1 seul réplica.
@@ -15,10 +17,10 @@ import calendar
 import contextlib
 import datetime as dt
 import threading
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from fintrack_common.auth import TokenVerifier, User, internal_dependency, user_dependency
@@ -34,8 +36,12 @@ log = setup_logging("notifier")
 
 
 
+REPORTS_PER_DAY = 5
+
+
 class PrefsIn(BaseModel):
     budget_alerts: bool = True
+    unusual_alerts: Optional[bool] = None          # None = inchangé
     reminder_enabled: bool = False
     reminder_day: Annotated[int, Field(ge=1, le=28)] = 1
     # None = inchangé ; "" = supprimer ; sinon nouvelle URL (validée)
@@ -49,7 +55,7 @@ class CallbackIn(BaseModel):
     state: Annotated[str, Field(min_length=1, max_length=128)]
 
 
-class EventIn(BaseModel):
+class BudgetEvent(BaseModel):
     type: Literal["budget.threshold"]
     user_id: Annotated[str, Field(min_length=1, max_length=64)]
     email: str = ""
@@ -59,6 +65,26 @@ class EventIn(BaseModel):
     threshold: Literal[80, 100]
     spent: float
     budget: float
+
+
+class UnusualEvent(BaseModel):
+    type: Literal["spending.unusual"]
+    user_id: Annotated[str, Field(min_length=1, max_length=64)]
+    email: str = ""
+    year: int
+    month: Annotated[int, Field(ge=1, le=12)]
+    category: Annotated[str, Field(max_length=60)]
+    spent: float
+    average: float
+
+
+EventIn = Annotated[Union[BudgetEvent, UnusualEvent], Field(discriminator="type")]
+
+
+class ReportIn(BaseModel):
+    year: Annotated[int, Field(ge=2000, le=2100)]
+    month: Annotated[int, Field(ge=1, le=12)]
+    text: Annotated[str, Field(min_length=1, max_length=6000)]
 
 
 def dispatch(ch: Channels, p: Prefs, msg: Message, *, due: dt.date | None = None) -> list[str]:
@@ -174,6 +200,8 @@ def create_app(*, verifier: Optional[TokenVerifier] = None, store: Optional[Stor
         p = st.get(user.id)
         p.email = user.email
         p.budget_alerts, p.reminder_enabled = body.budget_alerts, body.reminder_enabled
+        if body.unusual_alerts is not None:
+            p.unusual_alerts = body.unusual_alerts
         p.reminder_day = body.reminder_day
         try:
             if body.ntfy_url is not None:
@@ -194,6 +222,27 @@ def create_app(*, verifier: Optional[TokenVerifier] = None, store: Optional[Stor
             raise HTTPException(409, "Aucun canal configuré.")
         failures = dispatch(ch, p, Message("Fintrack : notification de test",
                                            "Vos notifications Fintrack fonctionnent."))
+        return {"failures": failures}
+
+    @app.post("/v1/report")
+    def send_report(body: ReportIn, user: User = Depends(current_user)):
+        """Bilan IA du mois, généré à la demande (le service n'a pas accès aux
+        données hors requête de l'utilisateur : pas d'envoi planifié)."""
+        p = st.get(user.id)
+        if not (p.ticktick_token or p.ntfy_url or p.webhook_url):
+            raise HTTPException(409, "Aucun canal de notification configuré.")
+        day = dt.date.today().isoformat()
+        key = next((f"report:{user.id}:{day}:{i}" for i in range(REPORTS_PER_DAY)
+                    if st.mark_once(f"report:{user.id}:{day}:{i}")), None)
+        if key is None:
+            raise HTTPException(429, f"{REPORTS_PER_DAY} bilans envoyés aujourd'hui : "
+                                     "réessayez demain.")
+        msg = Message(title=f"Fintrack : bilan {month_name(body.month)} {body.year}",
+                      body=body.text.replace("**", "").strip(), priority=0)
+        failures = dispatch(ch, p, msg)
+        if not delivered(failures, p):
+            st.unmark(key)
+            raise HTTPException(502, "Envoi impossible sur tous les canaux configurés.")
         return {"failures": failures}
 
     # ── TickTick (OAuth2) ────────────────────────────────────
@@ -237,8 +286,10 @@ def create_app(*, verifier: Optional[TokenVerifier] = None, store: Optional[Stor
 
     # ── Événements internes ──────────────────────────────────
     @app.post("/internal/v1/events", dependencies=[Depends(internal)], status_code=202)
-    def on_event(ev: EventIn):
+    def on_event(ev: EventIn = Body(...)):
         p = st.get(ev.user_id)
+        if isinstance(ev, UnusualEvent):
+            return on_unusual(ev, p)
         if not p.budget_alerts:
             return {"status": "disabled"}
         key = f"budget:{ev.user_id}:{ev.year}-{ev.month:02d}:{ev.category}:{ev.threshold}"
@@ -254,6 +305,24 @@ def create_app(*, verifier: Optional[TokenVerifier] = None, store: Optional[Stor
         failures = dispatch(ch, p, msg)
         if not delivered(failures, p):
             st.unmark(key)           # aucun canal n'a reçu l'alerte : pas de faux « envoyé »
+            return {"status": "failed", "failures": failures}
+        return {"status": "sent", "failures": failures}
+
+    def on_unusual(ev: UnusualEvent, p: Prefs) -> dict:
+        if not p.unusual_alerts:
+            return {"status": "disabled"}
+        key = f"unusual:{ev.user_id}:{ev.year}-{ev.month:02d}:{ev.category}"
+        if not st.mark_once(key):
+            return {"status": "duplicate"}
+        msg = Message(
+            title=f"Dépenses inhabituelles : {ev.category}",
+            body=(f"{month_name(ev.month, capitalize=True)} {ev.year} : {fmt_eur(ev.spent)} "
+                  f"dépensés en {ev.category}, contre {fmt_eur(ev.average)} en moyenne "
+                  "sur les mois précédents."),
+            priority=3)
+        failures = dispatch(ch, p, msg)
+        if not delivered(failures, p):
+            st.unmark(key)
             return {"status": "failed", "failures": failures}
         return {"status": "sent", "failures": failures}
 

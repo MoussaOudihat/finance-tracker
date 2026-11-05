@@ -14,6 +14,7 @@
       <form method="post" action="/parametres/notifications" class="form">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <input type="hidden" name="budget_alerts" value="{{ '1' if prefs.budget_alerts else '' }}">
+        <input type="hidden" name="unusual_alerts" value="{{ '1' if prefs.unusual_alerts else '' }}">
         <input type="hidden" name="reminder_enabled" value="{{ '1' if prefs.reminder_enabled else '' }}">
         <input type="hidden" name="reminder_day" value="{{ prefs.reminder_day }}">
         <label>Liste TickTick
@@ -42,6 +43,7 @@
     <form method="post" action="/parametres/notifications" class="form">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <label class="check"><input type="checkbox" name="budget_alerts" value="1" {% if prefs.budget_alerts %}checked{% endif %}> Alerte quand un budget atteint 80 % puis 100 %</label>
+      <label class="check"><input type="checkbox" name="unusual_alerts" value="1" {% if prefs.unusual_alerts %}checked{% endif %}> Alerte de dépenses inhabituelles (catégorie nettement au-dessus de sa moyenne)</label>
       <label class="check"><input type="checkbox" name="reminder_enabled" value="1" {% if prefs.reminder_enabled %}checked{% endif %}> Rappel mensuel de saisie</label>
       <label>Jour du rappel (1-28)
         <input name="reminder_day" type="number" min="1" max="28" value="{{ prefs.reminder_day }}">

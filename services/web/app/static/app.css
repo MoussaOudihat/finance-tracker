@@ -189,3 +189,17 @@ details.card[open] > summary { margin-bottom: .75rem; }
 tr.row-error td { background: var(--red-soft); }
 tr.row-error-msg td { border-top: 0; padding-top: 0; }
 .badge-ai { color: var(--primary); border-color: var(--primary); white-space: nowrap; }
+
+/* ── v2.1 : analyses ── */
+.trend { width: 100%; height: 200px; display: block; }
+.spark { width: 110px; height: 28px; display: block; }
+.line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.line-rev { stroke: var(--green); }
+.line-exp { stroke: var(--red); }
+.line-sav { stroke: var(--primary); }
+.dot-sav { background: var(--primary); margin-left: .6rem; }
+.delta { font-variant-numeric: tabular-nums; font-weight: 600; }
+.badge-warn { color: var(--amber, #B45309); border-color: var(--amber, #F59E0B); }
+ul.plain { list-style: none; padding: 0; margin: 0 0 .75rem; display: grid; gap: .45rem; }
+.kpi .small { display: block; margin-top: .2rem; }
+.kpi .small span { display: inline; font-size: inherit; }

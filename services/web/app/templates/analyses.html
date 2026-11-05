@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Analyses{% endblock %}
+{% macro delta(cur, ref, good_up=False) -%}
+  {%- if ref is none or cur is none or not ref -%}<span class="muted">—</span>
+  {%- else -%}
+    {%- set pct = (cur - ref) / ref * 100 -%}
+    {%- set bad = (pct > 0) != good_up -%}
+    <span class="delta {{ 'neg' if bad and pct|abs >= 1 else ('pos' if pct|abs >= 1 else 'muted') }}"
+          title="{{ ref|eur }}">{{ '+' if pct > 0 else '' }}{{ pct|round|int }} %</span>
+  {%- endif -%}
+{%- endmacro %}
+{% block content %}
+{% include "_month_nav.html" %}
+{% set t = an.totals %}
+
+<div class="kpis">
+  <div class="card kpi"><span class="muted">Dépenses du mois</span>
+    <strong>{{ (t.exp.current or 0)|eur }}</strong>
+    <span class="small">vs mois préc. {{ delta(t.exp.current, t.exp.prev) }} · vs {{ y - 1 }} {{ delta(t.exp.current, t.exp.yoy) }}</span></div>
+  <div class="card kpi"><span class="muted">Moyenne {{ an.reference_months }} mois préc.</span>
+    <strong>{{ (t.exp.average or 0)|eur }}</strong>
+    <span class="small">écart {{ delta(t.exp.current, t.exp.average) }}</span></div>
+  <div class="card kpi"><span class="muted">Revenus du mois</span>
+    <strong>{{ (t.rev.current or 0)|eur }}</strong>
+    <span class="small">vs mois préc. {{ delta(t.rev.current, t.rev.prev, True) }} · vs {{ y - 1 }} {{ delta(t.rev.current, t.rev.yoy, True) }}</span></div>
+  <div class="card kpi"><span class="muted">Épargne du mois</span>
+    <strong>{{ (t.sav.current or 0)|eur }}</strong>
+    <span class="small">vs mois préc. {{ delta(t.sav.current, t.sav.prev, True) }}</span></div>
+</div>
+
+<section class="card">
+  <h2>Tendance sur {{ an.per_month|length }} mois</h2>
+  <svg class="trend" viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+       aria-label="Revenus, dépenses et épargne des {{ an.per_month|length }} derniers mois">
+    <line class="h-axis" x1="0" y1="38" x2="100" y2="38"/>
+    <polyline class="line line-rev" points="{{ lines.rev }}"/>
+    <polyline class="line line-exp" points="{{ lines.exp }}"/>
+    <polyline class="line line-sav" points="{{ lines.sav }}"/>
+  </svg>
+  <div class="history-labels">{% for p in an.per_month %}<span>{{ MONTHS_FR[p.month - 1][:3] }}</span>{% endfor %}</div>
+  <p class="legend"><span class="dot dot-rev"></span> Revenus <span class="dot dot-exp"></span> Dépenses
+    <span class="dot dot-sav"></span> Épargne <span class="muted small">— max {{ lines.max|eur }}</span></p>
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <h2>Dépenses inhabituelles</h2>
+    {% if an.reference_months < 3 %}
+    <p class="muted">Il faut au moins 3 mois de données avant ce mois pour repérer ce qui sort de l'ordinaire.</p>
+    {% elif not an.unusual and not an.large_expenses %}
+    <p class="muted">Rien d'inhabituel ce mois-ci.</p>
+    {% else %}
+    <ul class="plain">
+      {% for u in an.unusual %}
+      <li><strong>{{ u.category }}</strong> : {{ u.spent|eur }} contre {{ u.average|eur }} en moyenne
+        {% if u.ratio %}<span class="badge badge-warn">×{{ u.ratio }}</span>{% endif %}</li>
+      {% endfor %}
+      {% for e in an.large_expenses %}
+      <li><a href="/depenses/{{ e.id }}/modifier">{{ e.label or e.payee or e.category }}</a> :
+        {{ e.amount|eur }} <span class="muted small">({{ e.category }}, habituellement ~{{ e.median|eur }})</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <p class="muted small">Catégorie ≥ 1,5 × sa moyenne et +30 € ; dépense isolée ≥ 3 × la médiane de sa catégorie et ≥ 50 €.
+      Les alertes peuvent être reçues automatiquement : <a href="/parametres">Notifications</a>.</p>
+  </section>
+
+  <section class="card">
+    <h2>Bilan IA du mois</h2>
+    {% if not ai_enabled %}
+    <p class="muted">Activez l'IA depuis la page <a href="/ia">Assistant IA</a> pour générer un bilan commenté.</p>
+    {% else %}
+    {% if report and report.period == period %}
+    <div class="ai-text">{{ report_html }}</div>
+    <p class="muted small">Généré par {{ report.provider|capitalize }}{% if report.sent %} · envoyé sur vos notifications{% endif %}.</p>
+    {% endif %}
+    <form method="post" action="/analyses/bilan" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}">
+      <input type="hidden" name="m" value="{{ m }}">
+      <label class="check"><input type="checkbox" name="send" value="1" checked>
+        Envoyer aussi le bilan sur mes notifications (TickTick, ntfy, webhook)</label>
+      <div class="row"><button type="submit" class="btn btn-primary">✨ Générer le bilan</button></div>
+      <p class="muted small">Compte pour une requête IA. Le bilan est généré à la demande : le serveur
+        n'accède jamais à vos données en dehors de vos propres requêtes.</p>
+    </form>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Par catégorie</h2>
+  {% if an.categories %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Catégorie</th><th><span class="sr-only">Tendance</span></th><th class="num">Ce mois</th>
+      <th class="num">vs mois préc.</th><th class="num">vs {{ MONTHS_FR[m - 1]|lower }} {{ y - 1 }}</th>
+      <th class="num">Moyenne</th></tr></thead>
+    <tbody>
+    {% for c in an.categories %}
+      <tr>
+        <td>{{ c.category }}{% if c.unusual %} <span class="badge badge-warn">inhabituel</span>{% endif %}</td>
+        <td><svg class="spark" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+          <polyline class="line line-exp" points="{{ sparks[c.category] }}"/></svg></td>
+        <td class="num">{{ c.current|eur }}</td>
+        <td class="num">{{ delta(c.current, c.prev) }}</td>
+        <td class="num">{{ delta(c.current, c.yoy) }}</td>
+        <td class="num">{{ c.average|eur }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}<p class="muted">Aucune dépense sur la période.</p>{% endif %}
+</section>
+{% endblock %}

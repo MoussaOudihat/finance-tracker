@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS prefs (
     user_id          TEXT PRIMARY KEY,
     email            TEXT DEFAULT '',
     budget_alerts    INTEGER DEFAULT 1,
+    unusual_alerts   INTEGER DEFAULT 1,
     reminder_enabled INTEGER DEFAULT 0,
     reminder_day     INTEGER DEFAULT 1,
     ticktick_token   TEXT DEFAULT '',
@@ -46,6 +47,7 @@ class Prefs:
     user_id: str
     email: str = ""
     budget_alerts: bool = True
+    unusual_alerts: bool = True
     reminder_enabled: bool = False
     reminder_day: int = 1
     ticktick_token: str = ""
@@ -57,6 +59,7 @@ class Prefs:
         """Vue sans secret, renvoyée au navigateur."""
         return {
             "budget_alerts": self.budget_alerts,
+            "unusual_alerts": self.unusual_alerts,
             "reminder_enabled": self.reminder_enabled,
             "reminder_day": self.reminder_day,
             "ticktick_connected": bool(self.ticktick_token),
@@ -74,7 +77,15 @@ class Store:
         self._con.row_factory = sqlite3.Row
         self._con.execute("PRAGMA journal_mode=WAL")
         self._con.executescript(_SCHEMA)
+        self._migrate()
         self._lock = threading.Lock()
+
+    def _migrate(self) -> None:
+        """Bases créées avant une colonne : ajout en place (idempotent)."""
+        cols = {r["name"] for r in self._con.execute("PRAGMA table_info(prefs)")}
+        if "unusual_alerts" not in cols:
+            self._con.execute("ALTER TABLE prefs ADD COLUMN unusual_alerts INTEGER DEFAULT 1")
+            self._con.commit()
 
     def _enc(self, v: str) -> str:
         return self._fernet.encrypt(v.encode()).decode() if v else ""
@@ -103,24 +114,27 @@ class Store:
             d[k] = self._dec(d[k])
         d.pop("updated_at", None)
         d["budget_alerts"] = bool(d["budget_alerts"])
+        d["unusual_alerts"] = bool(d["unusual_alerts"])
         d["reminder_enabled"] = bool(d["reminder_enabled"])
         return Prefs(**d)
 
     def save(self, p: Prefs) -> None:
         with self._lock:
             self._con.execute(
-                """INSERT INTO prefs(user_id,email,budget_alerts,reminder_enabled,reminder_day,
-                       ticktick_token,ticktick_project,ntfy_url,webhook_url,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)
+                """INSERT INTO prefs(user_id,email,budget_alerts,unusual_alerts,reminder_enabled,
+                       reminder_day,ticktick_token,ticktick_project,ntfy_url,webhook_url,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(user_id) DO UPDATE SET email=excluded.email,
                        budget_alerts=excluded.budget_alerts,
+                       unusual_alerts=excluded.unusual_alerts,
                        reminder_enabled=excluded.reminder_enabled,
                        reminder_day=excluded.reminder_day,
                        ticktick_token=excluded.ticktick_token,
                        ticktick_project=excluded.ticktick_project,
                        ntfy_url=excluded.ntfy_url, webhook_url=excluded.webhook_url,
                        updated_at=excluded.updated_at""",
-                (p.user_id, p.email, int(p.budget_alerts), int(p.reminder_enabled),
+                (p.user_id, p.email, int(p.budget_alerts), int(p.unusual_alerts),
+                 int(p.reminder_enabled),
                  p.reminder_day, self._enc(p.ticktick_token), p.ticktick_project,
                  self._enc(p.ntfy_url), self._enc(p.webhook_url), time.time()))
             self._con.commit()
