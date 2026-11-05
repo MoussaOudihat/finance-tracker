@@ -7,7 +7,11 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fintrack.labels" . | nindent 4 }}
-    app.kubernetes.io/name: web          # autorisé à joindre finance-api par la NetworkPolicy
+    # Identité propre : ne pas se faire passer pour « web », sinon le pod de
+    # test devient un endpoint du Service web et entre dans son PDB. Ses flux
+    # sont ouverts par la NetworkPolicy <release>-fintrack-test.
+    app.kubernetes.io/name: fintrack-test
+    app.kubernetes.io/component: test
     app.kubernetes.io/instance: {{ .Release.Name }}
   annotations:
     helm.sh/hook: test

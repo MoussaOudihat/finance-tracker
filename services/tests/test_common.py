@@ -77,3 +77,20 @@ def test_fmt_helpers():
     assert fmt_eur(1234.5) == "1 234,50 €" and fmt_eur(3, sign=True) == "+3,00 €"
     assert shift_month(2026, 1, -1) == (2025, 12) and shift_month(2026, 12, 1) == (2027, 1)
     assert month_name(8, capitalize=True) == "Août"
+
+
+def test_uvicorn_logs_are_json_and_access_log_disabled(capsys):
+    import json
+    import logging
+
+    from fintrack_common.logs import setup_logging
+    # uvicorn configure ses handlers texte AVANT d'importer l'application
+    logging.getLogger("uvicorn.error").addHandler(logging.StreamHandler())
+    logging.getLogger("uvicorn.access").addHandler(logging.StreamHandler())
+    setup_logging("svc")
+    logging.getLogger("uvicorn.error").info("Started server process [1]")
+    logging.getLogger("uvicorn.access").info('10.0.0.1:1 - "GET /healthz" 200')
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1, lines                      # l'accès uvicorn n'apparaît pas
+    rec = json.loads(lines[0])                          # et le reste est du JSON
+    assert rec["service"] == "svc" and rec["msg"] == "Started server process [1]"
