@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>{% block title %}Fintrack{% endblock %} · Fintrack</title>
-  <link rel="icon" type="image/png" href="/static/fintrack.png">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" type="image/png" href="{{ static("fintrack.png") }}">
+  <link rel="stylesheet" href="{{ static("app.css") }}">
   {% block head %}{% endblock %}
 </head>
 <body>
 {% if active %}
 <header class="topbar">
-  <a class="brand" href="/"><img src="/static/fintrack.png" alt="" width="28" height="28"> Fintrack</a>
+  <a class="brand" href="/"><img src="{{ static("fintrack.png") }}" alt="" width="28" height="28"> Fintrack</a>
   <nav class="nav" aria-label="Navigation principale">
     {% for key, href, label in [
         ('dashboard', '/', 'Tableau de bord'), ('depenses', '/depenses', 'Dépenses'),

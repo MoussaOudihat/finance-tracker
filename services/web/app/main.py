@@ -7,9 +7,12 @@ base directement.
 """
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import html
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Annotated, Optional
 from urllib.parse import urlsplit
@@ -85,6 +88,18 @@ def render_ai_text(text: str) -> Markup:  # sûr : chaque ligne passe par html.e
     return Markup("".join(out))  # noqa: S704  # nosec B704
 
 
+def _static_hashes(directory: str) -> dict[str, str]:
+    """Empreinte (12 caractères hexadécimaux du SHA-256) de chaque fichier
+    statique, calculée une fois au démarrage."""
+    out = {}
+    for name in sorted(os.listdir(directory)):
+        full = os.path.join(directory, name)
+        if os.path.isfile(full):
+            with open(full, "rb") as f:
+                out[name] = hashlib.sha256(f.read()).hexdigest()[:12]
+    return out
+
+
 def parse_amount(raw: str) -> str:
     """Normalise la saisie ('1 234,50') ; la validation (> 0, fini) est
     faite par finance-api (pydantic : NaN/inf refusés)."""
@@ -115,11 +130,22 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
 
     app = FastAPI(title="fintrack-web", version=VERSION,
                   docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(RequestContextMiddleware, csp=CSP)
+    app.add_middleware(RequestContextMiddleware, csp=CSP, static_prefix="/static/")
+    # Pool partagé (borné) pour les appels parallèles vers les services
+    pool = ThreadPoolExecutor(max_workers=env_int("WEB_BACKEND_PARALLELISM", 16),
+                              thread_name_prefix="backend")
     app.mount("/static", StaticFiles(directory=os.path.join(_HERE, "static")), name="static")
     templates = Jinja2Templates(directory=os.path.join(_HERE, "templates"))
     templates.env.filters["eur"] = fmt_eur
-    templates.env.globals.update(VERSION=VERSION, MONTHS_FR=MONTHS_FR,
+    asset_hashes = _static_hashes(os.path.join(_HERE, "static"))
+
+    def static(path: str) -> str:
+        """URL d'un fichier statique avec l'empreinte de son contenu : le
+        navigateur peut le garder en cache un an, l'URL change dès que le
+        fichier change (aucun risque de CSS périmé après une mise à jour)."""
+        return f"/static/{path}?v={asset_hashes[path]}"
+
+    templates.env.globals.update(VERSION=VERSION, MONTHS_FR=MONTHS_FR, static=static,
                                  ASSET_LABEL=ASSET_LABEL, LIABILITY_LABEL=LIABILITY_LABEL)
     app.state.sessions = sessions
     app.state.backends = backends
@@ -144,6 +170,22 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             sessions.update(sid, access_token=sess["access_token"],
                             refresh_token=sess["refresh_token"], expires_at=sess["expires_at"])
         return backends.call(sess, service, method, path, **kw)
+
+    def call_parallel(sid: str, sess: dict, *specs: tuple) -> list:
+        """Plusieurs appels de LECTURE indépendants, en parallèle (une page
+        n'attend plus la somme des latences). Le jeton est rafraîchi une seule
+        fois avant (pas de rotation concurrente) ; le contexte de la requête
+        (request_id) est copié dans chaque thread. Chaque spec :
+        (service, méthode, chemin) ou (service, méthode, chemin, kwargs)."""
+        if backends.fresh_token(sess):
+            sessions.update(sid, access_token=sess["access_token"],
+                            refresh_token=sess["refresh_token"], expires_at=sess["expires_at"])
+        futures = [
+            pool.submit(contextvars.copy_context().run, backends.call, sess, *spec[:3],
+                        **(spec[3] if len(spec) > 3 else {}))
+            for spec in specs
+        ]
+        return [f.result() for f in futures]     # 1re erreur relancée telle quelle
 
     def flash(sid: str, sess: dict, message: str, kind: str = "ok") -> None:
         sess["flash"] = {"message": message, "kind": kind}
@@ -306,9 +348,11 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
     def dashboard(request: Request, y: Optional[str] = None, m: Optional[str] = None):
         sid, sess = load(request)
         yy, mm = month_params(sid, sess, y, m)
-        s = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/summary")
-        hist = call(sid, sess, "finance", "GET", "/v1/history", params={"limit": 12})
-        pat = call(sid, sess, "finance", "GET", "/v1/patrimoine")
+        s, hist, pat = call_parallel(
+            sid, sess,
+            ("finance", "GET", f"/v1/months/{yy}/{mm}/summary"),
+            ("finance", "GET", "/v1/history", {"params": {"limit": 12}}),
+            ("finance", "GET", "/v1/patrimoine"))
         return render(request, "dashboard.html", sid, sess, active="dashboard", y=yy, m=mm,
                       prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), s=s, history=hist,
                       closed=s["closed"], net_worth=pat["net_worth"],
@@ -340,8 +384,9 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
     def budgets(request: Request, y: Optional[str] = None, m: Optional[str] = None):
         sid, sess = load(request)
         yy, mm = month_params(sid, sess, y, m)
-        s = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/summary")
-        cats = call(sid, sess, "finance", "GET", "/v1/categories")
+        s, cats = call_parallel(sid, sess,
+                                ("finance", "GET", f"/v1/months/{yy}/{mm}/summary"),
+                                ("finance", "GET", "/v1/categories"))
         budgeted = {b["category"] for b in s["budgets"]}
         spent = {c["name"]: c["total"] for c in s["by_category"]}
         return render(request, "budgets.html", sid, sess, active="budgets", y=yy, m=mm,
@@ -540,10 +585,15 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         kind, title = SECTIONS[section]
         sid, sess = load(request)
         yy, mm = month_params(sid, sess, y, m)
-        data = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/entries")
+        if kind == "expenses":
+            data, cats, payees = call_parallel(
+                sid, sess,
+                ("finance", "GET", f"/v1/months/{yy}/{mm}/entries"),
+                ("finance", "GET", "/v1/categories"),
+                ("finance", "GET", "/v1/payees"))
+        else:
+            data, cats, payees = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/entries"), [], []
         rows = data[kind]
-        cats = call(sid, sess, "finance", "GET", "/v1/categories") if kind == "expenses" else []
-        payees = call(sid, sess, "finance", "GET", "/v1/payees") if kind == "expenses" else []
         return render(request, "entries.html", sid, sess, active=section, section=section,
                       title=title, y=yy, m=mm, prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
                       rows=rows, total=sum(r["amount"] for r in rows), categories=cats,
@@ -576,8 +626,12 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             return Response(status_code=404)
         kind, title = SECTIONS[section]
         sid, sess = load(request)
-        entry = call(sid, sess, "finance", "GET", f"/v1/entries/{kind}/{entry_id}")
-        cats = call(sid, sess, "finance", "GET", "/v1/categories") if kind == "expenses" else []
+        if kind == "expenses":
+            entry, cats = call_parallel(sid, sess,
+                                        ("finance", "GET", f"/v1/entries/{kind}/{entry_id}"),
+                                        ("finance", "GET", "/v1/categories"))
+        else:
+            entry, cats = call(sid, sess, "finance", "GET", f"/v1/entries/{kind}/{entry_id}"), []
         return render(request, "edit.html", sid, sess, active=section, section=section,
                       title=title, entry=entry, categories=cats, closed=entry["closed"])
 

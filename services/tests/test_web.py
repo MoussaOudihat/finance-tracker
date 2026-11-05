@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from conftest import make_token
 from finance_api.app.main import create_app as create_finance
+from fintrack_common.http import service_client
 from fintrack_common.ratelimit import Counter
 from web.app.backends import Backends, SupabaseAuth
 from web.app.main import create_app as create_web
@@ -293,3 +294,68 @@ def test_ticktick_connect_requires_csrf(tt):
                headers={"referer": "http://testserver/parametres"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/parametres"
     assert calls["authorize"] == 0                       # aucun state créé sans CSRF valide
+
+
+# ── Performance : cache des fichiers statiques, appels parallèles ──
+
+def test_static_assets_are_fingerprinted_and_cached(setup):
+    c, *_ = setup
+    page = c.get("/connexion").text
+    css = re.search(r'href="(/static/app\.css\?v=[0-9a-f]{12})"', page).group(1)
+    r = c.get(css)
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert "etag" in r.headers
+    # sans empreinte : revalidation (ETag) plutôt que cache long
+    assert c.get("/static/app.css").headers["cache-control"] == "no-cache"
+    # les pages, elles, ne sont jamais mises en cache
+    assert c.get("/connexion").headers["cache-control"] == "no-store"
+
+
+def test_fingerprint_changes_with_content(tmp_path):
+    from web.app.main import _static_hashes
+    (tmp_path / "a.css").write_text("body{}")
+    h1 = _static_hashes(str(tmp_path))["a.css"]
+    (tmp_path / "a.css").write_text("body{color:red}")
+    assert _static_hashes(str(tmp_path))["a.css"] != h1
+
+
+def test_dashboard_backend_calls_run_in_parallel(seeded, user_id, verifier, monkeypatch):
+    """3 appels de 0,4 s chacun : en série ≥ 1,2 s ; en parallèle ≈ 0,4 s."""
+    import threading
+    import time as _t
+
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("FINTRACK_COOKIE_SECURE", "0")
+    seen_rids, lock = set(), threading.Lock()
+
+    def finance(request: httpx.Request):
+        _t.sleep(0.4)
+        with lock:
+            seen_rids.add(request.headers.get("x-request-id"))
+        path = request.url.path
+        if path.endswith("/summary"):
+            return httpx.Response(200, json={"closed": False, "revenues": 0, "expenses": 0,
+                                             "savings": 0, "balance": 0, "by_category": [], "budgets": []})
+        if path == "/v1/history":
+            return httpx.Response(200, json=[])
+        if path == "/v1/patrimoine":
+            return httpx.Response(200, json={"net_worth": 0})
+        return httpx.Response(404)
+
+    def gotrue(request):
+        return httpx.Response(200, json=_session(user_id, "u@example.com"))
+
+    backends = Backends(SupabaseAuth(httpx.Client(base_url="https://proj.supabase.co",
+                                                  transport=httpx.MockTransport(gotrue)), "anon"),
+                        service_client("http://finance", transport=httpx.MockTransport(finance)),
+                        None, None)
+    c = TestClient(create_web(backends=backends,
+                              sessions=SessionStore(Fernet.generate_key().decode()), counter=Counter()))
+    login(c)
+    start = _t.perf_counter()
+    r = c.get("/?y=2026&m=3", headers={"x-request-id": "rid-test-123456"})
+    elapsed = _t.perf_counter() - start
+    assert r.status_code == 200
+    assert elapsed < 1.0, f"appels en série ? {elapsed:.2f} s"
+    assert seen_rids == {"rid-test-123456"}          # request_id propagé dans chaque thread

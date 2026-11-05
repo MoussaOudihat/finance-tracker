@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
-{% block head %}{% if section == 'depenses' and ai_enabled %}<script src="/static/categorize.js" defer></script>{% endif %}{% endblock %}
+{% block head %}{% if section == 'depenses' and ai_enabled %}<script src="{{ static("categorize.js") }}" defer></script>{% endif %}{% endblock %}
 {% block content %}
 {% include "_month_nav.html" %}
 
