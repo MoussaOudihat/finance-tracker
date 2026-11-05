@@ -25,7 +25,7 @@ GitHub : onglet *Security* → *Report a vulnerability*. Réponse sous 7 jours.
 | IaC | `helm lint --strict`, rendu du chart (défaut/local/production) + kubeconform strict, Trivy config (manifestes rendus, Compose, Dockerfile), `docker compose config` | oui (CRITICAL/HIGH) |
 | Chaîne d'approvisionnement | actions épinglées par SHA, permissions minimales par job, cosign (keyless), provenance SLSA, SBOM SPDX attesté | — |
 
-Exceptions acceptées : voir `.trivyignore` (chacune justifiée).
+Exceptions acceptées : voir `.trivyignore` et `trivy-secret.yaml` (chacune justifiée, au périmètre le plus étroit possible).
 
 ## Vérifier une image publiée
 
