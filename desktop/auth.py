@@ -40,15 +40,26 @@ def _generate_salt() -> str:
     return secrets.token_hex(16)
 
 
+# bcrypt n'utilise que les 72 premiers octets. bcrypt < 5 tronquait en
+# silence ; bcrypt >= 5 lève ValueError au-delà. On tronque nous-mêmes, à
+# l'identique de l'ancien comportement : les hachages existants restent
+# vérifiables et une phrase de passe longue (≈ 36 caractères accentués
+# suffisent à dépasser 72 octets) ne bloque plus la connexion.
+_BCRYPT_MAX_BYTES = 72
+
+
+def _bcrypt_input(value: str) -> bytes:
+    return value.strip().lower().encode("utf-8")[:_BCRYPT_MAX_BYTES]
+
+
 def _bcrypt_hash(value: str) -> str:
-    normalized = value.strip().lower().encode("utf-8")
     return _BCRYPT_PREFIX + _bcrypt.hashpw(
-        normalized, _bcrypt.gensalt(rounds=12)
+        _bcrypt_input(value), _bcrypt.gensalt(rounds=12)
     ).decode("utf-8")
 
 
 def _bcrypt_verify(value: str, stored: str) -> bool:
-    normalized = value.strip().lower().encode("utf-8")
+    normalized = _bcrypt_input(value)
     stored_hash = stored[len(_BCRYPT_PREFIX):].encode("utf-8")
     try:
         return _bcrypt.checkpw(normalized, stored_hash)

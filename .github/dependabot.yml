@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: pip
-    directories: ["/", "/services", "/services/web", "/services/finance_api",
+    directories: ["/desktop", "/services", "/services/web", "/services/finance_api",
                   "/services/ai_service", "/services/notifier"]
     schedule: { interval: weekly, day: monday }
     groups:
