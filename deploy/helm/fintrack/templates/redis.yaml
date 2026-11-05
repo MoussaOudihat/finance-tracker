@@ -17,8 +17,12 @@ spec:
       {{- $sel | nindent 6 }}
   template:
     metadata:
+      # Libellés STABLES uniquement (pas de version de chart/app) : Redis garde
+      # les sessions en mémoire, un changement de libellé du modèle de pod le
+      # recréerait à chaque upgrade et déconnecterait tout le monde. Le pod ne
+      # redémarre que si sa configuration réelle (image, options) change.
       labels:
-        {{- include "fintrack.labels" . | nindent 8 }}
+        app.kubernetes.io/part-of: fintrack
         {{- $sel | nindent 8 }}
     spec:
       serviceAccountName: redis
