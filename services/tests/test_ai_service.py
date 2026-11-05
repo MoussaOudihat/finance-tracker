@@ -155,3 +155,69 @@ def test_failed_calls_do_not_consume_quota(make):
     for _ in range(5):
         assert c.post("/v1/insights", headers=H, json={"year": 2026, "month": 3}).status_code == 502
     assert c.get("/v1/providers", headers=H).json()["remaining"] == 3
+
+
+# ── Catégorisation groupée (saisie en masse) ─────────────────
+
+class FakeBatchProviders(FakeProviders):
+    def choose_many(self, provider, system, prompt, choices, count):
+        self.calls.append((provider, prompt))
+        return (["RESTAURANTS", None, "ALIMENTATION"] * count)[:count]
+
+
+def test_categorize_batch_one_quota_unit(make):
+    c, prov = make(providers=FakeBatchProviders())
+    items = [{"label": "Pizza"}, {"label": "", "payee": ""}, {"label": "?"},
+             {"payee": "LIDL"}]
+    r = c.post("/v1/categorize/batch", headers=H, json={"items": items})
+    assert r.status_code == 200
+    # la ligne vide n'est pas envoyée au modèle ; l'ordre d'origine est conservé
+    assert r.json()["results"] == [
+        {"category_id": 4, "category": "RESTAURANTS"}, None, None,
+        {"category_id": 1, "category": "ALIMENTATION"}]
+    assert len(prov.calls) == 1 and '"Pizza"' in prov.calls[0][1]
+    for _ in range(2):                                   # quota de 3 : 1 déjà consommé
+        assert c.post("/v1/categorize/batch", headers=H, json={"items": items}).status_code == 200
+    assert c.post("/v1/categorize/batch", headers=H, json={"items": items}).status_code == 429
+
+
+def test_categorize_batch_limits(make):
+    c, prov = make(providers=FakeBatchProviders())
+    assert c.post("/v1/categorize/batch", headers=H, json={"items": []}).status_code == 422
+    assert c.post("/v1/categorize/batch", headers=H,
+                  json={"items": [{"label": "x"}] * 51}).status_code == 422
+    r = c.post("/v1/categorize/batch", headers=H, json={"items": [{"label": " "}]})
+    assert r.json()["results"] == [None] and prov.calls == []          # rien à classer : gratuit
+
+
+def test_choose_many_distrusts_model_output():
+    """Sortie du modèle (SDK branché sur un transport factice) : index hors
+    plage, doublons, types et catégories inventées sont écartés."""
+    import json
+
+    import anthropic
+    import httpx2
+    seen = {}
+    text = json.dumps({"items": [
+        {"i": 0, "category": "RESTAURANTS"}, {"i": 0, "category": "ALIMENTATION"},
+        {"i": 5, "category": "ALIMENTATION"}, {"i": True, "category": "ALIMENTATION"},
+        {"i": 2, "category": "VOYAGES"}, "x"]})
+
+    def respond(req):
+        seen["body"] = json.loads(req.content)
+        return httpx2.Response(200, json={
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": text}], "stop_reason": "end_turn",
+            "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 5}})
+
+    prov = Providers(ProviderConfig("sk-test", "", "claude-opus-5-5", "g"))
+    prov._anthropic = anthropic.Anthropic(
+        api_key="sk-test", max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(respond)))
+    out = prov.choose_many("claude", "sys", "p", ["ALIMENTATION", "RESTAURANTS"], 3)
+    assert out == ["RESTAURANTS", None, None]
+    schema = seen["body"]["output_config"]["format"]["schema"]
+    item = schema["properties"]["items"]["items"]
+    assert item["properties"]["category"]["enum"] == ["ALIMENTATION", "RESTAURANTS"]
+    assert item["additionalProperties"] is False and schema["additionalProperties"] is False
+    assert seen["body"]["fallbacks"] == "default"
