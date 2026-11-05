@@ -1,8 +1,8 @@
-customtkinter>=5.2.0
+customtkinter>=6.0.0
 matplotlib>=3.11.2
-openpyxl>=3.1.0
-supabase>=2.0.0
-bcrypt>=4.0.0
+openpyxl>=3.1.5
+supabase>=2.33.0
+bcrypt>=5.0.0
 
 # Épinglé : anthropic/openai tirent httpx>=0.28 en dépendance transitive,
 # incompatible avec supabase/postgrest/storage3 (httpx<0.28). Sans cette
