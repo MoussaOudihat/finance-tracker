@@ -9,6 +9,13 @@ on:
 # Moindre privilège : rien par défaut, chaque job déclare ce dont il a besoin.
 permissions: {}
 
+# Une seule release à la fois pour un même tag : un second push du tag attend
+# la fin du premier au lieu de courir en parallèle (le nettoyage de l'un
+# supprimait le tag pendant que l'autre en avait encore besoin).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ──────────────────────────────────────────────────────────
   #  Build de l'exécutable Windows (la Release est publiée en dernier)
@@ -375,13 +382,23 @@ jobs:
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '')
+            const { owner, repo } = context.repo
             try {
-              await github.rest.git.deleteRef({
-                owner: context.repo.owner,
-                repo:  context.repo.repo,
-                ref:   `tags/${tag}`,
-              })
-              core.info(`✅ Tag ${tag} supprimé.`)
+              // Ne supprimer le tag que s'il désigne ENCORE le commit de ce run :
+              // s'il a été repoussé sur un autre commit entre-temps, il appartient
+              // à une autre release et on n'y touche pas.
+              const { data: ref } = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })
+              let sha = ref.object.sha
+              if (ref.object.type === 'tag') {           // tag annoté -> commit pointé
+                const { data: annotated } = await github.rest.git.getTag({ owner, repo, tag_sha: sha })
+                sha = annotated.object.sha
+              }
+              if (sha !== context.sha) {
+                core.notice(`Tag ${tag} déplacé vers ${sha.slice(0, 7)} : conservé.`)
+                return
+              }
+              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` })
+              core.info(`Tag ${tag} supprimé : corrigez puis repoussez-le.`)
             } catch (e) {
-              core.warning(`Impossible de supprimer le tag : ${e.message}`)
+              core.warning(`Nettoyage du tag impossible : ${e.message}`)
             }

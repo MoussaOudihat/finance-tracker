@@ -29,6 +29,8 @@ Exceptions acceptées : voir `.trivyignore` et `trivy-secret.yaml` (chacune just
 
 ## Vérifier une image publiée
 
+> Utiliser **cosign v3** ou plus : les signatures sont stockées au nouveau format (OCI referrers + bundle Sigstore), que cosign v2 ne voit pas (« no signatures found »).
+
 ```bash
 cosign verify ghcr.io/moussaoudihat/fintrack-web:2.0.0 \
   --certificate-identity-regexp 'https://github.com/MoussaOudihat/finance-tracker/.*' \

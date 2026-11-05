@@ -79,7 +79,8 @@ notifier:
     storageClass: ""        # vide = classe par défaut du cluster
 
 redis:
-  image: docker.io/library/redis:7.4-alpine@sha256:1cf73a2f04808e55a8bd2f5706c2aa0ebb0f71938f93deb7af79f48311cd5cb9
+  # Garder aligné avec deploy/compose/compose.yaml (Dependabot ne suit que Compose)
+  image: docker.io/library/redis:8.10-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537
   resources:
     requests: { cpu: 25m, memory: 32Mi }
     limits: { memory: 96Mi }
