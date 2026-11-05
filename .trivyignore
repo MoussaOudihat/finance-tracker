@@ -1,0 +1,16 @@
+# Exceptions Trivy justifiées (revue à chaque version).
+
+# KSV-0125 « registre non approuvé » : la liste par défaut de Trivy ne
+# contient ni ghcr.io ni docker.io. Nos images (ghcr.io) sont signées
+# cosign + attestées (SLSA, SBOM) ; Redis est épinglé par digest.
+KSV-0125
+
+# KSV-01010 « ConfigMap sensible » : faux positif sur TICKTICK_CLIENT_ID,
+# identifiant OAuth public. Tous les secrets sont dans le Secret
+# fintrack-secrets (jamais dans la ConfigMap).
+KSV-01010
+
+# KSV-0011 « limite CPU absente » : choix délibéré. Une limite CPU provoque du
+# bridage (throttling) sans protéger le nœud ; requests CPU + limite mémoire
+# sont toujours définies.
+KSV-0011

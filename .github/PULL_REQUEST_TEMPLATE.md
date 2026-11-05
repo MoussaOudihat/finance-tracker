@@ -20,7 +20,7 @@
 
 ## Tests effectués
 
-- [ ] Lancé `python main.py` — aucune erreur au démarrage
+- [ ] Lancé `python desktop/main.py` — aucune erreur au démarrage
 - [ ] Testé la fonctionnalité concernée
 - [ ] Vérifié en mode clair ET sombre (si changement UI)
 - [ ] Aucune régression visible sur les autres pages

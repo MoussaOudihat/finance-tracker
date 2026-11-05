@@ -1,0 +1,149 @@
+# ─────────────────────────────────────────────────────────────
+#  Fintrack — déploiement Docker Compose / Podman Compose
+#
+#    python deploy/gen_secrets.py          # génère deploy/compose/secrets/*
+#    cp deploy/compose/.env.example deploy/compose/.env   # puis compléter
+#    docker compose -f deploy/compose/compose.yaml up -d --build
+#    → http://localhost:8080
+#
+#  Bonnes pratiques appliquées :
+#   • segmentation réseau : `backend` est INTERNE (aucun accès Internet) ;
+#     seuls les services qui en ont besoin rejoignent `egress` ; seul `web`
+#     publie un port, et uniquement sur 127.0.0.1 (reverse proxy TLS devant).
+#   • secrets en fichiers montés (/run/secrets), jamais en variables en clair.
+#   • conteneurs durcis : non-root, rootfs en lecture seule, toutes capacités
+#     retirées, no-new-privileges, limites CPU/mémoire/PIDs, init.
+#   • healthchecks + dépendances conditionnées à l'état « healthy ».
+#   • images de base épinglées par digest ; logs bornés.
+# ─────────────────────────────────────────────────────────────
+name: fintrack
+
+x-hardening: &hardening
+  read_only: true
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]              # forme simple : portable Docker / Podman
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+x-service: &service
+  <<: *hardening
+  build: &build
+    context: ../../services
+    dockerfile: Dockerfile
+  env_file: .env
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD", "python", "-m", "fintrack_common.healthcheck", "/readyz"]
+    interval: 15s
+    timeout: 3s
+    retries: 3
+    start_period: 10s
+
+services:
+  web:
+    <<: *service
+    build: { <<: *build, args: { SERVICE: web } }
+    image: ghcr.io/moussaoudihat/fintrack-web:${FINTRACK_TAG:-dev}
+    environment:
+      FINANCE_API_URL: http://finance-api:8000
+      AI_SERVICE_URL: http://ai-service:8000
+      NOTIFIER_URL: http://notifier:8000
+      REDIS_URL_FILE: /run/secrets/redis_url
+      SUPABASE_ANON_KEY_FILE: /run/secrets/supabase_anon_key
+      SESSION_ENCRYPTION_KEY_FILE: /run/secrets/session_encryption_key
+    secrets: [redis_url, supabase_anon_key, session_encryption_key]
+    ports: ["127.0.0.1:${FINTRACK_PORT:-8080}:8000"]
+    networks: [backend, egress]
+    depends_on:
+      finance-api: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    deploy: { resources: { limits: { cpus: "0.50", memory: 256M, pids: 128 } } }
+
+  finance-api:
+    <<: *service
+    build: { <<: *build, args: { SERVICE: finance_api } }
+    image: ghcr.io/moussaoudihat/fintrack-finance-api:${FINTRACK_TAG:-dev}
+    environment:
+      NOTIFIER_URL: http://notifier:8000
+      SUPABASE_ANON_KEY_FILE: /run/secrets/supabase_anon_key
+      NOTIFIER_INTERNAL_TOKEN_FILE: /run/secrets/notifier_internal_token
+    secrets: [supabase_anon_key, notifier_internal_token]
+    networks: [backend, egress]
+    deploy: { resources: { limits: { cpus: "0.50", memory: 256M, pids: 128 } } }
+
+  ai-service:
+    <<: *service
+    build: { <<: *build, args: { SERVICE: ai_service } }
+    image: ghcr.io/moussaoudihat/fintrack-ai-service:${FINTRACK_TAG:-dev}
+    environment:
+      FINANCE_API_URL: http://finance-api:8000
+      REDIS_URL_FILE: /run/secrets/redis_url
+      ANTHROPIC_API_KEY_FILE: /run/secrets/anthropic_api_key
+      GEMINI_API_KEY_FILE: /run/secrets/gemini_api_key
+    secrets: [redis_url, anthropic_api_key, gemini_api_key]
+    networks: [backend, egress]
+    depends_on:
+      finance-api: { condition: service_healthy }
+    deploy: { resources: { limits: { cpus: "0.50", memory: 384M, pids: 128 } } }
+
+  notifier:
+    <<: *service
+    build: { <<: *build, args: { SERVICE: notifier } }
+    image: ghcr.io/moussaoudihat/fintrack-notifier:${FINTRACK_TAG:-dev}
+    environment:
+      NOTIFIER_DB_PATH: /data/notifier.db
+      NOTIFIER_INTERNAL_TOKEN_FILE: /run/secrets/notifier_internal_token
+      NOTIFIER_ENCRYPTION_KEY_FILE: /run/secrets/notifier_encryption_key
+      TICKTICK_CLIENT_SECRET_FILE: /run/secrets/ticktick_client_secret
+    secrets: [notifier_internal_token, notifier_encryption_key, ticktick_client_secret]
+    volumes: [notifier-data:/data]
+    networks: [backend, egress]
+    deploy: { resources: { limits: { cpus: "0.25", memory: 192M, pids: 128 } } }
+
+  redis:
+    <<: *hardening
+    image: docker.io/library/redis:7.4-alpine@sha256:1cf73a2f04808e55a8bd2f5706c2aa0ebb0f71938f93deb7af79f48311cd5cb9
+    user: "10001:10001"
+    # Mot de passe lu depuis le secret ; persistance désactivée (sessions et
+    # compteurs éphémères) ; commandes dangereuses retirées.
+    command: >-
+      sh -c 'exec redis-server --requirepass "$$(cat /run/secrets/redis_password)"
+      --save "" --appendonly no --maxmemory 64mb --maxmemory-policy allkeys-lru
+      --rename-command FLUSHALL "" --rename-command CONFIG "" --rename-command DEBUG ""'
+    secrets: [redis_password]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy: { resources: { limits: { cpus: "0.25", memory: 96M, pids: 128 } } }
+
+networks:
+  backend:
+    internal: true          # aucun accès Internet
+  egress:
+    # Sous-réseau fixe : le port publié de `web` arrive depuis sa passerelle
+    # (172.30.0.1), seule adresse autorisée à fournir X-Forwarded-For.
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+
+volumes:
+  notifier-data: {}
+
+secrets:
+  supabase_anon_key:       { file: ./secrets/supabase_anon_key }
+  session_encryption_key:  { file: ./secrets/session_encryption_key }
+  notifier_internal_token: { file: ./secrets/notifier_internal_token }
+  notifier_encryption_key: { file: ./secrets/notifier_encryption_key }
+  redis_password:          { file: ./secrets/redis_password }
+  redis_url:               { file: ./secrets/redis_url }
+  anthropic_api_key:       { file: ./secrets/anthropic_api_key }
+  gemini_api_key:          { file: ./secrets/gemini_api_key }
+  ticktick_client_secret:  { file: ./secrets/ticktick_client_secret }

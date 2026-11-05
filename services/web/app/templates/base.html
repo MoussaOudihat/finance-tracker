@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Fintrack{% endblock %} · Fintrack</title>
+  <link rel="icon" type="image/png" href="/static/fintrack.png">
+  <link rel="stylesheet" href="/static/app.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+{% if active %}
+<header class="topbar">
+  <a class="brand" href="/"><img src="/static/fintrack.png" alt="" width="28" height="28"> Fintrack</a>
+  <nav class="nav" aria-label="Navigation principale">
+    {% for key, href, label in [
+        ('dashboard', '/', 'Tableau de bord'), ('depenses', '/depenses', 'Dépenses'),
+        ('revenus', '/revenus', 'Revenus'), ('epargne', '/epargne', 'Épargne'),
+        ('budgets', '/budgets', 'Budgets'), ('patrimoine', '/patrimoine', 'Patrimoine'),
+        ('ia', '/ia', 'Assistant IA'), ('parametres', '/parametres', 'Notifications')] %}
+    <a href="{{ href }}" {% if active == key %}aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <form method="post" action="/deconnexion" class="logout">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <span class="muted user">{{ user_email }}</span>
+    <button type="submit" class="btn btn-ghost">Déconnexion</button>
+  </form>
+</header>
+{% endif %}
+<main class="container">
+  {% if flash %}
+  <div class="flash flash-{{ flash.kind }}" role="status">{{ flash.message }}</div>
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+<footer class="footer muted">Fintrack v{{ VERSION }}</footer>
+</body>
+</html>

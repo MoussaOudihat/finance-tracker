@@ -1,0 +1,34 @@
+# `helm test <release>` : vérifie que web et finance-api répondent.
+# Pod éphémère durci (mêmes contraintes Pod Security « restricted »).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-test-health
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fintrack.labels" . | nindent 4 }}
+    app.kubernetes.io/name: web          # autorisé à joindre finance-api par la NetworkPolicy
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "fintrack.podSecurity" dict | nindent 4 }}
+  containers:
+    - name: health
+      image: {{ include "fintrack.image" (dict "ctx" $ "name" "web") | quote }}
+      command: ["python", "-c"]
+      args:
+        - |
+          import urllib.request
+          for url in ("http://web:8000/healthz", "http://finance-api:8000/healthz"):
+              assert urllib.request.urlopen(url, timeout=5).status == 200, url
+              print("OK", url)
+      securityContext:
+        {{- include "fintrack.containerSecurity" . | nindent 8 }}
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits: { memory: 64Mi }

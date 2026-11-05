@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Assistant IA{% endblock %}
+{% block content %}
+<h1>Assistant IA</h1>
+{% if not ai.providers %}
+<section class="card"><p class="muted">Aucun fournisseur IA n'est configuré sur ce serveur (clés ANTHROPIC_API_KEY / GEMINI_API_KEY de ai-service).</p></section>
+{% else %}
+<p class="muted small">Seul un <strong>résumé agrégé</strong> (totaux mensuels, principales catégories et postes, budgets, patrimoine par type) est envoyé au fournisseur choisi, jamais vos opérations une par une.
+Requêtes restantes aujourd'hui : {{ ai.remaining }} / {{ ai.daily_limit }}.</p>
+
+{% macro provider_fields() %}
+  <label>Fournisseur
+    <select name="provider">
+      {% for p in ai.providers %}<option value="{{ p }}" {% if p == provider %}selected{% endif %}>{{ 'Claude (Anthropic)' if p == 'claude' else 'Gemini (Google)' }}</option>{% endfor %}
+    </select>
+  </label>
+  {% if not consent %}
+  <label class="check"><input type="checkbox" name="consent" value="1" required> J'accepte l'envoi de ce résumé agrégé au fournisseur choisi.</label>
+  {% endif %}
+{% endmacro %}
+
+<div class="grid-2 entries">
+  <section class="card">
+    <h2>Analyse de la période</h2>
+    <form method="post" action="/ia/analyse" class="form form-inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+      <label>Période
+        <select name="months">
+          <option value="1">{{ MONTHS_FR[m - 1] }} {{ y }}</option>
+          <option value="3" selected>3 derniers mois</option>
+          <option value="6">6 derniers mois</option>
+        </select>
+      </label>
+      {{ provider_fields() }}
+      <button type="submit" class="btn btn-primary">Analyser</button>
+    </form>
+    {% if insight %}
+    <div class="ai-text">
+      <p class="muted small">{{ 'Claude' if insight_meta.provider == 'claude' else 'Gemini' }} · fin de période {{ insight_meta.period }} · {{ insight_meta.months }} mois</p>
+      {{ insight }}
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="card" id="chat">
+    <h2>Poser une question</h2>
+    <div class="chat">
+      {% for c in chat %}
+        {% if c.role == 'user' %}<div class="bubble bubble-user">{{ c.html }}</div>
+        {% else %}<div class="bubble bubble-ai ai-text">{{ c.html }}</div>{% endif %}
+      {% else %}
+        <p class="muted small">Exemples : « Combien je dépense en restaurants par mois ? », « Sur quoi puis-je économiser 200 € ? », « Mon épargne est-elle suffisante ? »</p>
+      {% endfor %}
+    </div>
+    <form method="post" action="/ia/chat" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+      <label>Votre question
+        <textarea name="question" rows="3" maxlength="2000" required></textarea>
+      </label>
+      {{ provider_fields() }}
+      <div class="row">
+        <button type="submit" class="btn btn-primary">Envoyer</button>
+      </div>
+    </form>
+    {% if chat %}
+    <form method="post" action="/ia/chat/effacer">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+      <button type="submit" class="btn btn-ghost btn-sm">Effacer la conversation</button>
+    </form>
+    {% endif %}
+  </section>
+</div>
+{% endif %}
+{% endblock %}

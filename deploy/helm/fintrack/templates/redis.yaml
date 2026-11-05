@@ -1,0 +1,81 @@
+{{- $sel := include "fintrack.selector" (dict "ctx" $ "name" "redis") }}
+# Redis : sessions et compteurs — éphémère par conception (aucune persistance).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fintrack.labels" . | nindent 4 }}
+    {{- $sel | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fintrack.labels" . | nindent 8 }}
+        {{- $sel | nindent 8 }}
+    spec:
+      serviceAccountName: redis
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- include "fintrack.podSecurity" dict | nindent 8 }}
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image | quote }}
+          command: ["sh", "-c"]
+          args:
+            - >-
+              exec redis-server --requirepass "$REDIS_PASSWORD" --save "" --appendonly no
+              --maxmemory 64mb --maxmemory-policy allkeys-lru
+              --rename-command FLUSHALL "" --rename-command CONFIG "" --rename-command DEBUG ""
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "fintrack.secretName" . }}, key: REDIS_PASSWORD } }
+            - name: REDISCLI_AUTH
+              valueFrom: { secretKeyRef: { name: {{ include "fintrack.secretName" . }}, key: REDIS_PASSWORD } }
+          ports:
+            - { name: redis, containerPort: 6379 }
+          securityContext:
+            {{- include "fintrack.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 10
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 20
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          emptyDir: { sizeLimit: 16Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fintrack.labelsAll" . | nindent 4 }}
+spec:
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - { name: redis, port: 6379, targetPort: redis }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fintrack.labelsAll" . | nindent 4 }}
+automountServiceAccountToken: false
