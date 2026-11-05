@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Connexion à TickTick{% endblock %}
+{% block head %}
+{# Navigation vers TickTick hors soumission de formulaire (voir ticktick_handoff).
+   L'URL est validée côté serveur et échappée par Jinja dans l'attribut. #}
+<meta http-equiv="refresh" content="0;url={{ authorize_url }}">
+{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Connexion à TickTick</h1>
+  <p>Redirection vers TickTick pour autoriser Fintrack à créer des tâches…</p>
+  <p><a class="btn btn-primary" href="{{ authorize_url }}" rel="noreferrer">Continuer vers TickTick</a></p>
+  <p class="muted small">Si rien ne se passe, cliquez sur le bouton. Le lien expire dans 10 minutes.</p>
+  <a class="btn btn-ghost" href="/parametres">Annuler</a>
+</section>
+{% endblock %}

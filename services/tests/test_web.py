@@ -227,3 +227,69 @@ def test_no_open_redirect_via_referer(setup, referer):
                headers={"referer": referer}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/")
     assert not r.headers["location"].startswith("//")
+
+
+# ── TickTick : pas de redirection externe après un POST (CSP form-action) ──
+AUTH_URL = ("https://ticktick.com/oauth/authorize?client_id=cid&scope=tasks%3Awrite+tasks%3Aread"
+            "&state=st&redirect_uri=http%3A%2F%2Ffintrack.localtest.me%3A9080%2Fcb&response_type=code")
+
+
+@pytest.fixture
+def tt(setup):
+    """web + faux notifier qui renvoie l'URL d'autorisation choisie par le test."""
+    c, state, sessions = setup
+    calls = {"authorize": 0, "url": AUTH_URL}
+
+    def notifier(request: httpx.Request):
+        if request.url.path == "/v1/ticktick/authorize":
+            calls["authorize"] += 1
+            return httpx.Response(200, json={"url": calls["url"]})
+        return httpx.Response(404)
+
+    c.app.state.backends.clients["notifier"] = httpx.Client(
+        base_url="http://notifier", transport=httpx.MockTransport(notifier))
+    login(c)
+    return c, calls
+
+
+def test_ticktick_connect_is_not_an_external_redirect(tt):
+    c, calls = tt
+    tok = csrf(c.get("/").text)
+    r = c.post("/parametres/ticktick/connecter", data={"csrf": tok}, follow_redirects=False)
+    assert r.status_code == 200 and "location" not in r.headers      # pas de 3xx
+    assert calls["authorize"] == 1
+    # meta refresh + lien de secours, URL échappée (& -> &amp;) dans l'attribut
+    escaped = AUTH_URL.replace("&", "&amp;")
+    assert f'http-equiv="refresh" content="0;url={escaped}"' in r.text
+    assert f'href="{escaped}"' in r.text
+    # la CSP globale est inchangée, sans script inline
+    csp = r.headers["content-security-policy"]
+    assert "form-action 'self' https://ticktick.com" in csp and "script-src 'self'" in csp
+    assert "<script" not in r.text.split("</head>")[0]
+
+
+@pytest.mark.parametrize("bad", [
+    "https://evil.example/oauth/authorize?x=1",            # autre hôte
+    "https://ticktick.com.evil.example/oauth/authorize",    # hôte suffixé
+    "http://ticktick.com/oauth/authorize",                  # pas https
+    "https://ticktick.com/autre-chemin",                    # autre chemin
+    "https://user@ticktick.com/oauth/authorize",            # identifiants dans l'URL
+    "javascript:alert(1)",
+])
+def test_ticktick_connect_rejects_unexpected_url(tt, bad):
+    c, calls = tt
+    calls["url"] = bad
+    tok = csrf(c.get("/").text)
+    r = c.post("/parametres/ticktick/connecter", data={"csrf": tok},
+               headers={"referer": "http://testserver/parametres"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/parametres"   # retour local
+    page = c.get("/parametres").text                                        # affiche le message
+    assert "URL d&#39;autorisation inattendue" in page and bad not in page
+
+
+def test_ticktick_connect_requires_csrf(tt):
+    c, calls = tt
+    r = c.post("/parametres/ticktick/connecter", data={"csrf": "forged"},
+               headers={"referer": "http://testserver/parametres"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/parametres"
+    assert calls["authorize"] == 0                       # aucun state créé sans CSRF valide
