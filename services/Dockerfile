@@ -40,8 +40,16 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PORT=8000 \
     FORWARDED_ALLOW_IPS=127.0.0.1
 
-# Pas de gestionnaire de paquets dans l'image finale : on retire pip (et le
-# setuptools qu'il embarque, signalé CVE-2025-47273) de l'interpréteur système.
+# Correctifs de sécurité Debian appliqués au build : couvre le délai entre la
+# publication d'un correctif (ex. apt CVE-2026-109518) et la reconstruction de
+# l'image officielle. Le scan Trivy de la CI vérifie le résultat.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pas de gestionnaire de paquets Python dans l'image finale : on retire pip
+# (et le setuptools qu'il embarque, signalé CVE-2025-47273) de l'interpréteur système.
 RUN groupadd --system --gid 10001 fintrack \
  && useradd --system --uid 10001 --gid fintrack --home-dir /app --shell /usr/sbin/nologin fintrack \
  && mkdir -p /data && chown fintrack:fintrack /data \
