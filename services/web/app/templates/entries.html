@@ -44,6 +44,7 @@
     <h2>Ajouter</h2>
     {% if not closed and section in ('depenses', 'revenus') %}
     <p class="row small">
+      <a class="btn btn-ghost btn-sm" href="/{{ section }}/saisie?y={{ y }}&m={{ m }}">☰ Saisie en masse</a>
       {% if section == 'depenses' %}<a class="btn btn-ghost btn-sm" href="/depenses/dupliquer?y={{ y }}&m={{ m }}">⧉ Dupliquer le mois précédent</a>{% endif %}
       <a class="btn btn-ghost btn-sm" href="/recurrentes?y={{ y }}&m={{ m }}">↻ Récurrentes</a>
     </p>

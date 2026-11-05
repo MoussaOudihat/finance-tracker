@@ -178,3 +178,13 @@ form + form { margin-top: .6rem; }
 tr.inactive td { opacity: .55; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; }
 .card-head h2 { margin: 0; }
+
+/* ── v2.1 : saisie en masse ── */
+details.card > summary { cursor: pointer; list-style-position: inside; }
+details.card > summary h2.inline { display: inline; }
+details.card[open] > summary { margin-bottom: .75rem; }
+.grid td { padding: .3rem .35rem; }
+.grid input, .grid select { padding: .3rem .4rem; min-width: 7rem; }
+.grid .input-sm { min-width: 6rem; }
+tr.row-error td { background: var(--red-soft); }
+tr.row-error-msg td { border-top: 0; padding-top: 0; }

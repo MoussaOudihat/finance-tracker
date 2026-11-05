@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Saisie en masse — {{ title }}{% endblock %}
+{% block content %}
+{% include "_month_nav.html" %}
+
+{% if closed %}
+<section class="card"><p class="muted">Ce mois est clôturé : saisie verrouillée.</p>
+  <a class="btn btn-ghost" href="/{{ section }}?y={{ y }}&m={{ m }}">Retour</a></section>
+{% else %}
+
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+{% for w in warnings %}<div class="flash flash-error" role="note">{{ w }}</div>{% endfor %}
+
+<details class="card" {% if not rows_filled %}open{% endif %}>
+  <summary><h2 class="inline">1. Coller depuis Excel, un relevé ou un CSV</h2></summary>
+  <form method="post" action="/{{ section }}/saisie/apercu" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="y" value="{{ y }}">
+    <input type="hidden" name="m" value="{{ m }}">
+    <label>Lignes copiées (une par ligne, colonnes séparées par tabulation ou « ; »)
+      <textarea name="paste" rows="8" maxlength="{{ max_paste }}" spellcheck="false"
+                placeholder="{% if section == 'depenses' %}ALIMENTATION&#9;42,50&#9;Courses&#9;Lidl&#10;LOGEMENT&#9;800&#9;Loyer{% else %}Salaire&#9;2 500,00&#9;Novembre&#10;Prime&#9;300{% endif %}">{{ paste }}</textarea>
+    </label>
+    <p class="muted small">
+      Une ligne d'en-tête ({% if section == 'depenses' %}Catégorie, Montant, Libellé, Enseigne{% else %}Source, Montant, Libellé{% endif %}, Date…) est reconnue ;
+      sinon le montant et {% if section == 'depenses' %}la catégorie sont détectés{% else %}la source est déduite{% endif %} automatiquement.
+      Les dates sont ignorées, les montants négatifs des relevés pris en valeur absolue. {{ max_rows }} lignes max.
+    </p>
+    <div class="row"><button type="submit" class="btn btn-primary">Prévisualiser</button></div>
+  </form>
+</details>
+
+<section class="card">
+  <div class="card-head">
+    <h2>2. Vérifier et enregistrer</h2>
+    <a class="btn btn-ghost btn-sm" href="/{{ section }}/saisie?y={{ y }}&m={{ m }}">Vider la grille</a>
+  </div>
+  <form method="post" action="/{{ section }}/saisie" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="y" value="{{ y }}">
+    <input type="hidden" name="m" value="{{ m }}">
+    <div class="table-wrap">
+    <table class="grid">
+      <thead><tr>
+        <th class="select-col"><span class="sr-only">Garder</span></th>
+        {% if section == 'depenses' %}<th>Catégorie</th>{% endif %}
+        <th class="num">Montant (€)</th>
+        {% if section == 'depenses' %}<th>Libellé</th><th>Enseigne</th>
+        {% else %}<th>Source</th><th>Libellé</th>{% endif %}
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+        {% set i = loop.index0 %}
+        <tr {% if r.errors %}class="row-error"{% endif %}>
+          <td class="select-col"><input type="checkbox" name="keep" value="{{ i }}" {% if r.keep %}checked{% endif %}
+              aria-label="Garder la ligne {{ i + 1 }}">{% if section != 'depenses' %}<input type="hidden" name="cat" value="">{% endif %}</td>
+          {% if section == 'depenses' %}
+          <td><select name="cat" aria-label="Catégorie ligne {{ i + 1 }}">
+            <option value="">— choisir —</option>
+            {% for c in categories %}<option value="{{ c.id }}" {% if r.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+          </select></td>
+          {% endif %}
+          <td class="num"><input class="input-sm" name="amount" value="{{ r.amount }}" inputmode="decimal"
+              aria-label="Montant ligne {{ i + 1 }}"></td>
+          {% if section == 'depenses' %}
+          <td><input name="label" value="{{ r.label }}" maxlength="120" aria-label="Libellé ligne {{ i + 1 }}"></td>
+          <td><input name="extra" value="{{ r.extra }}" maxlength="60" list="payees" autocomplete="off"
+              aria-label="Enseigne ligne {{ i + 1 }}"></td>
+          {% else %}
+          <td><input name="extra" value="{{ r.extra }}" maxlength="120" aria-label="Source ligne {{ i + 1 }}"></td>
+          <td><input name="label" value="{{ r.label }}" maxlength="120" aria-label="Libellé ligne {{ i + 1 }}"></td>
+          {% endif %}
+        </tr>
+        {% if r.errors %}
+        <tr class="row-error-msg"><td></td><td colspan="4" class="neg small">{{ r.errors|join(" ") }}</td></tr>
+        {% endif %}
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">Les lignes vides ou décochées sont ignorées. Tout est enregistré en une
+      seule fois : si une ligne est refusée, rien n'est écrit.</p>
+    <div class="row">
+      <button type="submit" class="btn btn-primary">Enregistrer les lignes</button>
+      <a class="btn btn-ghost" href="/{{ section }}?y={{ y }}&m={{ m }}">Annuler</a>
+    </div>
+  </form>
+</section>
+{% if payees %}
+<datalist id="payees">{% for p in payees %}<option value="{{ p }}">{% endfor %}</datalist>
+{% endif %}
+{% endif %}
+{% endblock %}
