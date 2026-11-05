@@ -140,6 +140,8 @@ flowchart LR
 
 ### Vérifier une image ou le chart publiés
 
+> Utiliser **cosign v3** ou plus : les signatures sont stockées au nouveau format (OCI referrers + bundle Sigstore), que cosign v2 ne voit pas (« no signatures found »).
+
 ```bash
 # Image
 cosign verify ghcr.io/moussaoudihat/fintrack-web:2.0.0 \
