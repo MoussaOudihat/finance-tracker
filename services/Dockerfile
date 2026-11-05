@@ -10,6 +10,8 @@
 # ─────────────────────────────────────────────────────────────
 ARG PYTHON_IMAGE=docker.io/library/python:3.12-slim@sha256:1148dbb014615300fa7e713b2f94f550c0d1c69780c0805f84f093ceee34dd0b
 
+# Image épinglée par digest via ARG PYTHON_IMAGE (DL3006 = faux positif)
+# hadolint ignore=DL3006
 FROM ${PYTHON_IMAGE} AS builder
 ARG SERVICE
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -21,6 +23,7 @@ RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --require-virtualenv -r ${SERVICE}/requirements.txt \
  && /opt/venv/bin/pip uninstall -y pip
 
+# hadolint ignore=DL3006
 FROM ${PYTHON_IMAGE}
 ARG SERVICE
 ARG VERSION=dev

@@ -9,3 +9,8 @@ KSV-0125
 # identifiant OAuth public. Tous les secrets sont dans le Secret
 # fintrack-secrets (jamais dans la ConfigMap).
 KSV-01010
+
+# KSV-0011 « limite CPU absente » : choix délibéré. Une limite CPU provoque du
+# bridage (throttling) sans protéger le nœud ; requests CPU + limite mémoire
+# sont toujours définies.
+KSV-0011

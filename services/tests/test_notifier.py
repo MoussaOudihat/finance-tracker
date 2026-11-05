@@ -145,3 +145,18 @@ def test_reminder_without_channel_is_not_marked_sent(env):
     c.put("/v1/prefs", headers=H, json={"reminder_enabled": True, "reminder_day": 9})
     assert app.state.run_reminders(dt.date(2026, 11, 9)) == 0
     assert store.mark_once("reminder:u1:2026-11")           # clé non consommée
+
+
+def test_slack_format_only_for_real_slack_hosts():
+    sent = []
+
+    def h(req):
+        sent.append(req)
+        return httpx.Response(200)
+    ch = Channels(httpx.Client(transport=httpx.MockTransport(h)), ticktick_client_id="",
+                  ticktick_client_secret="", ticktick_redirect_uri="",
+                  allowed_hosts=("hooks.slack.com", "evilslack.com"))
+    from notifier.app.channels import Message
+    ch.webhook("https://hooks.slack.com/services/x", Message("t", "b"))
+    ch.webhook("https://evilslack.com/x", Message("t", "b"))
+    assert b'"text"' in sent[0].content and b'"content"' in sent[1].content

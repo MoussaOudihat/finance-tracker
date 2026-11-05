@@ -187,6 +187,7 @@ jobs:
         with:
           image-ref: fintrack-${{ matrix.service }}:ci
           format: sarif
+          limit-severities-for-sarif: true
           output: trivy-${{ matrix.service }}.sarif
           ignore-unfixed: true
           severity: CRITICAL,HIGH
@@ -256,6 +257,7 @@ jobs:
           scan-ref: .
           skip-dirs: deploy/helm   # le chart est analysé via ses manifestes rendus (rendered/)
           format: sarif
+          limit-severities-for-sarif: true
           output: trivy-config.sarif
           severity: CRITICAL,HIGH,MEDIUM
       - uses: github/codeql-action/upload-sarif@a3d1b77a1ba1550fbb5c74db1dc3a11f4a481126 # v3

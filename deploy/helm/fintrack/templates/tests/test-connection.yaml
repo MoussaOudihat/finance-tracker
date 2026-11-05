@@ -4,6 +4,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: {{ .Release.Name }}-test-health
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fintrack.labels" . | nindent 4 }}
     app.kubernetes.io/name: web          # autorisé à joindre finance-api par la NetworkPolicy

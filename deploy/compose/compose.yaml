@@ -25,7 +25,6 @@ x-hardening: &hardening
   security_opt: [no-new-privileges:true]
   tmpfs: [/tmp]              # forme simple : portable Docker / Podman
   restart: unless-stopped
-  pids_limit: 128
   logging:
     driver: json-file
     options: { max-size: "10m", max-file: "3" }
@@ -62,7 +61,7 @@ services:
     depends_on:
       finance-api: { condition: service_healthy }
       redis: { condition: service_healthy }
-    deploy: { resources: { limits: { cpus: "0.50", memory: 256M } } }
+    deploy: { resources: { limits: { cpus: "0.50", memory: 256M, pids: 128 } } }
 
   finance-api:
     <<: *service
@@ -74,7 +73,7 @@ services:
       NOTIFIER_INTERNAL_TOKEN_FILE: /run/secrets/notifier_internal_token
     secrets: [supabase_anon_key, notifier_internal_token]
     networks: [backend, egress]
-    deploy: { resources: { limits: { cpus: "0.50", memory: 256M } } }
+    deploy: { resources: { limits: { cpus: "0.50", memory: 256M, pids: 128 } } }
 
   ai-service:
     <<: *service
@@ -89,7 +88,7 @@ services:
     networks: [backend, egress]
     depends_on:
       finance-api: { condition: service_healthy }
-    deploy: { resources: { limits: { cpus: "0.50", memory: 384M } } }
+    deploy: { resources: { limits: { cpus: "0.50", memory: 384M, pids: 128 } } }
 
   notifier:
     <<: *service
@@ -103,7 +102,7 @@ services:
     secrets: [notifier_internal_token, notifier_encryption_key, ticktick_client_secret]
     volumes: [notifier-data:/data]
     networks: [backend, egress]
-    deploy: { resources: { limits: { cpus: "0.25", memory: 192M } } }
+    deploy: { resources: { limits: { cpus: "0.25", memory: 192M, pids: 128 } } }
 
   redis:
     <<: *hardening
@@ -122,7 +121,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    deploy: { resources: { limits: { cpus: "0.25", memory: 96M } } }
+    deploy: { resources: { limits: { cpus: "0.25", memory: 96M, pids: 128 } } }
 
 networks:
   backend:
