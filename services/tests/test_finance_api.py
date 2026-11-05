@@ -145,3 +145,99 @@ def test_ai_context_is_aggregated(api, user_id):
     assert ctx["top_payees"][0] == {"name": "CHEZ PAUL", "per_month": 50.0}
     assert len(ctx["per_month"]) == 3
     assert "label" not in json.dumps(ctx["per_month"])     # pas de lignes brutes
+
+
+# ── Saisie groupée, récurrentes, recherche ───────────────────
+
+def test_expense_batch_is_atomic(api, user_id, seeded):
+    rows = [{"category_id": 1, "amount": 10, "label": "a", "payee": "lidl"},
+            {"category_id": 3, "amount": 700, "label": "loyer"}]
+    r = api.post("/v1/expenses/batch", headers=h(user_id),
+                 json={"year": 2026, "month": 5, "rows": rows})
+    assert r.status_code == 201 and r.json() == {"created": 2}
+    ids = sorted(e["id"] for e in seeded.tables["expenses"])
+    assert ids == [1, 2] and seeded.tables["expenses"][0]["payee"] == "LIDL"
+    # une ligne invalide -> rien n'est écrit
+    bad = rows + [{"category_id": 1, "amount": -1}]
+    assert api.post("/v1/expenses/batch", headers=h(user_id),
+                    json={"year": 2026, "month": 5, "rows": bad}).status_code == 422
+    unknown = rows + [{"category_id": 999, "amount": 1}]
+    assert api.post("/v1/expenses/batch", headers=h(user_id),
+                    json={"year": 2026, "month": 5, "rows": unknown}).status_code == 422
+    assert len(seeded.tables["expenses"]) == 2
+
+
+def test_batch_limits_and_closed_month(api, user_id, seeded):
+    too_many = [{"category_id": 1, "amount": 1}] * 201
+    assert api.post("/v1/expenses/batch", headers=h(user_id),
+                    json={"year": 2026, "month": 5, "rows": too_many}).status_code == 422
+    assert api.post("/v1/expenses/batch", headers=h(user_id),
+                    json={"year": 2026, "month": 5, "rows": []}).status_code == 422
+    seeded.seed("months", [{"id": 7, "user_id": user_id, "year": 2026, "month": 1, "closed": 1}])
+    assert api.post("/v1/revenues/batch", headers=h(user_id), json={
+        "year": 2026, "month": 1, "rows": [{"source": "Salaire", "amount": 1}]}).status_code == 409
+
+
+def test_expense_batch_emits_budget_alert(api, user_id, notifier):
+    api.put("/v1/budgets/2026/6", headers=h(user_id), json={"category": "RESTAURANTS", "amount": 100})
+    api.post("/v1/expenses/batch", headers=h(user_id), json={"year": 2026, "month": 6, "rows": [
+        {"category_id": 4, "amount": 60}, {"category_id": 4, "amount": 50}]})
+    assert [e["threshold"] for e in notifier.events] == [100]
+
+
+def test_recurring_lifecycle(api, user_id, seeded):
+    loyer = api.post("/v1/recurring", headers=h(user_id), json={
+        "type": "expense", "label": "Loyer", "amount": 800, "category_id": 3}).json()
+    api.post("/v1/recurring", headers=h(user_id), json={
+        "type": "revenue", "label": "Salaire", "amount": 2500})
+    assert api.post("/v1/recurring", headers=h(user_id), json={
+        "type": "expense", "label": "x", "amount": 1}).status_code == 422   # catégorie requise
+
+    rec = api.get("/v1/recurring?year=2026&month=7", headers=h(user_id)).json()
+    assert rec["closed"] is False and [r["pending"] for r in rec["items"]] == [True, True]
+
+    items = [{"id": r["id"], "amount": r["amount"] + (15 if r["type"] == "expense" else 0)}
+             for r in rec["items"]]
+    r = api.post("/v1/recurring/apply", headers=h(user_id),
+                 json={"year": 2026, "month": 7, "items": items})
+    assert r.json() == {"applied": 2}
+    s = api.get("/v1/months/2026/7/summary", headers=h(user_id)).json()
+    assert s["expenses"] == 815 and s["revenues"] == 2500
+    rec = api.get("/v1/recurring?year=2026&month=7", headers=h(user_id)).json()
+    assert not any(r["pending"] for r in rec["items"])
+    # double application refusée, rien n'est écrit
+    assert api.post("/v1/recurring/apply", headers=h(user_id),
+                    json={"year": 2026, "month": 7, "items": items}).status_code == 409
+    assert len(seeded.tables["expenses"]) == 1
+    # le mois suivant : de nouveau en attente ; désactivée -> plus en attente
+    api.put(f"/v1/recurring/{loyer['id']}/active", headers=h(user_id), json={"active": False})
+    rec = api.get("/v1/recurring?year=2026&month=8", headers=h(user_id)).json()
+    assert {r["label"]: r["pending"] for r in rec["items"]} == {"Loyer": False, "Salaire": True}
+    assert api.delete(f"/v1/recurring/{loyer['id']}", headers=h(user_id)).status_code == 204
+    assert api.delete(f"/v1/recurring/{loyer['id']}", headers=h(user_id)).status_code == 404
+
+
+def test_search_filters(api, user_id):
+    for (m, cat, amount, label, payee) in [(1, 1, 12, "Courses", "lidl"), (2, 1, 80, "Courses", "carrefour"),
+                                           (3, 4, 35, "Pizza", "Lidl"), (3, 3, 700, "Loyer", "")]:
+        api.post("/v1/expenses", headers=h(user_id), json={
+            "year": 2026, "month": m, "category_id": cat, "amount": amount,
+            "label": label, "payee": payee})
+
+    def search(**params):
+        return api.get("/v1/search/expenses", headers=h(user_id), params=params).json()
+    assert [r["amount"] for r in search(q="lidl")] == [35, 12]       # enseigne, casse ignorée, récent d'abord
+    assert [r["label"] for r in search(q="cour", min_amount=50)] == ["Courses"]
+    assert [r["amount"] for r in search(category_id=1, max_amount=50)] == [12]
+    assert search(q="pizza")[0]["category"] == "RESTAURANTS" and search(q="pizza")[0]["month"] == 3
+    assert len(search(q="*")) == 4                                   # joker retiré : = sans filtre texte
+    assert api.get("/v1/search/expenses", headers=h(user_id),
+                   params={"q": "a,b)(or=x"}).status_code == 200
+    assert api.get("/v1/search/budgets", headers=h(user_id)).status_code == 422
+
+
+def test_search_is_isolated_per_user(api, user_id):
+    api.post("/v1/expenses", headers=h(user_id), json={
+        "year": 2026, "month": 1, "category_id": 1, "amount": 5, "label": "secret"})
+    other = str(uuid.uuid4())
+    assert api.get("/v1/search/expenses?q=secret", headers=h(other)).json() == []

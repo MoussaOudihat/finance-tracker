@@ -8,7 +8,7 @@ avec le jeton de l'utilisateur (RLS). Sans état : réplicable (HPA).
 """
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -82,6 +82,55 @@ class SavingUpdate(_Trimmed):
     label: Text = ""
 
 
+class ExpenseRow(_Trimmed):
+    category_id: int
+    amount: Amount
+    label: Text = ""
+    payee: Annotated[str, Field(max_length=60)] = ""
+
+
+class RevenueRow(_Trimmed):
+    source: Annotated[str, Field(min_length=1, max_length=120)]
+    amount: Amount
+    label: Text = ""
+
+
+class ExpenseBatch(BaseModel):
+    year: Year
+    month: Month
+    rows: Annotated[list[ExpenseRow], Field(min_length=1, max_length=200)]
+
+
+class RevenueBatch(BaseModel):
+    year: Year
+    month: Month
+    rows: Annotated[list[RevenueRow], Field(min_length=1, max_length=200)]
+
+
+class RecurringIn(_Trimmed):
+    type: Literal["expense", "revenue"]
+    label: Annotated[str, Field(min_length=1, max_length=120)]
+    amount: Amount
+    category_id: Optional[int] = None
+    source: Text = ""
+    payee: Annotated[str, Field(max_length=60)] = ""
+
+
+class ApplyItem(BaseModel):
+    id: int
+    amount: Amount
+
+
+class ApplyIn(BaseModel):
+    year: Year
+    month: Month
+    items: Annotated[list[ApplyItem], Field(min_length=1, max_length=100)]
+
+
+class ActiveIn(BaseModel):
+    active: bool
+
+
 class BudgetIn(_Trimmed):
     category: Annotated[str, Field(min_length=1, max_length=60)]
     amount: Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)]
@@ -123,13 +172,15 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
     def _check_budget(r: Repo, chk: ledger.BudgetCheck) -> None:
         if chk.budget <= 0:
             return
-        for t in BUDGET_THRESHOLDS:
-            limit = chk.budget * t / 100
-            if chk.before < limit <= chk.after:
-                _emit({"type": "budget.threshold", "user_id": r.user.id,
-                       "email": r.user.email, "year": chk.year, "month": chk.month,
-                       "category": chk.category, "threshold": t,
-                       "spent": round(chk.after, 2), "budget": round(chk.budget, 2)})
+        # Un seul message par écriture : le seuil le plus haut franchi (une
+        # saisie groupée qui passe de 50 % à 110 % n'annonce pas aussi « 80 % »).
+        crossed = [t for t in BUDGET_THRESHOLDS
+                   if chk.before < chk.budget * t / 100 <= chk.after]
+        if crossed:
+            _emit({"type": "budget.threshold", "user_id": r.user.id,
+                   "email": r.user.email, "year": chk.year, "month": chk.month,
+                   "category": chk.category, "threshold": max(crossed),
+                   "spent": round(chk.after, 2), "budget": round(chk.budget, 2)})
 
     # ── Lecture ──────────────────────────────────────────────
     @app.get("/v1/categories")
@@ -189,6 +240,59 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
                                          body.label, body.payee)
         _check_budget(r, chk)
         return row
+
+    @app.post("/v1/expenses/batch", status_code=201)
+    def post_expenses_batch(body: ExpenseBatch, r: Repo = Depends(repo)):
+        created, checks = ledger.add_expenses_batch(
+            r, body.year, body.month, [row.model_dump() for row in body.rows])
+        for chk in checks:
+            _check_budget(r, chk)
+        return {"created": len(created)}
+
+    @app.post("/v1/revenues/batch", status_code=201)
+    def post_revenues_batch(body: RevenueBatch, r: Repo = Depends(repo)):
+        created = ledger.add_revenues_batch(r, body.year, body.month,
+                                            [row.model_dump() for row in body.rows])
+        return {"created": len(created)}
+
+    @app.get("/v1/recurring")
+    def get_recurring(year: Year, month: Month, r: Repo = Depends(repo)):
+        mo = r.month(year, month, create=False)
+        return {"closed": bool(mo and mo.get("closed")),
+                "items": ledger.recurring(r, year, month)}
+
+    @app.post("/v1/recurring", status_code=201)
+    def post_recurring(body: RecurringIn, r: Repo = Depends(repo)):
+        if body.type == "expense" and body.category_id is None:
+            raise HTTPException(422, "Catégorie requise pour une dépense récurrente.")
+        if body.type == "revenue" and not (body.source or body.label):
+            raise HTTPException(422, "Source requise pour un revenu récurrent.")
+        return ledger.add_recurring(r, body.model_dump())
+
+    @app.put("/v1/recurring/{rec_id}/active")
+    def put_recurring_active(rec_id: int, body: ActiveIn, r: Repo = Depends(repo)):
+        return ledger.set_recurring_active(r, rec_id, body.active)
+
+    @app.delete("/v1/recurring/{rec_id}", status_code=204)
+    def delete_recurring(rec_id: int, r: Repo = Depends(repo)):
+        ledger.delete_recurring(r, rec_id)
+
+    @app.post("/v1/recurring/apply")
+    def post_recurring_apply(body: ApplyIn, r: Repo = Depends(repo)):
+        n, checks = ledger.apply_recurring(r, body.year, body.month,
+                                           [i.model_dump() for i in body.items])
+        for chk in checks:
+            _check_budget(r, chk)
+        return {"applied": n}
+
+    @app.get("/v1/search/{kind}")
+    def get_search(kind: Literal["expenses", "revenues", "savings"],
+                   q: Annotated[str, Query(max_length=80)] = "",
+                   category_id: Optional[int] = None,
+                   min_amount: Annotated[Optional[float], Query(ge=0, le=1e9)] = None,
+                   max_amount: Annotated[Optional[float], Query(ge=0, le=1e9)] = None,
+                   r: Repo = Depends(repo)):
+        return ledger.search(r, kind, q, category_id, min_amount, max_amount)
 
     @app.post("/v1/revenues", status_code=201)
     def post_revenue(body: RevenueIn, r: Repo = Depends(repo)):
