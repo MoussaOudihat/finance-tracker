@@ -25,9 +25,10 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     en-têtes : aucune donnée financière ni jeton dans les logs), ajoute les
     en-têtes de sécurité de base."""
 
-    def __init__(self, app, csp: str = API_CSP):
+    def __init__(self, app, csp: str = API_CSP, static_prefix: str | None = None):
         super().__init__(app)
         self.csp = csp
+        self.static_prefix = static_prefix
 
     async def dispatch(self, request, call_next):
         rid = request.headers.get("x-request-id", "")
@@ -52,8 +53,18 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         h.setdefault("X-Content-Type-Options", "nosniff")
         h.setdefault("Content-Security-Policy", self.csp)
         h.setdefault("Referrer-Policy", "same-origin")
-        h.setdefault("Cache-Control", "no-store")
+        h.setdefault("Cache-Control", self._cache_policy(request))
         return response
+
+    def _cache_policy(self, request) -> str:
+        """Pages et API : jamais en cache (données financières). Fichiers
+        statiques : mis en cache — un an s'ils sont versionnés (?v=<version>,
+        l'URL change à chaque release), sinon revalidés par ETag (304)."""
+        if self.static_prefix and request.url.path.startswith(self.static_prefix):
+            if request.query_params.get("v"):
+                return "public, max-age=31536000, immutable"
+            return "no-cache"
+        return "no-store"
 
 
 def add_health_routes(app: FastAPI, ready_check=None) -> None:
@@ -67,7 +78,8 @@ def add_health_routes(app: FastAPI, ready_check=None) -> None:
         return JSONResponse({"status": "ok" if ok else detail}, status_code=200 if ok else 503)
 
 
-def service_client(base_url: str, timeout: float = 10.0) -> httpx.Client:
+def service_client(base_url: str, timeout: float = 10.0,
+                   transport: httpx.BaseTransport | None = None) -> httpx.Client:
     """Client HTTP vers un autre service : timeouts stricts, pas de
     redirection suivie, request-id propagé."""
     def _add_rid(request: httpx.Request):
@@ -79,4 +91,5 @@ def service_client(base_url: str, timeout: float = 10.0) -> httpx.Client:
         follow_redirects=False,
         event_hooks={"request": [_add_rid]},
         headers={"User-Agent": f"fintrack/{VERSION}"},
+        transport=transport,         # tests : transport simulé
     )

@@ -7,9 +7,12 @@ base directement.
 """
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import html
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Annotated, Optional
 from urllib.parse import urlsplit
@@ -44,6 +47,8 @@ LIABILITY_LABEL = {"voiture": "Prêt voiture", "conso": "Prêt conso/perso", "au
 SECTIONS = {"depenses": ("expenses", "Dépenses"), "revenus": ("revenues", "Revenus"),
             "epargne": ("savings", "Épargne")}
 COOKIE = "fintrack_sid"
+THEME_COOKIE = "fintrack_theme"      # préférence d'affichage par appareil (non sensible)
+THEME_LABEL = {"auto": "Auto", "light": "Clair", "dark": "Sombre"}
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
        "connect-src 'self'; form-action 'self' https://ticktick.com; "
        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
@@ -85,6 +90,18 @@ def render_ai_text(text: str) -> Markup:  # sûr : chaque ligne passe par html.e
     return Markup("".join(out))  # noqa: S704  # nosec B704
 
 
+def _static_hashes(directory: str) -> dict[str, str]:
+    """Empreinte (12 caractères hexadécimaux du SHA-256) de chaque fichier
+    statique, calculée une fois au démarrage."""
+    out = {}
+    for name in sorted(os.listdir(directory)):
+        full = os.path.join(directory, name)
+        if os.path.isfile(full):
+            with open(full, "rb") as f:
+                out[name] = hashlib.sha256(f.read()).hexdigest()[:12]
+    return out
+
+
 def parse_amount(raw: str) -> str:
     """Normalise la saisie ('1 234,50') ; la validation (> 0, fini) est
     faite par finance-api (pydantic : NaN/inf refusés)."""
@@ -115,12 +132,24 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
 
     app = FastAPI(title="fintrack-web", version=VERSION,
                   docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(RequestContextMiddleware, csp=CSP)
+    app.add_middleware(RequestContextMiddleware, csp=CSP, static_prefix="/static/")
+    # Pool partagé (borné) pour les appels parallèles vers les services
+    pool = ThreadPoolExecutor(max_workers=env_int("WEB_BACKEND_PARALLELISM", 16),
+                              thread_name_prefix="backend")
     app.mount("/static", StaticFiles(directory=os.path.join(_HERE, "static")), name="static")
     templates = Jinja2Templates(directory=os.path.join(_HERE, "templates"))
     templates.env.filters["eur"] = fmt_eur
-    templates.env.globals.update(VERSION=VERSION, MONTHS_FR=MONTHS_FR,
-                                 ASSET_LABEL=ASSET_LABEL, LIABILITY_LABEL=LIABILITY_LABEL)
+    asset_hashes = _static_hashes(os.path.join(_HERE, "static"))
+
+    def static(path: str) -> str:
+        """URL d'un fichier statique avec l'empreinte de son contenu : le
+        navigateur peut le garder en cache un an, l'URL change dès que le
+        fichier change (aucun risque de CSS périmé après une mise à jour)."""
+        return f"/static/{path}?v={asset_hashes[path]}"
+
+    templates.env.globals.update(VERSION=VERSION, MONTHS_FR=MONTHS_FR, static=static,
+                                 ASSET_LABEL=ASSET_LABEL, LIABILITY_LABEL=LIABILITY_LABEL,
+                                 THEME_LABEL=THEME_LABEL, SECTIONS=SECTIONS)
     app.state.sessions = sessions
     app.state.backends = backends
 
@@ -145,6 +174,22 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
                             refresh_token=sess["refresh_token"], expires_at=sess["expires_at"])
         return backends.call(sess, service, method, path, **kw)
 
+    def call_parallel(sid: str, sess: dict, *specs: tuple) -> list:
+        """Plusieurs appels de LECTURE indépendants, en parallèle (une page
+        n'attend plus la somme des latences). Le jeton est rafraîchi une seule
+        fois avant (pas de rotation concurrente) ; le contexte de la requête
+        (request_id) est copié dans chaque thread. Chaque spec :
+        (service, méthode, chemin) ou (service, méthode, chemin, kwargs)."""
+        if backends.fresh_token(sess):
+            sessions.update(sid, access_token=sess["access_token"],
+                            refresh_token=sess["refresh_token"], expires_at=sess["expires_at"])
+        futures = [
+            pool.submit(contextvars.copy_context().run, backends.call, sess, *spec[:3],
+                        **(spec[3] if len(spec) > 3 else {}))
+            for spec in specs
+        ]
+        return [f.result() for f in futures]     # 1re erreur relancée telle quelle
+
     def flash(sid: str, sess: dict, message: str, kind: str = "ok") -> None:
         sess["flash"] = {"message": message, "kind": kind}
         sessions.update(sid, flash=sess["flash"])
@@ -157,6 +202,8 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             ctx["csrf"] = sess["csrf"]
             ctx["user_email"] = sess.get("email", "")
         ctx.setdefault("active", "")
+        theme = request.cookies.get(THEME_COOKIE, "auto")
+        ctx["theme"] = theme if theme in THEME_LABEL else "auto"
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
 
     def redirect(url: str) -> RedirectResponse:
@@ -306,9 +353,11 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
     def dashboard(request: Request, y: Optional[str] = None, m: Optional[str] = None):
         sid, sess = load(request)
         yy, mm = month_params(sid, sess, y, m)
-        s = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/summary")
-        hist = call(sid, sess, "finance", "GET", "/v1/history", params={"limit": 12})
-        pat = call(sid, sess, "finance", "GET", "/v1/patrimoine")
+        s, hist, pat = call_parallel(
+            sid, sess,
+            ("finance", "GET", f"/v1/months/{yy}/{mm}/summary"),
+            ("finance", "GET", "/v1/history", {"params": {"limit": 12}}),
+            ("finance", "GET", "/v1/patrimoine"))
         return render(request, "dashboard.html", sid, sess, active="dashboard", y=yy, m=mm,
                       prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), s=s, history=hist,
                       closed=s["closed"], net_worth=pat["net_worth"],
@@ -340,8 +389,9 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
     def budgets(request: Request, y: Optional[str] = None, m: Optional[str] = None):
         sid, sess = load(request)
         yy, mm = month_params(sid, sess, y, m)
-        s = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/summary")
-        cats = call(sid, sess, "finance", "GET", "/v1/categories")
+        s, cats = call_parallel(sid, sess,
+                                ("finance", "GET", f"/v1/months/{yy}/{mm}/summary"),
+                                ("finance", "GET", "/v1/categories"))
         budgeted = {b["category"] for b in s["budgets"]}
         spent = {c["name"]: c["total"] for c in s["by_category"]}
         return render(request, "budgets.html", sid, sess, active="budgets", y=yy, m=mm,
@@ -531,6 +581,165 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         flash(sid, sess, "TickTick déconnecté.")
         return redirect("/parametres")
 
+    # ── Thème ────────────────────────────────────────────────
+    @app.post("/theme")
+    def set_theme(request: Request, theme: str = Form("auto"), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        resp = redirect(back_url(request))
+        resp.set_cookie(THEME_COOKIE, theme if theme in THEME_LABEL else "auto",
+                        max_age=365 * 24 * 3600, path="/", httponly=True,
+                        secure=cookie_secure, samesite="lax")
+        return resp
+
+    # ── Transactions récurrentes ─────────────────────────────
+    @app.get("/recurrentes", response_class=HTMLResponse)
+    def recurring_page(request: Request, y: Optional[str] = None, m: Optional[str] = None):
+        sid, sess = load(request)
+        yy, mm = month_params(sid, sess, y, m)
+        rec, cats = call_parallel(
+            sid, sess,
+            ("finance", "GET", "/v1/recurring", {"params": {"year": yy, "month": mm}}),
+            ("finance", "GET", "/v1/categories"))
+        return render(request, "recurring.html", sid, sess, active="recurrentes", y=yy, m=mm,
+                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
+                      closed=rec["closed"], items=rec["items"], categories=cats,
+                      pending=[r for r in rec["items"] if r["pending"]])
+
+    @app.post("/recurrentes")
+    def add_recurring(request: Request, y: int = Form(...), m: int = Form(...),
+                      type: str = Form("expense"), label: str = Form(""),
+                      amount: str = Form(""), category_id: str = Form(""),
+                      payee: str = Form(""), source: str = Form(""), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        body: dict = {"type": type, "label": label, "amount": parse_amount(amount)}
+        if type == "expense":
+            try:
+                body.update(category_id=int(category_id), payee=payee)
+            except ValueError:
+                raise BackendError(422, "Catégorie invalide.") from None
+        else:
+            body["source"] = source or label
+        call(sid, sess, "finance", "POST", "/v1/recurring", json=body)
+        flash(sid, sess, "Transaction récurrente ajoutée.")
+        return redirect(f"/recurrentes?y={y}&m={m}")
+
+    @app.post("/recurrentes/appliquer")
+    def apply_recurring(request: Request, y: int = Form(...), m: int = Form(...),
+                        sel: list[str] = Form([]), ids: list[str] = Form([]),
+                        amounts: list[str] = Form([]), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        if len(ids) != len(amounts):
+            raise BackendError(400, "Formulaire incomplet — rechargez la page.")
+        chosen = set(sel)
+        items = [{"id": i, "amount": parse_amount(a)}
+                 for i, a in zip(ids, amounts, strict=True) if i in chosen]
+        if not items:
+            raise BackendError(422, "Aucune transaction sélectionnée.")
+        try:
+            items = [{**it, "id": int(it["id"])} for it in items]
+        except ValueError:
+            raise BackendError(422, "Sélection invalide.") from None
+        n = call(sid, sess, "finance", "POST", "/v1/recurring/apply",
+                 json={"year": y, "month": m, "items": items})["applied"]
+        flash(sid, sess, f"{n} transaction(s) récurrente(s) appliquée(s).")
+        return redirect(f"/recurrentes?y={y}&m={m}")
+
+    @app.post("/recurrentes/{rec_id}/activer")
+    def toggle_recurring(request: Request, rec_id: int, active: str = Form("1"),
+                         y: int = Form(...), m: int = Form(...), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        call(sid, sess, "finance", "PUT", f"/v1/recurring/{rec_id}/active",
+             json={"active": active == "1"})
+        flash(sid, sess, "Récurrente activée." if active == "1" else "Récurrente désactivée.")
+        return redirect(f"/recurrentes?y={y}&m={m}")
+
+    @app.post("/recurrentes/{rec_id}/supprimer")
+    def delete_recurring(request: Request, rec_id: int, y: int = Form(...), m: int = Form(...),
+                         csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        call(sid, sess, "finance", "DELETE", f"/v1/recurring/{rec_id}")
+        flash(sid, sess, "Récurrente supprimée.")
+        return redirect(f"/recurrentes?y={y}&m={m}")
+
+    # ── Recherche ────────────────────────────────────────────
+    def _amount_param(raw: str) -> Optional[float]:
+        raw = parse_amount(raw)
+        if not raw:
+            return None
+        try:
+            v = float(raw)
+        except ValueError:
+            v = -1.0
+        if not (0 <= v <= 1e9):              # NaN inclus
+            raise BackendError(400, "Montant de filtre invalide.")
+        return v
+
+    @app.get("/recherche", response_class=HTMLResponse)
+    def search_page(request: Request, type: str = "depenses", q: str = "", cat: str = "",
+                    min: str = "", max: str = ""):  # noqa: A002 — noms des champs du formulaire
+        sid, sess = load(request)
+        section = type if type in SECTIONS else "depenses"
+        q = q.strip()[:80]
+        try:
+            cat_id = int(cat) if cat and section == "depenses" else None
+        except ValueError:
+            cat_id = None
+        lo, hi = _amount_param(min), _amount_param(max)
+        searched = bool(q or cat_id is not None or lo is not None or hi is not None)
+        params = {k: v for k, v in {"q": q, "category_id": cat_id,
+                                    "min_amount": lo, "max_amount": hi}.items()
+                  if v not in (None, "")}
+        specs = [("finance", "GET", "/v1/categories")]
+        if searched:
+            specs.append(("finance", "GET", f"/v1/search/{SECTIONS[section][0]}",
+                          {"params": params}))
+        cats, *rest = call_parallel(sid, sess, *specs)
+        results = rest[0] if rest else []
+        return render(request, "search.html", sid, sess, active="recherche", section=section,
+                      q=q, cat=cat_id, min=min, max=max, categories=cats, searched=searched,
+                      results=results, total=sum(r["amount"] for r in results))
+
+    # ── Dupliquer le mois précédent (dépenses) ───────────────
+    @app.get("/depenses/dupliquer", response_class=HTMLResponse)
+    def duplicate_form(request: Request, y: Optional[str] = None, m: Optional[str] = None):
+        sid, sess = load(request)
+        yy, mm = month_params(sid, sess, y, m)
+        py, pm = shift_month(yy, mm, -1)
+        src, cur = call_parallel(sid, sess,
+                                 ("finance", "GET", f"/v1/months/{py}/{pm}/entries"),
+                                 ("finance", "GET", f"/v1/months/{yy}/{mm}/entries"))
+        return render(request, "duplicate.html", sid, sess, active="depenses", y=yy, m=mm,
+                      src=(py, pm), rows=src["expenses"], closed=cur["closed"],
+                      existing=len(cur["expenses"]))
+
+    @app.post("/depenses/dupliquer")
+    def duplicate_month(request: Request, y: int = Form(...), m: int = Form(...),
+                        sel: list[str] = Form([]), cat: list[str] = Form([]),
+                        label: list[str] = Form([]), payee: list[str] = Form([]),
+                        amounts: list[str] = Form([]), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        if not (len(cat) == len(label) == len(payee) == len(amounts)):
+            raise BackendError(400, "Formulaire incomplet — rechargez la page.")
+        try:
+            chosen = sorted({int(i) for i in sel})
+            rows = [{"category_id": int(cat[i]), "amount": parse_amount(amounts[i]),
+                     "label": label[i], "payee": payee[i]}
+                    for i in chosen if 0 <= i < len(cat)]
+        except ValueError:
+            raise BackendError(422, "Sélection invalide.") from None
+        if not rows:
+            raise BackendError(422, "Aucune dépense sélectionnée.")
+        n = call(sid, sess, "finance", "POST", "/v1/expenses/batch",
+                 json={"year": y, "month": m, "rows": rows})["created"]
+        flash(sid, sess, f"{n} dépense(s) copiée(s) depuis le mois précédent.")
+        return redirect(f"/depenses?y={y}&m={m}")
+
     # ── Saisies (routes génériques en dernier) ───────────────
     @app.get("/{section}", response_class=HTMLResponse)
     def list_entries(request: Request, section: str, y: Optional[str] = None,
@@ -540,10 +749,15 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         kind, title = SECTIONS[section]
         sid, sess = load(request)
         yy, mm = month_params(sid, sess, y, m)
-        data = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/entries")
+        if kind == "expenses":
+            data, cats, payees = call_parallel(
+                sid, sess,
+                ("finance", "GET", f"/v1/months/{yy}/{mm}/entries"),
+                ("finance", "GET", "/v1/categories"),
+                ("finance", "GET", "/v1/payees"))
+        else:
+            data, cats, payees = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/entries"), [], []
         rows = data[kind]
-        cats = call(sid, sess, "finance", "GET", "/v1/categories") if kind == "expenses" else []
-        payees = call(sid, sess, "finance", "GET", "/v1/payees") if kind == "expenses" else []
         return render(request, "entries.html", sid, sess, active=section, section=section,
                       title=title, y=yy, m=mm, prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
                       rows=rows, total=sum(r["amount"] for r in rows), categories=cats,
@@ -576,8 +790,12 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             return Response(status_code=404)
         kind, title = SECTIONS[section]
         sid, sess = load(request)
-        entry = call(sid, sess, "finance", "GET", f"/v1/entries/{kind}/{entry_id}")
-        cats = call(sid, sess, "finance", "GET", "/v1/categories") if kind == "expenses" else []
+        if kind == "expenses":
+            entry, cats = call_parallel(sid, sess,
+                                        ("finance", "GET", f"/v1/entries/{kind}/{entry_id}"),
+                                        ("finance", "GET", "/v1/categories"))
+        else:
+            entry, cats = call(sid, sess, "finance", "GET", f"/v1/entries/{kind}/{entry_id}"), []
         return render(request, "edit.html", sid, sess, active=section, section=section,
                       title=title, entry=entry, categories=cats, closed=entry["closed"])
 

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
-{% block head %}{% if section == 'depenses' and ai_enabled %}<script src="/static/categorize.js" defer></script>{% endif %}{% endblock %}
+{% block head %}{% if section == 'depenses' and ai_enabled %}<script src="{{ static("categorize.js") }}" defer></script>{% endif %}{% endblock %}
 {% block content %}
 {% include "_month_nav.html" %}
 
@@ -42,6 +42,12 @@
 
   <section class="card">
     <h2>Ajouter</h2>
+    {% if not closed and section in ('depenses', 'revenus') %}
+    <p class="row small">
+      {% if section == 'depenses' %}<a class="btn btn-ghost btn-sm" href="/depenses/dupliquer?y={{ y }}&m={{ m }}">⧉ Dupliquer le mois précédent</a>{% endif %}
+      <a class="btn btn-ghost btn-sm" href="/recurrentes?y={{ y }}&m={{ m }}">↻ Récurrentes</a>
+    </p>
+    {% endif %}
     {% if closed %}
     <p class="muted">Ce mois est clôturé : saisie verrouillée.</p>
     {% else %}

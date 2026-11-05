@@ -406,3 +406,150 @@ def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
         "patrimoine": {"by_type": pat["by_type"], "net_worth": round(pat["net_worth"], 2),
                        "liabilities_total": round(pat["total_liabilities"], 2)},
     }
+
+
+# ── Saisie groupée (atomique) ────────────────────────────────
+
+def add_expenses_batch(repo: Repo, year: int, month: int, rows: list[dict]) -> tuple[list[dict], list[BudgetCheck]]:
+    """rows : [{category_id, amount, label, payee}]. Une seule insertion
+    PostgREST : tout ou rien. Renvoie aussi le bilan budget par catégorie."""
+    mo = ensure_open(repo, year, month)
+    cats = {c["id"]: c["name"] for c in categories(repo)}
+    unknown = sorted({r["category_id"] for r in rows} - set(cats))
+    if unknown:
+        raise HTTPException(422, f"Catégorie inconnue : {unknown[0]}.")
+    used = sorted({r["category_id"] for r in rows})
+    before = {cid: _spent(repo, mo["id"], cid) for cid in used}
+    created = repo.insert_many("expenses", [
+        {"month_id": mo["id"], "category_id": r["category_id"], "amount": r["amount"],
+         "label": r.get("label", ""), "payee": (r.get("payee") or "").strip().upper()}
+        for r in rows])
+    repo.touch_sync_ts()
+    added: dict[int, float] = defaultdict(float)
+    for r in rows:
+        added[r["category_id"]] += r["amount"]
+    checks = [BudgetCheck(cats[cid], year, month, _budget_amount(repo, year, month, cats[cid]),
+                          before[cid], before[cid] + added[cid]) for cid in used]
+    return created, checks
+
+
+def add_revenues_batch(repo: Repo, year: int, month: int, rows: list[dict]) -> list[dict]:
+    mo = ensure_open(repo, year, month)
+    created = repo.insert_many("revenues", [
+        {"month_id": mo["id"], "source": r["source"], "amount": r["amount"], "label": r.get("label", "")}
+        for r in rows])
+    repo.touch_sync_ts()
+    return created
+
+
+# ── Transactions récurrentes (même règle que l'app desktop) ──
+# « En attente » pour un mois = active ET pas déjà appliquée CE mois-là.
+
+def recurring(repo: Repo, year: int, month: int) -> list[dict]:
+    cats = {c["id"]: c["name"] for c in categories(repo)}
+    out = []
+    for r in repo.select("recurring_transactions"):
+        r["category"] = cats.get(r.get("category_id"), "")
+        r["pending"] = bool(r.get("active")) and not (
+            r.get("last_applied_year") == year and r.get("last_applied_month") == month)
+        out.append(r)
+    return sorted(out, key=lambda r: (r["type"], r["label"].lower()))
+
+
+def add_recurring(repo: Repo, data: dict) -> dict:
+    if data["type"] == "expense":
+        category_id_or_404(repo, data["category_id"])
+    row = repo.insert("recurring_transactions", {
+        "label": data["label"], "amount": data["amount"], "type": data["type"],
+        "category_id": data.get("category_id") if data["type"] == "expense" else None,
+        "source": data.get("source", "") if data["type"] == "revenue" else "",
+        "payee": (data.get("payee") or "").strip().upper() if data["type"] == "expense" else "",
+        "active": 1, "last_applied_year": 0, "last_applied_month": 0})
+    repo.touch_sync_ts()
+    return row
+
+
+def set_recurring_active(repo: Repo, rec_id: int, active: bool) -> dict:
+    rows = repo.update("recurring_transactions", {"id": f"eq.{rec_id}"}, {"active": int(active)})
+    if not rows:
+        raise HTTPException(404, "Récurrente introuvable.")
+    repo.touch_sync_ts()
+    return rows[0]
+
+
+def delete_recurring(repo: Repo, rec_id: int) -> None:
+    if not repo.delete("recurring_transactions", {"id": f"eq.{rec_id}"}):
+        raise HTTPException(404, "Récurrente introuvable.")
+    repo.touch_sync_ts()
+
+
+def apply_recurring(repo: Repo, year: int, month: int, items: list[dict]) -> tuple[int, list[BudgetCheck]]:
+    """items : [{id, amount}]. Toutes doivent être en attente pour ce mois ;
+    les écritures de chaque type partent en une insertion groupée."""
+    by_id = {r["id"]: r for r in recurring(repo, year, month)}
+    expenses, revenues = [], []
+    for it in items:
+        r = by_id.get(it["id"])
+        if r is None:
+            raise HTTPException(404, "Récurrente introuvable.")
+        if not r["pending"]:
+            raise HTTPException(409, f"« {r['label']} » est déjà appliquée ce mois-ci (ou inactive).")
+        if r["type"] == "expense":
+            if not r.get("category_id"):
+                raise HTTPException(422, f"« {r['label']} » n'a pas de catégorie.")
+            expenses.append({"category_id": r["category_id"], "amount": it["amount"],
+                             "label": r["label"], "payee": r.get("payee") or ""})
+        else:
+            revenues.append({"source": r.get("source") or r["label"], "amount": it["amount"],
+                             "label": r["label"]})
+    checks: list[BudgetCheck] = []
+    if expenses:
+        _, checks = add_expenses_batch(repo, year, month, expenses)
+    if revenues:
+        add_revenues_batch(repo, year, month, revenues)
+    for it in items:
+        repo.update("recurring_transactions", {"id": f"eq.{it['id']}"},
+                    {"last_applied_year": year, "last_applied_month": month})
+    repo.touch_sync_ts()
+    return len(items), checks
+
+
+# ── Recherche dans tout l'historique ─────────────────────────
+
+def _like(text: str) -> str:
+    # Jokers et séparateurs PostgREST neutralisés : la saisie reste du texte.
+    cleaned = "".join(ch for ch in text if ch not in "*,()\\\"")
+    return f"*{cleaned}*"
+
+
+def search(repo: Repo, kind: str, q: str = "", category_id: int | None = None,
+           min_amount: float | None = None, max_amount: float | None = None,
+           limit: int = 200) -> list[dict]:
+    table = ENTRY_TABLES[kind]
+    filters: dict = {}
+    q = q.strip()
+    if q:
+        pattern = _like(q)
+        fields = {"expenses": ("label", "payee"), "revenues": ("source", "label"),
+                  "savings": ("account", "label")}[kind]
+        filters["or"] = "(" + ",".join(f"{f}.ilike.{pattern}" for f in fields) + ")"
+    if category_id is not None and kind == "expenses":
+        filters["category_id"] = f"eq.{category_id}"
+    if min_amount is not None:
+        filters["amount"] = f"gte.{min_amount}"
+    rows = repo.select(table, filters, order="id.desc", limit=2000)
+    if max_amount is not None:                     # deux bornes sur la même colonne
+        rows = [r for r in rows if r["amount"] <= max_amount]
+    months = repo.months_by_id(r["month_id"] for r in rows)
+    cats = {c["id"]: c["name"] for c in categories(repo)} if kind == "expenses" else {}
+    out = []
+    for r in rows:
+        mo = months.get(r["month_id"])
+        if mo is None:
+            continue
+        r["year"], r["month"] = mo["year"], mo["month"]
+        if kind == "expenses":
+            r["category"] = cats.get(r["category_id"], "?")
+        out.append(r)
+    out.sort(key=lambda r: (r["year"], r["month"], r["id"]), reverse=True)
+    return out[:limit]

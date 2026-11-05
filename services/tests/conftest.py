@@ -74,12 +74,26 @@ class FakePostgrest:
         if op == "in":
             items = [v.strip().strip('"') for v in val.strip("()").split(",") if v.strip()]
             return str(cur) in items
+        if op == "ilike":                                     # * = joker, insensible à la casse
+            import fnmatch
+            return fnmatch.fnmatch(str(cur or "").lower(), val.lower())
+        if op in ("gte", "lte"):
+            return cur is not None and (float(cur) >= float(val) if op == "gte" else float(cur) <= float(val))
         raise AssertionError(f"opérateur non géré : {op}")
+
+    @classmethod
+    def _match_or(cls, row, expr):
+        """or=(col.op.val,col.op.val) — sans parenthèses imbriquées."""
+        parts = expr.strip("()").split(",")
+        return any(cls._match(row, p.split(".", 1)[0], p.split(".", 1)[1]) for p in parts)
 
     def _filter(self, rows, params, uid):
         out = [r for r in rows if r.get("user_id") == uid]          # « RLS »
         for k, v in params.items():
             if k in ("select", "order", "limit", "offset", "on_conflict"):
+                continue
+            if k == "or":
+                out = [r for r in out if self._match_or(r, v)]
                 continue
             out = [r for r in out if self._match(r, k, v)]
         return out
@@ -109,6 +123,16 @@ class FakePostgrest:
         if request.method == "POST":
             import json
             new = json.loads(request.content)
+            if isinstance(new, list):                # insertion groupée : tout ou rien
+                if any(n.get("user_id") != uid for n in new):
+                    return httpx.Response(403, json={"message": "RLS"})
+                ids = {r["id"] for r in rows if r["user_id"] == uid}
+                if any(n["id"] in ids for n in new) or len({n["id"] for n in new}) != len(new):
+                    return httpx.Response(409, json={"message": "duplicate"})
+                if any(n.get("amount") is not None and n["amount"] <= 0 for n in new):
+                    return httpx.Response(400, json={"message": "check violation"})
+                rows.extend(new)
+                return httpx.Response(201, json=new)
             if new.get("user_id") != uid:
                 return httpx.Response(403, json={"message": "RLS"})
             upsert = "merge-duplicates" in request.headers.get("prefer", "")

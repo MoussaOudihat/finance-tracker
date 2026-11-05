@@ -2,7 +2,7 @@
 {% block title %}Connexion{% endblock %}
 {% block content %}
 <section class="card login">
-  <img src="/static/fintrack.png" alt="" width="64" height="64">
+  <img src="{{ static("fintrack.png") }}" alt="" width="64" height="64">
   <h1>Fintrack</h1>
   <p class="muted">Connectez-vous avec le compte utilisé dans l'application desktop.</p>
   {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from conftest import make_token
 from finance_api.app.main import create_app as create_finance
+from fintrack_common.http import service_client
 from fintrack_common.ratelimit import Counter
 from web.app.backends import Backends, SupabaseAuth
 from web.app.main import create_app as create_web
@@ -293,3 +294,156 @@ def test_ticktick_connect_requires_csrf(tt):
                headers={"referer": "http://testserver/parametres"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/parametres"
     assert calls["authorize"] == 0                       # aucun state créé sans CSRF valide
+
+
+# ── Performance : cache des fichiers statiques, appels parallèles ──
+
+def test_static_assets_are_fingerprinted_and_cached(setup):
+    c, *_ = setup
+    page = c.get("/connexion").text
+    css = re.search(r'href="(/static/app\.css\?v=[0-9a-f]{12})"', page).group(1)
+    r = c.get(css)
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert "etag" in r.headers
+    # sans empreinte : revalidation (ETag) plutôt que cache long
+    assert c.get("/static/app.css").headers["cache-control"] == "no-cache"
+    # les pages, elles, ne sont jamais mises en cache
+    assert c.get("/connexion").headers["cache-control"] == "no-store"
+
+
+def test_fingerprint_changes_with_content(tmp_path):
+    from web.app.main import _static_hashes
+    (tmp_path / "a.css").write_text("body{}")
+    h1 = _static_hashes(str(tmp_path))["a.css"]
+    (tmp_path / "a.css").write_text("body{color:red}")
+    assert _static_hashes(str(tmp_path))["a.css"] != h1
+
+
+def test_dashboard_backend_calls_run_in_parallel(seeded, user_id, verifier, monkeypatch):
+    """3 appels de 0,4 s chacun : en série ≥ 1,2 s ; en parallèle ≈ 0,4 s."""
+    import threading
+    import time as _t
+
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("FINTRACK_COOKIE_SECURE", "0")
+    seen_rids, lock = set(), threading.Lock()
+
+    def finance(request: httpx.Request):
+        _t.sleep(0.4)
+        with lock:
+            seen_rids.add(request.headers.get("x-request-id"))
+        path = request.url.path
+        if path.endswith("/summary"):
+            return httpx.Response(200, json={"closed": False, "revenues": 0, "expenses": 0,
+                                             "savings": 0, "balance": 0, "by_category": [], "budgets": []})
+        if path == "/v1/history":
+            return httpx.Response(200, json=[])
+        if path == "/v1/patrimoine":
+            return httpx.Response(200, json={"net_worth": 0})
+        return httpx.Response(404)
+
+    def gotrue(request):
+        return httpx.Response(200, json=_session(user_id, "u@example.com"))
+
+    backends = Backends(SupabaseAuth(httpx.Client(base_url="https://proj.supabase.co",
+                                                  transport=httpx.MockTransport(gotrue)), "anon"),
+                        service_client("http://finance", transport=httpx.MockTransport(finance)),
+                        None, None)
+    c = TestClient(create_web(backends=backends,
+                              sessions=SessionStore(Fernet.generate_key().decode()), counter=Counter()))
+    login(c)
+    start = _t.perf_counter()
+    r = c.get("/?y=2026&m=3", headers={"x-request-id": "rid-test-123456"})
+    elapsed = _t.perf_counter() - start
+    assert r.status_code == 200
+    assert elapsed < 1.0, f"appels en série ? {elapsed:.2f} s"
+    assert seen_rids == {"rid-test-123456"}          # request_id propagé dans chaque thread
+
+
+# ── Thème, récurrentes, recherche, duplication ───────────────
+
+def test_theme_cookie_sets_data_theme(setup):
+    c, *_ = setup
+    login(c)
+    page = c.get("/depenses?y=2026&m=11").text
+    assert "data-theme" not in page.split(">", 2)[1]               # auto par défaut
+    r = c.post("/theme", data={"theme": "dark", "csrf": csrf(page)}, follow_redirects=False,
+               headers={"referer": "http://testserver/depenses?y=2026&m=11"})
+    assert r.status_code == 303 and r.headers["location"] == "/depenses?y=2026&m=11"
+    assert "fintrack_theme=dark" in r.headers["set-cookie"]
+    assert '<html lang="fr" data-theme="dark">' in c.get("/depenses?y=2026&m=11").text
+    c.cookies.delete("fintrack_theme")
+    c.cookies.set("fintrack_theme", '"><script>')                 # valeur inconnue -> auto
+    assert "data-theme" not in c.get("/depenses?y=2026&m=11").text.split(">", 2)[1]
+    assert c.post("/theme", data={"theme": "light", "csrf": "forged"}).status_code in (200, 303)
+    assert c.cookies.get("fintrack_theme") != "light"
+
+
+def test_recurring_pages(setup):
+    c, *_ = setup
+    login(c)
+    page = c.get("/recurrentes?y=2026&m=9")
+    assert page.status_code == 200 and "Aucune transaction récurrente" in page.text
+    tok = csrf(page.text)
+    c.post("/recurrentes", data={"y": 2026, "m": 9, "type": "expense", "label": "Netflix",
+                                 "amount": "13,49", "category_id": "2", "csrf": tok})
+    c.post("/recurrentes", data={"y": 2026, "m": 9, "type": "revenue", "label": "Salaire",
+                                 "amount": "2 500", "source": "", "csrf": tok})
+    page = c.get("/recurrentes?y=2026&m=9").text
+    ids = re.findall(r'name="ids" value="(\d+)"', page)
+    assert len(ids) == 2 and "13,49" in page
+    # n'applique que la première, avec un montant ajusté
+    r = c.post("/recurrentes/appliquer", data={"y": 2026, "m": 9, "sel": [ids[0]], "ids": ids,
+                                               "amounts": ["15,99", "2500"], "csrf": tok},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert "1 transaction(s) récurrente(s) appliquée(s)" in c.get("/recurrentes?y=2026&m=9").text
+    entries = c.get("/depenses?y=2026&m=9").text + c.get("/revenus?y=2026&m=9").text
+    assert ("15,99" in entries) != ("2 500,00" in entries)          # une seule des deux appliquée
+    page = c.get("/recurrentes?y=2026&m=9").text
+    assert len(re.findall(r'name="ids"', page)) == 1
+    rid = re.search(r"/recurrentes/(\d+)/supprimer", page).group(1)
+    c.post(f"/recurrentes/{rid}/activer", data={"y": 2026, "m": 9, "active": "0", "csrf": tok})
+    assert "Inactive" in c.get("/recurrentes?y=2026&m=9").text
+
+
+def test_search_page(setup):
+    c, *_ = setup
+    login(c)
+    tok = csrf(c.get("/depenses?y=2026&m=10").text)
+    for m, amount, label in [(10, "12", "Boulangerie"), (11, "64", "Boulangerie fête")]:
+        c.post("/depenses", data={"y": 2026, "m": m, "amount": amount, "label": label,
+                                  "payee": "", "category_id": "1", "csrf": tok})
+    assert "résultat" not in c.get("/recherche").text               # formulaire seul
+    page = c.get("/recherche?type=depenses&q=boulang&min=20").text
+    assert "1 résultat(s)" in page and "Novembre 2026" in page and "Octobre 2026" not in page
+    assert c.get("/recherche?q=x&min=abc").status_code == 400
+    assert "<script>" not in c.get("/recherche?q=<script>").text
+
+
+def test_duplicate_previous_month(setup):
+    c, *_ = setup
+    login(c)
+    tok = csrf(c.get("/depenses?y=2026&m=3").text)
+    for amount, label, cat in [("700", "Loyer", "3"), ("45", "Internet", "2"), ("30", "Ciné", "4")]:
+        c.post("/depenses", data={"y": 2026, "m": 3, "amount": amount, "label": label,
+                                  "payee": "", "category_id": cat, "csrf": tok})
+    page = c.get("/depenses/dupliquer?y=2026&m=4").text
+    assert "Mars 2026" in page and "Avril 2026" in page
+    labels = re.findall(r'name="label" value="([^"]*)"', page)
+    cats = re.findall(r'name="cat" value="(\d+)"', page)
+    keep = [str(i) for i, lb in enumerate(labels) if lb != "Ciné"]
+    amounts = ["710" if lb == "Loyer" else "45" for lb in labels]
+    r = c.post("/depenses/dupliquer", data={"y": 2026, "m": 4, "sel": keep, "cat": cats,
+                                           "label": labels, "payee": [""] * 3,
+                                           "amounts": amounts, "csrf": tok}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/depenses?y=2026&m=4"
+    april = c.get("/depenses?y=2026&m=4").text
+    assert "2 dépense(s) copiée(s)" in april and "710,00" in april and "Ciné" not in april
+    assert "contient déjà 2 dépense(s)" in c.get("/depenses/dupliquer?y=2026&m=4").text
+    # un montant invalide : rien n'est écrit (insertion atomique)
+    c.post("/depenses/dupliquer", data={"y": 2026, "m": 4, "sel": ["0", "1"], "cat": cats[:2],
+                                        "label": labels[:2], "payee": ["", ""],
+                                        "amounts": ["10", "-5"], "csrf": tok})
+    assert len(re.findall(r"/depenses/\d+/modifier", c.get("/depenses?y=2026&m=4").text)) == 2
