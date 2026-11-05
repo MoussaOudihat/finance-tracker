@@ -9,6 +9,7 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 ## [2.0.2] — 2026-11-05
 
 ### Corrigé
+- 🔗 **Bouton « Connecter » TickTick sans effet** : le clic ne menait nulle part. CSP3 applique `form-action` à toute la chaîne de redirections qui suit l'envoi d'un formulaire, et TickTick redirige ensuite vers ses propres pages (connexion, consentement), absentes de la liste autorisée : Chrome bloquait la navigation en silence. Le formulaire renvoie désormais une page intermédiaire qui part vers TickTick (redirection automatique et lien de secours, sans script). La CSP reste inchangée et l'URL d'autorisation est toujours validée strictement.
 - ☸️ **`helm test` échouait** : le pod de test se présentait avec l'identité de `web`. Il était donc bloqué par les NetworkPolicies (web ne s'appelle pas lui-même), devenait un endpoint du Service `web` (risque de recevoir du trafic réel) et était compté par son PDB. Il a désormais sa propre identité (`fintrack-test`) et une NetworkPolicy dédiée, limitée à `web` et `finance-api`.
 - 📜 **Logs en partie en texte brut** : le démarrage et le journal d'accès d'uvicorn ne passaient pas par le formateur JSON. Tout est maintenant en JSON, et le journal d'accès uvicorn, en doublon du middleware (qui journalise chaque requête avec son `request_id`) et contenant l'IP client en clair, est désactivé.
 - 🔒 **bcrypt 5** : troncature explicite à 72 octets. Sans elle, un mot de passe ou une réponse secrète longue bloquait la connexion à l'app desktop.

@@ -166,12 +166,22 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             url = "/"
         return RedirectResponse(url, status_code=303)
 
-    def redirect_ticktick(url: str) -> RedirectResponse:
-        """Seule redirection externe : la page d'autorisation OAuth TickTick."""
+    def ticktick_handoff(request: Request, sid: str, sess: dict, url: str) -> HTMLResponse:
+        """Seule navigation externe de l'application : l'autorisation OAuth
+        TickTick, validée strictement (https, hôte exact, chemin exact).
+
+        Pas de 303 vers TickTick : CSP3 applique `form-action` à TOUTE la
+        chaîne de redirections qui suit un POST, et TickTick redirige ensuite
+        vers des pages (connexion, consentement…) hors de notre liste — le
+        navigateur bloquait silencieusement la navigation. On renvoie donc une
+        page 200 qui part vers TickTick par meta refresh (+ lien de secours) :
+        cette navigation n'est plus une soumission de formulaire, la CSP reste
+        inchangée et sans script inline."""
         p = urlsplit(url)
         if p.scheme != "https" or p.netloc != "ticktick.com" or p.path != "/oauth/authorize":
             raise BackendError(502, "URL d'autorisation inattendue.")
-        return RedirectResponse(url, status_code=303)
+        return render(request, "ticktick_redirect.html", sid, sess, active="parametres",
+                      authorize_url=url)
 
     def check_csrf(sess: dict, token: str) -> None:
         if not secure_equals(token, sess.get("csrf", "")):
@@ -499,7 +509,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         sid, sess = load(request)
         check_csrf(sess, csrf)
         url = call(sid, sess, "notifier", "POST", "/v1/ticktick/authorize")["url"]
-        return redirect_ticktick(url)
+        return ticktick_handoff(request, sid, sess, url)
 
     @app.get("/parametres/ticktick/callback")
     def ticktick_callback(request: Request, code: str = "", state: str = "",
