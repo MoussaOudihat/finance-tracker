@@ -6,10 +6,34 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
-## [Non publié]
+## [2.1.0] — 2026-11-05
+
+### Ajouté (application web)
+- 🌗 **Thème Auto / Clair / Sombre** : bouton dans la barre du haut, choix mémorisé par appareil. Appliqué côté serveur, sans script inline : CSP inchangée.
+- 🔁 **Transactions récurrentes** (`/recurrentes`) : loyer, abonnements, salaire… créés une fois, puis appliqués chaque mois en un clic avec des montants ajustables. Même règle que l'app desktop (active et pas encore appliquée ce mois-là) ; une double application est refusée.
+- 🔎 **Recherche** (`/recherche`) dans tout l'historique : texte (libellé, enseigne, source), catégorie, montant min/max.
+- ⧉ **Dupliquer le mois précédent** : dépenses de M-1 à cocher, montants modifiables, avertissement si le mois contient déjà des dépenses.
+- ☰ **Saisie en masse** des dépenses et revenus : coller depuis Excel, un relevé bancaire ou un CSV (en-têtes reconnus, sinon montant, catégorie et dates détectés), vérifier dans une grille modifiable, puis enregistrer **en tout ou rien**. En cas d'erreur, rien n'est écrit et la grille reste à l'écran.
+- ✨ **Suggestion IA des catégories** dans la saisie en masse : jusqu'à 50 lignes classées en un seul appel, compté comme une requête du quota IA. Suggestions marquées « IA », à vérifier avant d'enregistrer.
+- 📈 **Analyses** (`/analyses`) : tendance sur 12 mois, comparaison au mois précédent, au même mois de l'année précédente et à la moyenne des 6 derniers mois, détail par catégorie.
+- ⚠️ **Dépenses inhabituelles** : catégories nettement au-dessus de leur moyenne et dépenses isolées anormalement élevées, signalées sur la page Analyses et **notifiées automatiquement** lors d'une saisie (une alerte par catégorie et par mois, désactivable).
+- 📨 **Bilan IA du mois** : généré à la demande, il s'appuie sur les anomalies détectées et peut être envoyé sur TickTick, ntfy ou webhook.
+
+### Ajouté (API)
+- finance-api : `POST /v1/expenses/batch` et `/v1/revenues/batch` (une seule insertion, 200 lignes max), `/v1/recurring*`, `GET /v1/search/{kind}`, `GET /v1/analytics`.
+- ai-service : `POST /v1/categorize/batch`.
+- notifier : événement `spending.unusual`, préférence `unusual_alerts`, `POST /v1/report`.
+
+### Modifié
+- 🔔 Alertes de budget : **un seul message par écriture**, celui du seuil le plus haut franchi. Une saisie groupée qui passe de 50 % à 110 % n'annonce plus aussi « 80 % ».
+- ⚡ **Performances** : fichiers statiques versionnés par empreinte et mis en cache un an ; appels parallèles vers finance-api (tableau de bord, budgets, saisies).
 
 ### Corrigé
 - ☸️ **Redis recréé à chaque mise à jour du chart** : les libellés de version (`helm.sh/chart`, `app.kubernetes.io/version`) figuraient dans le modèle de pod. Chaque `helm upgrade` recréait donc Redis et déconnectait tous les utilisateurs, puisque les sessions sont en mémoire. Le modèle de pod Redis ne porte plus que des libellés stables : Redis ne redémarre que si son image ou ses options changent.
+
+### Mise à jour
+- La base SQLite du notifier reçoit une colonne (`unusual_alerts`), ajoutée **automatiquement au démarrage**. Aucune action requise.
+- Pas d'envoi planifié du bilan IA, par conception : les services n'accèdent aux données qu'avec le jeton de l'utilisateur (RLS, aucune clé `service_role`). Voir `docs/ARCHITECTURE.md`.
 
 ---
 
