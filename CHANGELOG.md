@@ -6,6 +6,13 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [Non publié]
+
+### Corrigé
+- ☸️ **Redis recréé à chaque mise à jour du chart** : les libellés de version (`helm.sh/chart`, `app.kubernetes.io/version`) figuraient dans le modèle de pod. Chaque `helm upgrade` recréait donc Redis et déconnectait tous les utilisateurs, puisque les sessions sont en mémoire. Le modèle de pod Redis ne porte plus que des libellés stables : Redis ne redémarre que si son image ou ses options changent.
+
+---
+
 ## [2.0.2] — 2026-11-05
 
 ### Corrigé
