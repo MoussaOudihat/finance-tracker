@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Récurrentes{% endblock %}
+{% block content %}
+{% include "_month_nav.html" %}
+
+<div class="grid-2 entries">
+  <section class="card">
+    <h2>À appliquer ce mois-ci <span class="muted total">{{ pending|length }}</span></h2>
+    {% if closed %}
+    <p class="muted">Ce mois est clôturé : saisie verrouillée.</p>
+    {% elif pending %}
+    <form method="post" action="/recurrentes/appliquer" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}">
+      <input type="hidden" name="m" value="{{ m }}">
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th class="select-col"><span class="sr-only">Appliquer</span></th>
+          <th>Type</th><th>Libellé</th><th>Catégorie / source</th><th class="num">Montant (€)</th></tr></thead>
+        <tbody>
+        {% for r in pending %}
+          <tr>
+            <td class="select-col"><input type="checkbox" name="sel" value="{{ r.id }}" checked
+                aria-label="Appliquer {{ r.label }}"></td>
+            <td>{{ "Dépense" if r.type == "expense" else "Revenu" }}</td>
+            <td>{{ r.label }}</td>
+            <td>{{ r.category if r.type == "expense" else (r.source or r.label) }}</td>
+            <td class="num">
+              <input type="hidden" name="ids" value="{{ r.id }}">
+              <input class="input-sm" name="amounts" inputmode="decimal" required
+                     pattern="[0-9 ]+([,.][0-9]{1,2})?" aria-label="Montant {{ r.label }}"
+                     value="{{ ('%.2f'|format(r.amount)).replace('.', ',') }}">
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <p class="muted small">Le montant peut être ajusté avant application (ex. facture variable).</p>
+      <div class="row"><button type="submit" class="btn btn-primary">Appliquer la sélection</button></div>
+    </form>
+    {% else %}
+    <p class="muted">Tout est déjà appliqué pour ce mois.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Nouvelle récurrente</h2>
+    <form method="post" action="/recurrentes" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}">
+      <input type="hidden" name="m" value="{{ m }}">
+      <label>Type
+        <select name="type">
+          <option value="expense">Dépense</option>
+          <option value="revenue">Revenu</option>
+        </select>
+      </label>
+      <label>Libellé
+        <input name="label" required maxlength="120" placeholder="Loyer, abonnement, salaire…">
+      </label>
+      <label>Montant (€)
+        <input name="amount" required inputmode="decimal" pattern="[0-9 ]+([,.][0-9]{1,2})?" placeholder="42,50">
+      </label>
+      <label>Catégorie (dépense)
+        <select name="category_id">
+          {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Enseigne (dépense)
+        <input name="payee" maxlength="60">
+      </label>
+      <label>Source (revenu)
+        <input name="source" maxlength="120" placeholder="Par défaut : le libellé">
+      </label>
+      <div class="row"><button type="submit" class="btn btn-primary">Ajouter</button></div>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Toutes les récurrentes</h2>
+  {% if items %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Type</th><th>Libellé</th><th>Catégorie / source</th><th class="num">Montant</th>
+      <th>Dernière application</th><th><span class="sr-only">Actions</span></th></tr></thead>
+    <tbody>
+    {% for r in items %}
+      <tr {% if not r.active %}class="inactive"{% endif %}>
+        <td>{{ "Dépense" if r.type == "expense" else "Revenu" }}</td>
+        <td>{{ r.label }}{% if not r.active %} <span class="badge">Inactive</span>{% endif %}</td>
+        <td>{{ r.category if r.type == "expense" else (r.source or r.label) }}</td>
+        <td class="num">{{ r.amount|eur }}</td>
+        <td>{% if r.last_applied_year and r.last_applied_month %}{{ MONTHS_FR[r.last_applied_month - 1] }} {{ r.last_applied_year }}{% else %}<span class="muted">Jamais</span>{% endif %}</td>
+        <td class="actions">
+          <form method="post" action="/recurrentes/{{ r.id }}/activer">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="hidden" name="active" value="{{ 0 if r.active else 1 }}">
+            <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+            <button type="submit" class="btn btn-ghost btn-sm">{{ "Désactiver" if r.active else "Activer" }}</button>
+          </form>
+          <form method="post" action="/recurrentes/{{ r.id }}/supprimer">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+            <button type="submit" class="btn btn-danger btn-sm">Supprimer</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}<p class="muted">Aucune transaction récurrente. Ajoutez loyer, abonnements, salaire… puis appliquez-les chaque mois en un clic.</p>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Dupliquer le mois précédent{% endblock %}
+{% block content %}
+<h1>Dupliquer {{ MONTHS_FR[src[1] - 1] }} {{ src[0] }} → {{ MONTHS_FR[m - 1] }} {{ y }}</h1>
+<section class="card">
+  {% if closed %}
+  <p class="muted">{{ MONTHS_FR[m - 1] }} {{ y }} est clôturé : saisie verrouillée.</p>
+  {% elif rows %}
+  {% if existing %}
+  <div class="flash flash-error" role="note">{{ MONTHS_FR[m - 1] }} {{ y }} contient déjà {{ existing }} dépense(s) :
+    décochez celles déjà saisies pour éviter les doublons.</div>
+  {% endif %}
+  <form method="post" action="/depenses/dupliquer" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="y" value="{{ y }}">
+    <input type="hidden" name="m" value="{{ m }}">
+    <p class="muted small">Cochez les dépenses à recopier et ajustez les montants si besoin.
+      Tout est enregistré en une fois (rien n'est écrit en cas d'erreur).</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th class="select-col"><span class="sr-only">Copier</span></th>
+        <th>Catégorie</th><th>Libellé</th><th>Enseigne</th><th class="num">Montant (€)</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="select-col"><input type="checkbox" name="sel" value="{{ loop.index0 }}" checked
+              aria-label="Copier {{ r.label or r.category }}"></td>
+          <td>{{ r.category }}<input type="hidden" name="cat" value="{{ r.category_id }}"></td>
+          <td>{{ r.label }}<input type="hidden" name="label" value="{{ r.label }}"></td>
+          <td>{{ r.payee }}<input type="hidden" name="payee" value="{{ r.payee }}"></td>
+          <td class="num"><input class="input-sm" name="amounts" inputmode="decimal" required
+                pattern="[0-9 ]+([,.][0-9]{1,2})?" aria-label="Montant {{ r.label or r.category }}"
+                value="{{ ('%.2f'|format(r.amount)).replace('.', ',') }}"></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div class="row">
+      <button type="submit" class="btn btn-primary">Copier la sélection</button>
+      <a class="btn btn-ghost" href="/depenses?y={{ y }}&m={{ m }}">Annuler</a>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted">Aucune dépense en {{ MONTHS_FR[src[1] - 1] }} {{ src[0] }}.</p>
+  <a class="btn btn-ghost" href="/depenses?y={{ y }}&m={{ m }}">Retour</a>
+  {% endif %}
+</section>
+{% endblock %}

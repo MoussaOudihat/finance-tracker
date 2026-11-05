@@ -96,6 +96,22 @@ class Repo:
             return self._check(r).json()[0]
         raise HTTPException(409, "Conflit d'écriture — réessayez.")
 
+    def insert_many(self, table: str, rows: list[dict], *, attempts: int = 5) -> list[dict]:
+        """Insertion de plusieurs lignes en UNE requête PostgREST, donc une
+        seule instruction INSERT : tout ou rien (aucune ligne écrite si l'une
+        est refusée). Identifiants consécutifs à partir de max(id)+1."""
+        if not rows:
+            return []
+        for _ in range(attempts):
+            first = self._next_id(table)
+            payload = [{**row, "id": first + i, "user_id": self.user.id} for i, row in enumerate(rows)]
+            r = self.http.post(f"/rest/v1/{table}", json=payload, headers={
+                **self.headers, "Prefer": "return=representation"})
+            if r.status_code == 409:      # plage d'id prise entre-temps : on réessaie
+                continue
+            return self._check(r).json()
+        raise HTTPException(409, "Conflit d'écriture — réessayez.")
+
     def update(self, table: str, filters: dict, values: dict) -> list[dict]:
         r = self.http.patch(f"/rest/v1/{table}", params=self._params(filters), json=values,
                             headers={**self.headers, "Prefer": "return=representation"})
