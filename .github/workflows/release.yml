@@ -11,23 +11,23 @@ permissions: {}
 
 jobs:
   # ──────────────────────────────────────────────────────────
-  #  Build Windows + Publication GitHub Release
+  #  Build de l'exécutable Windows (la Release est publiée en dernier)
   # ──────────────────────────────────────────────────────────
   build-and-release:
-    name: Build & Release (Windows)
+    name: Build Windows
     runs-on: windows-latest
     timeout-minutes: 40
     permissions:
-      contents: write      # créer la GitHub Release
+      contents: read
       id-token: write      # Sigstore (OIDC)
       attestations: write  # attestation de provenance
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -68,65 +68,17 @@ jobs:
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Attest build provenance (Sigstore)
-        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ env.ZIP_NAME }}
 
-      - name: Extract release notes from CHANGELOG
-        id: changelog
-        shell: python
-        run: |
-          import re, os
-
-          tag = os.environ.get("GITHUB_REF_NAME", "")
-          version = tag.lstrip("v")   # "3.1.0"
-
-          try:
-              with open("CHANGELOG.md", encoding="utf-8") as f:
-                  content = f.read()
-
-              # Cherche la section correspondant à la version
-              pattern = rf"## \[{re.escape(version)}\][^\n]*\n(.*?)(?=\n## \[|\Z)"
-              match = re.search(pattern, content, re.DOTALL)
-              notes = match.group(1).strip() if match else "Voir CHANGELOG.md pour les détails."
-          except Exception:
-              notes = "Voir CHANGELOG.md pour les détails."
-
-          # Écrire dans GITHUB_OUTPUT (multiline)
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write("notes<<EOF\n")
-              out.write(notes + "\n")
-              out.write("EOF\n")
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+      - name: Conserver l'archive (publiée seulement si tout le reste réussit)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: "Fintrack ${{ github.ref_name }}"
-          tag_name: ${{ github.ref_name }}
-          body: |
-            ## 💜 Fintrack ${{ github.ref_name }}
-
-            Suivi financier personnel : application desktop Windows + interface web en microservices (images signées sur GHCR).
-
-            ### 📦 Installation
-
-            1. Téléchargez **`${{ env.ZIP_NAME }}`** ci-dessous
-            2. Décompressez le dossier
-            3. Lancez **`Fintrack.exe`**
-            4. Créez votre mot de passe au premier lancement
-
-            > ⚠️ Windows peut afficher "Application inconnue" — cliquez *Informations complémentaires* → *Exécuter quand même*
-
-            ### 📋 Changements
-
-            ${{ steps.changelog.outputs.notes }}
-
-            ---
-            [Voir le CHANGELOG complet](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
-          files: ${{ env.ZIP_NAME }}
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: false
+          name: windows-zip
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          retention-days: 7
 
   # ──────────────────────────────────────────────────────────
   #  Images des 4 microservices → GHCR (+ Docker Hub si configuré)
@@ -155,29 +107,38 @@ jobs:
     env:
       DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - name: Noms d'images (minuscules obligatoires dans les registres)
         env: { NAME: "${{ matrix.service.name }}" }
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "GHCR_IMAGE=ghcr.io/${owner}/fintrack-${NAME}" >> "$GITHUB_ENV"
-          if [ -n "${DOCKERHUB_USERNAME}" ]; then
-            echo "HUB_IMAGE=docker.io/${DOCKERHUB_USERNAME,,}/fintrack-${NAME}" >> "$GITHUB_ENV"
-          fi
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+          ghcr="ghcr.io/${owner}/fintrack-${NAME}"
+          {
+            echo "GHCR_IMAGE=${ghcr}"
+            # Liste des images pour metadata-action : un registre non
+            # configuré n'y figure pas (une ligne vide fait échouer l'action).
+            echo "IMAGES<<EOF"
+            echo "${ghcr}"
+            if [ -n "${DOCKERHUB_USERNAME}" ]; then
+              echo "docker.io/${DOCKERHUB_USERNAME,,}/fintrack-${NAME}"
+            fi
+            echo "EOF"
+            if [ -n "${DOCKERHUB_USERNAME}" ]; then
+              echo "HUB_IMAGE=docker.io/${DOCKERHUB_USERNAME,,}/fintrack-${NAME}"
+            fi
+          } >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: |
-            ${{ env.GHCR_IMAGE }}
-            name=${{ env.HUB_IMAGE }},enable=${{ env.HUB_IMAGE != '' }}
+          images: ${{ env.IMAGES }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
       - name: Build (local, pour le scan)
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: services
           file: services/Dockerfile
@@ -195,20 +156,20 @@ jobs:
           ignore-unfixed: true
           severity: CRITICAL,HIGH
       - name: Connexion GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Connexion Docker Hub
         if: env.HUB_IMAGE != ''
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: push
         name: Build & push (multi-registres)
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: services
           file: services/Dockerfile
@@ -223,33 +184,33 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service.dir }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service.dir }}
       - name: SBOM (SPDX)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ env.GHCR_IMAGE }}@${{ steps.push.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
           upload-artifact: false
       - name: Attestation SBOM (GHCR)
-        uses: actions/attest-sbom@5026d3663739160db546203eeaffa6aa1c51a4d6 # v1
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           sbom-path: sbom.spdx.json
           push-to-registry: true
       - name: Attestation de provenance (GHCR)
-        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.GHCR_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
       - name: Attestation de provenance (Docker Hub)
         if: env.HUB_IMAGE != ''
-        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.HUB_IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Signature cosign (keyless) — même digest dans chaque registre
         env: { DIGEST: "${{ steps.push.outputs.digest }}" }
         run: |
@@ -283,9 +244,9 @@ jobs:
     env:
       DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with: { version: v3.17.3 }
       - name: Lint + package (version du chart = tag)
         run: |
@@ -295,7 +256,7 @@ jobs:
             --set config.supabaseUrl=https://ci.supabase.co --set secrets.supabaseAnonKey=ci
           helm package deploy/helm/fintrack --version "$version" --app-version "$version" -d dist
           echo "CHART=dist/fintrack-${version}.tgz" >> "$GITHUB_ENV"
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Publier sur GHCR (OCI) et signer
         env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
         run: |
@@ -321,18 +282,96 @@ jobs:
           echo "- Chart Docker Hub : oci://registry-1.docker.io/${user}/fintrack (${digest})" >> "$GITHUB_STEP_SUMMARY"
 
   # ──────────────────────────────────────────────────────────
+  #  GitHub Release — créée EN DERNIER, seulement si l'exécutable, les
+  #  4 images et le chart ont tous été publiés (jamais de release partielle).
+  # ──────────────────────────────────────────────────────────
+  publish-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-and-release, images, helm-chart]
+    permissions:
+      contents: write
+    env:
+      ZIP_NAME: Fintrack-${{ github.ref_name }}-windows.zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-zip
+
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: python
+        run: |
+          import re, os
+
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          version = tag.lstrip("v")   # "3.1.0"
+
+          try:
+              with open("CHANGELOG.md", encoding="utf-8") as f:
+                  content = f.read()
+
+              # Cherche la section correspondant à la version
+              pattern = rf"## \[{re.escape(version)}\][^\n]*\n(.*?)(?=\n## \[|\Z)"
+              match = re.search(pattern, content, re.DOTALL)
+              notes = match.group(1).strip() if match else "Voir CHANGELOG.md pour les détails."
+          except Exception:
+              notes = "Voir CHANGELOG.md pour les détails."
+
+          # Écrire dans GITHUB_OUTPUT (multiline)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write("notes<<EOF\n")
+              out.write(notes + "\n")
+              out.write("EOF\n")
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          name: "Fintrack ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## 💜 Fintrack ${{ github.ref_name }}
+
+            Suivi financier personnel : application desktop Windows + plateforme web en microservices.
+
+            Images signées : `ghcr.io/${{ github.repository_owner }}/fintrack-*` · chart Helm : `oci://ghcr.io/${{ github.repository_owner }}/charts/fintrack`
+
+            ### 📦 Installation
+
+            1. Téléchargez **`${{ env.ZIP_NAME }}`** ci-dessous
+            2. Décompressez le dossier
+            3. Lancez **`Fintrack.exe`**
+            4. Créez votre mot de passe au premier lancement
+
+            > ⚠️ Windows peut afficher "Application inconnue" — cliquez *Informations complémentaires* → *Exécuter quand même*
+
+            ### 📋 Changements
+
+            ${{ steps.changelog.outputs.notes }}
+
+            ---
+            [Voir le CHANGELOG complet](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          files: ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: false
+
+  # ──────────────────────────────────────────────────────────
   #  Nettoyage : supprime le tag si le build a échoué
   # ──────────────────────────────────────────────────────────
   cleanup-on-failure:
     name: Supprimer le tag si échec
     runs-on: ubuntu-latest
-    needs: [build-and-release, images, helm-chart]
+    needs: [build-and-release, images, helm-chart, publish-release]
     if: failure()
     permissions:
       contents: write
     steps:
       - name: Delete tag ${{ github.ref_name }}
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '')
