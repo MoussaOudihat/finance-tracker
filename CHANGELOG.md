@@ -6,6 +6,40 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [2.2.0] — 2026-11-06
+
+### Ajouté (application web)
+- 🏦 **Saisie du patrimoine** (`/patrimoine`) : ajout et mise à jour de la valeur d'un actif pour un mois donné (l'historique est conservé), mise à jour rapide sur chaque ligne, retrait avec confirmation. Même chose pour les passifs (capital restant, mensualité, fin du prêt). Les achats et ventes de titres restent dans l'application desktop.
+- 🔒 **Clôturer / Rouvrir le mois** depuis le tableau de bord et les pages Dépenses, Revenus et Épargne, avec confirmation. Un mois clôturé n'accepte plus aucun ajout, modification ni suppression.
+- 💰 **Épargne › Vue d'ensemble** (`/epargne/vue`) : total, moyenne et taux d'épargne sur 12 mois, épargne mois par mois (les mois non saisis sont signalés), répartition par compte, soldes des comptes et objectifs d'épargne.
+- 🤖 Page **Assistant IA** : choix du mois de fin d'analyse.
+
+### Ajouté (API)
+- finance-api : `PUT /v1/months/{y}/{m}/closed`, `PUT /v1/assets`, `POST /v1/assets/delete`, `PUT /v1/liabilities`, `POST /v1/liabilities/delete`, `GET /v1/savings-overview`.
+
+### Modifié
+- 🤖 **Assistant IA plus fiable** :
+  - l'analyse porte sur les N derniers mois **saisis** : les mois vides sont écartés au lieu de compter pour 0 € dans les moyennes ;
+  - le mois en cours est marqué comme partiel et exclu des moyennes ;
+  - les mois futurs ne sont jamais analysés ;
+  - l'IA reçoit les totaux par catégorie mois par mois et la date du jour ;
+  - le chat répond d'abord directement à la question, en citant le mois concerné, et dit quand l'information n'est pas disponible.
+- ☰ **Saisie en masse** :
+  - la grille s'agrandit : une ligne vide apparaît dès que la dernière est remplie, et un bouton « + Ajouter des lignes » ajoute 10 lignes (fonctionne aussi sans JavaScript) ;
+  - compteur et total en direct, lignes ignorées grisées ;
+  - les catégories manquantes sont signalées avant l'envoi ;
+  - le bouton est désactivé pendant l'enregistrement : plus de double envoi.
+
+### Corrigé
+- 📅 **Mois affiché par défaut** : il pouvait rester bloqué sur un mois vidé ou futur, par exemple une saisie de test en 2030. C'est désormais le dernier mois qui contient des saisies, sans jamais dépasser le mois en cours.
+- ☰ **Saisie en masse limitée à 12 lignes** : au-delà de 10 lignes remplies, on ne pouvait plus en ajouter.
+
+### Mise à jour
+- Aucune migration de base : les tables `assets`, `liabilities`, `savings_goals` et la colonne `months.closed` existent déjà.
+- Images modifiées : web, finance-api, ai-service. notifier est inchangé.
+
+---
+
 ## [2.1.0] — 2026-11-05
 
 ### Ajouté (application web)
