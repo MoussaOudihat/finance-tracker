@@ -6,7 +6,10 @@
 
 <div class="grid-2 entries">
   <section class="card">
-    <h2>{{ title }} <span class="muted total">{{ total|eur }}</span></h2>
+    <div class="card-head">
+      <h2>{{ title }} <span class="muted total">{{ total|eur }}</span></h2>
+      {% if section == 'epargne' %}<a class="btn btn-ghost btn-sm" href="/epargne/vue?y={{ y }}&m={{ m }}">📊 Vue d'ensemble</a>{% endif %}
+    </div>
     {% if rows %}
     <div class="table-wrap">
     <table>

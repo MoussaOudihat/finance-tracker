@@ -208,4 +208,4 @@ def test_grid_suggest_button_and_failures(setup):  # noqa: F811
     calls = _with_ai(c, sessions, consent=False)
     r = c.post("/depenses/saisie/suggestion", data=form)
     assert calls == [] and "Activez d" in r.text
-    assert "formaction" not in c.get("/depenses/saisie?y=2026&m=11").text
+    assert "/depenses/saisie/suggestion" not in c.get("/depenses/saisie?y=2026&m=11").text

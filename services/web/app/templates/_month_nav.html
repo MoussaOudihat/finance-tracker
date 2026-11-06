@@ -1,5 +1,24 @@
 <div class="month-nav">
   <a class="btn btn-ghost" href="?y={{ prev[0] }}&m={{ prev[1] }}" aria-label="Mois précédent">‹</a>
-  <h1>{{ MONTHS_FR[m - 1] }} {{ y }}{% if closed %} <span class="badge">Clôturé</span>{% endif %}</h1>
+  <h1>{{ MONTHS_FR[m - 1] }} {{ y }}{% if closed %} <span class="badge">🔒 Clôturé</span>{% endif %}</h1>
   <a class="btn btn-ghost" href="?y={{ next[0] }}&m={{ next[1] }}" aria-label="Mois suivant">›</a>
+  {% if month_actions %}
+  <details class="month-close">
+    <summary class="btn btn-ghost btn-sm">{{ 'Rouvrir le mois' if closed else 'Clôturer le mois' }}</summary>
+    <form method="post" action="/mois/cloture" class="month-close-panel">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="y" value="{{ y }}"><input type="hidden" name="m" value="{{ m }}">
+      {% if closed %}
+      <input type="hidden" name="action" value="reopen">
+      <p class="small">Rouvrir {{ MONTHS_FR[m - 1] }} {{ y }} pour modifier ses saisies ?</p>
+      <button type="submit" class="btn btn-primary btn-sm">Rouvrir</button>
+      {% else %}
+      <input type="hidden" name="action" value="close">
+      <p class="small">Une fois clôturé, plus aucun ajout, modification ou suppression n'est possible
+        sur {{ MONTHS_FR[m - 1] }} {{ y }} (web et desktop), jusqu'à réouverture.</p>
+      <button type="submit" class="btn btn-primary btn-sm">Confirmer la clôture</button>
+      {% endif %}
+    </form>
+  </details>
+  {% endif %}
 </div>

@@ -21,6 +21,7 @@ MAX_ROWS = 200                 # limite de l'API (une seule insertion)
 AI_BATCH_MAX = 50              # lignes envoyées à l'IA par suggestion (1 requête du quota)
 MAX_PASTE_CHARS = 100_000
 GRID_BLANK_ROWS = 12
+GRID_ADD_ROWS = 10             # lignes ajoutées par « + Ajouter des lignes »
 
 _DATE_RE = re.compile(r"^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$")
 _AMOUNT_RE = re.compile(r"^[-+]?\(?\d[\d.,]*\)?-?$")

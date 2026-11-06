@@ -32,22 +32,47 @@ Month = Annotated[int, Field(ge=1, le=12)]
 
 SYSTEM_ADVISOR = (
     "Tu es un conseiller en finances personnelles pour un foyer français. "
-    "Tu reçois un résumé AGRÉGÉ en JSON (montants en euros) : totaux par mois "
-    "(rev = revenus, exp = dépenses, sav = épargne), principales catégories, "
-    "postes et enseignes de dépense en moyenne par mois, sources de revenus, "
-    "budgets du mois en cours (pct = part consommée) et patrimoine par type. "
-    "Réponds en français, de façon concrète et chiffrée, en citant les postes "
-    "réels du résumé. N'invente aucun chiffre absent du résumé ; si une "
-    "information manque, dis-le. Pas de conseil d'investissement sur un titre "
-    "précis. Mise en forme : paragraphes courts et listes à puces (« - »), "
-    "gras avec **…** avec parcimonie, pas de tableau ni de titre."
+    "Tu reçois un résumé AGRÉGÉ en JSON (montants en euros) :\n"
+    "- today : date du jour ; notes : comment le résumé a été construit (à respecter) ;\n"
+    "- per_month : un élément par mois SAISI (rev = revenus, exp = dépenses, "
+    "sav = épargne, solde = rev - exp - sav, categories = dépenses par catégorie "
+    "ce mois-là). partial = true : mois en cours, incomplet ;\n"
+    "- averages_per_month, top_categories, top_expenses, top_payees, "
+    "revenue_sources, savings_by_account : MOYENNES MENSUELLES calculées "
+    "uniquement sur les mois complets saisis (averages_months) ;\n"
+    "- budgets_of_period_end (pct = part consommée), patrimoine par type, "
+    "unusual_period_end (dépenses inhabituelles déjà détectées).\n"
+    "Règles :\n"
+    "- Les mois absents de per_month n'ont AUCUNE saisie : ne les compte jamais "
+    "comme des mois à 0 € et ne conclus pas à une baisse de dépenses.\n"
+    "- Un mois partial ne se compare pas tel quel aux mois complets : dis qu'il "
+    "est en cours.\n"
+    "- Pour un chiffre sur un mois précis, utilise per_month ; pour une moyenne, "
+    "les champs de moyenne. Cite le mois concerné (ex. « en septembre 2026 »).\n"
+    "- N'invente aucun chiffre absent du résumé et ne fais pas de calcul que les "
+    "données ne permettent pas. Si l'information n'y est pas (détail d'une "
+    "opération, période non couverte…), dis-le en une phrase et indique quelle "
+    "page de l'application consulter (Dépenses, Recherche, Analyses).\n"
+    "- Pas de conseil d'investissement sur un titre précis.\n"
+    "Réponds en français, de façon concrète et chiffrée. Mise en forme : "
+    "paragraphes courts et listes à puces (« - »), gras avec **…** avec "
+    "parcimonie, pas de tableau ni de titre."
 )
 
 INSIGHTS_PROMPT = (
     "Voici mon résumé financier :\n{context}\n\n"
-    "Fais le point sur la période : 1) ce qui va bien, 2) les 3 postes où "
-    "agir en priorité avec l'économie mensuelle réaliste estimée, 3) l'état "
-    "des budgets du mois et 4) une action concrète pour le mois prochain."
+    "Fais le point sur les mois saisis de la période (voir notes) : 1) ce qui "
+    "va bien, 2) les 3 postes où agir en priorité avec l'économie mensuelle "
+    "réaliste estimée, 3) l'état des budgets du dernier mois et 4) une action "
+    "concrète pour le mois prochain. Commence par une phrase qui précise les "
+    "mois analysés."
+)
+
+CHAT_INTRO = (
+    "Mon résumé financier (derniers mois saisis) :\n{context}\n\n"
+    "Réponds à mes questions à partir de ce résumé uniquement. Réponds "
+    "d'abord directement à la question posée (chiffre et mois concernés), "
+    "en quelques lignes, puis seulement si utile un conseil court."
 )
 
 SYSTEM_CATEGORIZER = (
@@ -177,13 +202,13 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
         ctx = _finance_get(user, "/v1/ai-context", year=body.year, month=body.month, months=6)
         # Le contexte ouvre la conversation ; l'historique suit (append-only).
         msgs = [{"role": "user", "content":
-                 "Mon résumé financier (6 derniers mois) :\n"
-                 + json.dumps(ctx, ensure_ascii=False)
-                 + "\n\nRéponds à mes questions à partir de ce résumé."},
+                 CHAT_INTRO.format(context=json.dumps(ctx, ensure_ascii=False))},
                 {"role": "assistant", "content": "C'est noté, je vous écoute."}]
         msgs += [m.model_dump() for m in body.messages]
+        # Effort « medium » : en « low » le modèle répondait trop vite à côté
+        # de la question (mauvais mois, moyenne au lieu du chiffre demandé).
         text = _run(lambda: prov.complete(body.provider, SYSTEM_ADVISOR, msgs,
-                                          effort="low", max_tokens=3000))
+                                          effort="medium", max_tokens=4000))
         charge()
         return {"provider": body.provider, "text": text}
 

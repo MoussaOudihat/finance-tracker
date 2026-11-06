@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Saisie en masse — {{ title }}{% endblock %}
+{% block head %}<script src="{{ static("bulk.js") }}" defer></script>{% endblock %}
 {% block content %}
 {% include "_month_nav.html" %}
 
@@ -44,12 +45,12 @@
     <h2>2. Vérifier et enregistrer</h2>
     <a class="btn btn-ghost btn-sm" href="/{{ section }}/saisie?y={{ y }}&m={{ m }}">Vider la grille</a>
   </div>
-  <form method="post" action="/{{ section }}/saisie" class="form">
+  <form method="post" action="/{{ section }}/saisie" class="form" id="bulk-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="y" value="{{ y }}">
     <input type="hidden" name="m" value="{{ m }}">
     <div class="table-wrap">
-    <table class="grid">
+    <table class="grid" data-max-rows="{{ max_rows }}">
       <thead><tr>
         <th class="select-col"><span class="sr-only">Garder</span></th>
         {% if section == 'depenses' %}<th>Catégorie</th>{% endif %}
@@ -60,7 +61,7 @@
       <tbody>
       {% for r in rows %}
         {% set i = loop.index0 %}
-        <tr {% if r.errors %}class="row-error"{% endif %}>
+        <tr data-row {% if r.errors %}class="row-error"{% elif r.blank %}class="row-blank"{% endif %}>
           <td class="select-col"><input type="checkbox" name="keep" value="{{ i }}" {% if r.keep %}checked{% endif %}
               aria-label="Garder la ligne {{ i + 1 }}">{% if section != 'depenses' %}<input type="hidden" name="cat" value="">{% endif %}</td>
           {% if section == 'depenses' %}
@@ -87,10 +88,15 @@
       </tbody>
     </table>
     </div>
-    <p class="muted small">Les lignes vides ou décochées sont ignorées. Tout est enregistré en une
+    <p class="muted small">{{ max_rows }} lignes max par enregistrement · une nouvelle ligne vide apparaît
+      dès que vous commencez à remplir la dernière.</p>
+    <p id="bulk-summary" class="bulk-summary" role="status" aria-live="polite"></p>
+    <p class="muted small">Les lignes vides (grisées) ou décochées sont ignorées. Tout est enregistré en une
       seule fois : si une ligne est refusée, rien n'est écrit.</p>
     <div class="row">
-      <button type="submit" class="btn btn-primary">Enregistrer les lignes</button>
+      <button type="submit" class="btn btn-primary" id="bulk-save">Enregistrer les lignes</button>
+      {# Après « Enregistrer » : la touche Entrée doit toujours enregistrer. #}
+      <button type="submit" class="btn btn-ghost" id="bulk-add" formaction="/{{ section }}/saisie/lignes">+ Ajouter des lignes</button>
       {% if section == 'depenses' and ai_enabled %}
       <button type="submit" class="btn btn-ghost" formaction="/depenses/saisie/suggestion">✨ Suggérer les catégories manquantes</button>
       {% endif %}

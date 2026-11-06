@@ -136,6 +136,42 @@ class BudgetIn(_Trimmed):
     amount: Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)]
 
 
+class ClosedIn(BaseModel):
+    closed: bool
+
+
+AssetType = Literal["bourse", "immobilier", "crypto", "or_metaux", "compte", "autre"]
+LiabilityType = Literal["voiture", "conso", "autre"]
+Money = Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)]
+Name = Annotated[str, Field(min_length=1, max_length=80)]
+
+
+class AssetKey(_Trimmed):
+    asset_type: AssetType
+    name: Name
+
+
+class AssetIn(AssetKey):
+    year: Year
+    month: Month
+    value: Money
+    cost_basis: Optional[Money] = None          # None : repris du dernier instantané
+    notes: Optional[Annotated[str, Field(max_length=200)]] = None
+
+
+class LiabilityKey(_Trimmed):
+    name: Name
+
+
+class LiabilityIn(LiabilityKey):
+    year: Year
+    month: Month
+    liability_type: LiabilityType = "autre"
+    remaining_capital: Money
+    monthly_payment: Optional[Money] = None
+    end_date: Optional[Annotated[str, Field(max_length=10, pattern=r"^(\d{4}-\d{2}(-\d{2})?)?$")]] = None
+
+
 def create_app(*, verifier: Optional[TokenVerifier] = None,
                supabase_http: Optional[httpx.Client] = None,
                notifier_http: Optional[httpx.Client] = None) -> FastAPI:
@@ -214,8 +250,35 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
 
     @app.get("/v1/last-month")
     def get_last_month(r: Repo = Depends(repo)):
-        h = ledger.history(r, limit=1)
-        return {"year": h[-1]["year"], "month": h[-1]["month"]} if h else None
+        return ledger.last_month(r)
+
+    @app.put("/v1/months/{year}/{month}/closed")
+    def put_month_closed(year: Year, month: Month, body: ClosedIn, r: Repo = Depends(repo)):
+        return ledger.set_month_closed(r, year, month, body.closed)
+
+    @app.get("/v1/savings-overview")
+    def get_savings_overview(year: Year, month: Month,
+                             months: Annotated[int, Query(ge=1, le=24)] = 12,
+                             r: Repo = Depends(repo)):
+        return ledger.savings_overview(r, year, month, months)
+
+    @app.put("/v1/assets")
+    def put_asset(body: AssetIn, r: Repo = Depends(repo)):
+        return ledger.set_asset_value(r, body.year, body.month, body.asset_type, body.name,
+                                      body.value, body.cost_basis, body.notes)
+
+    @app.post("/v1/assets/delete")
+    def post_asset_delete(body: AssetKey, r: Repo = Depends(repo)):
+        return {"deleted": ledger.delete_asset(r, body.asset_type, body.name)}
+
+    @app.put("/v1/liabilities")
+    def put_liability(body: LiabilityIn, r: Repo = Depends(repo)):
+        return ledger.set_liability(r, body.year, body.month, body.liability_type, body.name,
+                                    body.remaining_capital, body.monthly_payment, body.end_date)
+
+    @app.post("/v1/liabilities/delete")
+    def post_liability_delete(body: LiabilityKey, r: Repo = Depends(repo)):
+        return {"deleted": ledger.delete_liability(r, body.name)}
 
     @app.get("/v1/history")
     def get_history(limit: int = Query(12, ge=1, le=60), r: Repo = Depends(repo)):

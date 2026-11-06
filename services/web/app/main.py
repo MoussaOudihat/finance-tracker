@@ -373,6 +373,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             ("finance", "GET", "/v1/history", {"params": {"limit": 12}}),
             ("finance", "GET", "/v1/patrimoine"))
         return render(request, "dashboard.html", sid, sess, active="dashboard", y=yy, m=mm,
+                      month_actions=True,
                       prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), s=s, history=hist,
                       closed=s["closed"], net_worth=pat["net_worth"],
                       max_cat=max((c["total"] for c in s["by_category"]), default=0) or 1,
@@ -396,7 +397,9 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
     def patrimoine(request: Request):
         sid, sess = load(request)
         pat = call(sid, sess, "finance", "GET", "/v1/patrimoine")
+        today = date.today()
         return render(request, "patrimoine.html", sid, sess, active="patrimoine", pat=pat,
+                      this_month=f"{today.year}-{today.month:02d}",
                       max_type=max((t["total"] for t in pat["by_type"]), default=0) or 1)
 
     @app.get("/budgets", response_class=HTMLResponse)
@@ -432,6 +435,95 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         flash(sid, sess, f"{n} budget(s) copié(s) depuis le mois précédent.")
         return redirect(f"/budgets?y={y}&m={m}")
 
+    # ── Clôture du mois ──────────────────────────────────────
+    @app.post("/mois/cloture")
+    def month_close(request: Request, y: int = Form(...), m: int = Form(...),
+                    action: str = Form("close"), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        yy, mm = month_params(sid, sess, str(y), str(m))
+        closed = action != "reopen"
+        call(sid, sess, "finance", "PUT", f"/v1/months/{yy}/{mm}/closed", json={"closed": closed})
+        flash(sid, sess, f"{MONTHS_FR[mm - 1]} {yy} "
+              + ("clôturé : saisie verrouillée." if closed else "rouvert : saisie possible."))
+        return redirect(back_url(request, f"/?y={yy}&m={mm}"))
+
+    # ── Épargne : vue d'ensemble ─────────────────────────────
+    @app.get("/epargne/vue", response_class=HTMLResponse)
+    def savings_view(request: Request, y: Optional[str] = None, m: Optional[str] = None):
+        sid, sess = load(request)
+        yy, mm = month_params(sid, sess, y, m)
+        ov = call(sid, sess, "finance", "GET", "/v1/savings-overview",
+                  params={"year": yy, "month": mm, "months": 12})
+        return render(request, "savings_overview.html", sid, sess, active="epargne", y=yy, m=mm,
+                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), closed=False,
+                      ov=ov, max_sav=max((p["sav"] for p in ov["per_month"]), default=0) or 1,
+                      max_acc=max((a["total"] for a in ov["by_account"]), default=0) or 1)
+
+    # ── Patrimoine : saisie ──────────────────────────────────
+    def parse_period(raw: str) -> tuple[int, int]:
+        """<input type="month"> : 'AAAA-MM' ; vide -> mois en cours."""
+        if not raw:
+            t = date.today()
+            return t.year, t.month
+        try:
+            yi, mi = (int(x) for x in raw.split("-", 1))
+        except ValueError:
+            raise BackendError(422, "Mois de valeur invalide (AAAA-MM).") from None
+        if not (2000 <= yi <= 2100 and 1 <= mi <= 12):
+            raise BackendError(422, "Mois de valeur invalide (AAAA-MM).")
+        return yi, mi
+
+    def opt_amount(raw: str) -> Optional[str]:
+        v = parse_amount(raw)
+        return v or None
+
+    @app.post("/patrimoine/actif")
+    def asset_save(request: Request, asset_type: str = Form(...), name: str = Form(...),
+                   value: str = Form(...), cost_basis: str = Form(""), period: str = Form(""),
+                   csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        yy, mm = parse_period(period)
+        call(sid, sess, "finance", "PUT", "/v1/assets",
+             json={"year": yy, "month": mm, "asset_type": asset_type, "name": name,
+                   "value": parse_amount(value), "cost_basis": opt_amount(cost_basis)})
+        flash(sid, sess, f"« {name.strip()} » : valeur enregistrée pour {MONTHS_FR[mm - 1]} {yy}.")
+        return redirect("/patrimoine")
+
+    @app.post("/patrimoine/actif/supprimer")
+    def asset_delete(request: Request, asset_type: str = Form(...), name: str = Form(...),
+                     csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        call(sid, sess, "finance", "POST", "/v1/assets/delete",
+             json={"asset_type": asset_type, "name": name})
+        flash(sid, sess, f"« {name} » n'est plus suivi (historique supprimé).")
+        return redirect("/patrimoine")
+
+    @app.post("/patrimoine/passif")
+    def liability_save(request: Request, name: str = Form(...), liability_type: str = Form("autre"),
+                       remaining_capital: str = Form(...), monthly_payment: str = Form(""),
+                       end_date: str = Form(""), period: str = Form(""), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        yy, mm = parse_period(period)
+        call(sid, sess, "finance", "PUT", "/v1/liabilities",
+             json={"year": yy, "month": mm, "name": name, "liability_type": liability_type,
+                   "remaining_capital": parse_amount(remaining_capital) or "0",
+                   "monthly_payment": opt_amount(monthly_payment),
+                   "end_date": end_date.strip() or None})
+        flash(sid, sess, f"Passif « {name.strip()} » enregistré.")
+        return redirect("/patrimoine")
+
+    @app.post("/patrimoine/passif/supprimer")
+    def liability_delete(request: Request, name: str = Form(...), csrf: str = Form("")):
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        call(sid, sess, "finance", "POST", "/v1/liabilities/delete", json={"name": name})
+        flash(sid, sess, f"Passif « {name} » supprimé.")
+        return redirect("/patrimoine")
+
     # ── IA ───────────────────────────────────────────────────
     def ai_state(sid, sess) -> dict:
         try:
@@ -446,6 +538,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         st = ai_state(sid, sess)
         chat = sess.get("chat", [])
         return render(request, "ia.html", sid, sess, active="ia", y=yy, m=mm, ai=st,
+                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
                       provider=sess.get("ai_provider") or (st["providers"] or ["claude"])[0],
                       consent=sess.get("ai_consent", False),
                       insight=render_ai_text(sess.get("insight", {}).get("text", "")),
@@ -842,9 +935,12 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
 
     def bulk_page(request, sid, sess, section, yy, mm, rows, *, categories, payees=(),
                   closed=False, paste="", warnings=(), error=None, status_code=200,
-                  infos=()):
+                  infos=(), blank_rows: Optional[int] = None):
         filled = any(not r.blank for r in rows)
-        grid = rows + [bulk.Row() for _ in range(3 if filled else bulk.GRID_BLANK_ROWS)]
+        if blank_rows is None:
+            blank_rows = 3 if filled else bulk.GRID_BLANK_ROWS
+        blank_rows = max(0, min(blank_rows, bulk.MAX_ROWS - len(rows)))
+        grid = rows + [bulk.Row() for _ in range(blank_rows)]
         return render(request, "bulk.html", sid, sess, status_code=status_code, active=section,
                       section=section, title=SECTIONS[section][1], y=yy, m=mm,
                       prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
@@ -914,6 +1010,26 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         return bulk_page(request, sid, sess, "depenses", yy, mm, rows, categories=cats,
                          infos=infos, warnings=warnings)
 
+    @app.post("/{section}/saisie/lignes", response_class=HTMLResponse)
+    def bulk_more_rows(request: Request, section: str, y: int = Form(...), m: int = Form(...),
+                       keep: list[str] = Form([]), amount: list[str] = Form([]),
+                       cat: list[str] = Form([]), label: list[str] = Form([]),
+                       extra: list[str] = Form([]), csrf: str = Form("")):
+        """« + Ajouter des lignes » sans JavaScript : la grille revient
+        avec sa saisie et des lignes vides en plus (le script le fait sur place)."""
+        if section not in BULK_SECTIONS:
+            return Response(status_code=404)
+        sid, sess = load(request)
+        check_csrf(sess, csrf)
+        yy, mm = month_params(sid, sess, str(y), str(m))
+        try:
+            rows = bulk.rows_from_form(keep, amount, cat, label, extra)
+        except ValueError as exc:
+            raise BackendError(400, str(exc)) from None
+        cats = call(sid, sess, "finance", "GET", "/v1/categories")
+        return bulk_page(request, sid, sess, section, yy, mm, [r for r in rows if not r.blank],
+                         categories=cats, blank_rows=sum(r.blank for r in rows) + bulk.GRID_ADD_ROWS)
+
     @app.post("/{section}/saisie", response_class=HTMLResponse)
     def bulk_save(request: Request, section: str, y: int = Form(...), m: int = Form(...),
                   keep: list[str] = Form([]), amount: list[str] = Form([]),
@@ -974,7 +1090,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         return render(request, "entries.html", sid, sess, active=section, section=section,
                       title=title, y=yy, m=mm, prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
                       rows=rows, total=sum(r["amount"] for r in rows), categories=cats,
-                      payees=payees, closed=data["closed"],
+                      payees=payees, closed=data["closed"], month_actions=True,
                       ai_enabled=bool(sess.get("ai_consent")))
 
     @app.post("/{section}")
