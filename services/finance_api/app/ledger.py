@@ -8,6 +8,7 @@ import logging
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 
 from fastapi import HTTPException
 
@@ -97,6 +98,33 @@ def month_summary(repo: Repo, year: int, month: int) -> dict:
                               key=lambda c: -c["total"]),
         "budgets": budget_status(repo, year, month, by_cat),
     }
+
+
+def months_with_entries(repo: Repo, month_ids: list[int]) -> set[int]:
+    """Mois qui contiennent au moins une saisie : une ligne `months` survit
+    à la suppression de ses saisies (et la clôture en crée une vide)."""
+    used: set[int] = set()
+    for table in ENTRY_TABLES.values():
+        used.update(r["month_id"] for r in repo.rows_for_months(table, month_ids, "month_id"))
+    return used
+
+
+def last_month(repo: Repo, today: date | None = None) -> dict | None:
+    """Dernier mois NON VIDE et non futur : mois affiché par défaut. Une
+    saisie de test datée de 2030 ou un mois vidé ne doivent pas s'imposer."""
+    t = today or date.today()
+    candidates = [m for m in repo.select("months", order="year.desc,month.desc", limit=60)
+                  if (m["year"], m["month"]) <= (t.year, t.month)]
+    used = months_with_entries(repo, [m["id"] for m in candidates])
+    return next(({"year": m["year"], "month": m["month"]}
+                 for m in candidates if m["id"] in used), None)
+
+
+def set_month_closed(repo: Repo, year: int, month: int, closed: bool) -> dict:
+    mo = repo.month(year, month, create=True)
+    repo.update("months", {"id": f"eq.{mo['id']}"}, {"closed": 1 if closed else 0})
+    repo.touch_sync_ts()
+    return {"year": year, "month": month, "closed": closed}
 
 
 def history(repo: Repo, limit: int = 12) -> list[dict]:
@@ -196,6 +224,117 @@ def apply_saving_to_asset(repo: Repo, year: int, month: int, asset_name: str,
         "cost_basis": max(0.0, (current["cost_basis"] or 0) + delta),
         "notes": current.get("notes") or "",
     }, "user_id,year,month,asset_type,asset_name")
+
+
+# ── Patrimoine : saisie (instantanés mensuels, comme le desktop) ──
+
+def _latest(rows: list[dict]) -> dict | None:
+    return max(rows, key=lambda r: (r["year"], r["month"]), default=None)
+
+
+def set_asset_value(repo: Repo, year: int, month: int, asset_type: str, name: str,
+                    value: float, cost_basis: float | None, notes: str | None) -> dict:
+    """Valeur d'un actif pour un mois : met à jour l'instantané du mois ou en
+    crée un (l'historique des mois précédents est conservé). Montant investi
+    et notes repris du dernier instantané s'ils ne sont pas fournis."""
+    snaps = repo.select("assets", {"asset_type": f"eq.{asset_type}",
+                                   "asset_name": f"eq.{name}"})
+    prev = _latest(snaps)
+    values = {"value": value,
+              "cost_basis": cost_basis if cost_basis is not None
+              else (prev or {}).get("cost_basis") or 0.0,
+              "notes": notes if notes is not None else (prev or {}).get("notes") or ""}
+    same = next((s for s in snaps if (s["year"], s["month"]) == (year, month)), None)
+    if same:
+        row = repo.update("assets", {"id": f"eq.{same['id']}"}, values)[0]
+    else:
+        row = repo.insert("assets", {"year": year, "month": month, "asset_type": asset_type,
+                                     "asset_name": name, **values})
+    repo.touch_sync_ts()
+    return row
+
+
+def delete_asset(repo: Repo, asset_type: str, name: str) -> int:
+    """Arrête le suivi d'un actif : supprime tous ses instantanés."""
+    gone = repo.delete("assets", {"asset_type": f"eq.{asset_type}", "asset_name": f"eq.{name}"})
+    if not gone:
+        raise HTTPException(404, "Actif introuvable.")
+    repo.touch_sync_ts()
+    return len(gone)
+
+
+def set_liability(repo: Repo, year: int, month: int, liability_type: str, name: str,
+                  remaining_capital: float, monthly_payment: float | None,
+                  end_date: str | None) -> dict:
+    snaps = repo.select("liabilities", {"liability_name": f"eq.{name}"})
+    prev = _latest(snaps) or {}
+    values = {"liability_type": liability_type, "remaining_capital": remaining_capital,
+              "monthly_payment": monthly_payment if monthly_payment is not None
+              else prev.get("monthly_payment") or 0.0,
+              "end_date": end_date if end_date is not None else prev.get("end_date") or "",
+              "notes": prev.get("notes") or ""}
+    same = next((s for s in snaps if (s["year"], s["month"]) == (year, month)), None)
+    if same:
+        row = repo.update("liabilities", {"id": f"eq.{same['id']}"}, values)[0]
+    else:
+        row = repo.insert("liabilities", {"year": year, "month": month,
+                                          "liability_name": name, **values})
+    repo.touch_sync_ts()
+    return row
+
+
+def delete_liability(repo: Repo, name: str) -> int:
+    gone = repo.delete("liabilities", {"liability_name": f"eq.{name}"})
+    if not gone:
+        raise HTTPException(404, "Passif introuvable.")
+    repo.touch_sync_ts()
+    return len(gone)
+
+
+# ── Vue d'ensemble de l'épargne ──────────────────────────────
+
+def savings_overview(repo: Repo, year: int, month: int, months: int = 12) -> dict:
+    periods = [shift_month(year, month, -i) for i in range(months - 1, -1, -1)]
+    mo = _period_months(repo, set(periods))
+    id2p = {m["id"]: p for p, m in mo.items()}
+    ids = sorted(id2p)
+    sav = repo.rows_for_months("savings", ids, "month_id,account,amount")
+    rev = repo.rows_for_months("revenues", ids, "month_id,amount")
+    exp_months = {r["month_id"] for r in repo.rows_for_months("expenses", ids, "month_id")}
+    s_by_p: dict[tuple[int, int], float] = defaultdict(float)
+    r_by_p: dict[tuple[int, int], float] = defaultdict(float)
+    by_account: dict[str, float] = defaultdict(float)
+    for s in sav:
+        s_by_p[id2p[s["month_id"]]] += s["amount"]
+        by_account[(s.get("account") or "").strip() or "Sans compte"] += s["amount"]
+    for r in rev:
+        r_by_p[id2p[r["month_id"]]] += r["amount"]
+    active = {id2p[i] for i in exp_months} | set(s_by_p) | set(r_by_p)   # mois saisis
+
+    def rate(s: float, r: float) -> float | None:
+        return round(s / r * 100, 1) if r > 0 else None
+
+    per_month = [{"year": p[0], "month": p[1], "sav": round(s_by_p[p], 2),
+                  "rev": round(r_by_p[p], 2), "rate": rate(s_by_p[p], r_by_p[p]),
+                  "has_data": p in active} for p in periods]
+    total_s, total_r = sum(s_by_p.values()), sum(r_by_p.values())
+    n = len(active)
+    accounts = [a for a in assets_current(repo) if a["asset_type"] == "compte"]
+    goals = []
+    for g in repo.select("savings_goals"):
+        target = g.get("target_amount") or 0
+        cur = g.get("current_amount") or 0
+        goals.append({**g, "pct": round(min(cur / target * 100, 100), 1) if target > 0 else None})
+    return {
+        "year": year, "month": month, "months": months, "months_with_data": n,
+        "per_month": per_month,
+        "total": round(total_s, 2), "average": round(total_s / n, 2) if n else None,
+        "rate": rate(total_s, total_r),
+        "by_account": [{"account": k, "total": round(v, 2)}
+                       for k, v in sorted(by_account.items(), key=lambda kv: -kv[1])],
+        "accounts": accounts, "accounts_total": round(sum(a["value"] for a in accounts), 2),
+        "goals": goals,
+    }
 
 
 # ── Saisies ──────────────────────────────────────────────────
@@ -349,22 +488,56 @@ def copy_budgets(repo: Repo, year: int, month: int) -> int:
 
 # ── Contexte agrégé pour l'IA (jamais les lignes brutes) ─────
 
-def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
-    periods = [shift_month(year, month, -i) for i in range(nb_months - 1, -1, -1)]
-    rows = repo.select("months", {"year": in_filter(sorted({p[0] for p in periods}))})
-    months = [m for m in rows if (m["year"], m["month"]) in set(periods)]
-    ids = [m["id"] for m in months]
+AI_LOOKBACK = 24          # mois parcourus pour trouver les N derniers mois saisis
+
+
+def ai_context(repo: Repo, year: int, month: int, nb_months: int,
+               today: date | None = None) -> dict:
+    """Résumé agrégé des `nb_months` derniers mois SAISIS jusqu'à year/month.
+
+    - les mois sans aucune saisie sont écartés (et signalés), ils ne
+      faussent plus les moyennes ;
+    - le mois calendaire en cours est « partiel » : affiché à part, exclu
+      des moyennes (sauf s'il est le seul mois disponible) ;
+    - jamais de mois futur.
+    """
+    t = today or date.today()
+    cur_cal = (t.year, t.month)
+    end = min((year, month), cur_cal)
+    lookback = [shift_month(end[0], end[1], -i) for i in range(AI_LOOKBACK)]
+    mo = _period_months(repo, set(lookback))
+    id2p = {m["id"]: p for p, m in mo.items()}
+    ids = sorted(id2p)
     cats = {c["id"]: c["name"] for c in categories(repo)}
     exp = repo.rows_for_months("expenses", ids, "month_id,category_id,amount,label,payee")
     rev = repo.rows_for_months("revenues", ids, "month_id,source,amount")
-    sav = repo.rows_for_months("savings", ids, "month_id,amount")
-    n = max(len(months), 1)
+    sav = repo.rows_for_months("savings", ids, "month_id,account,amount")
+    filled = {id2p[r["month_id"]] for r in (*exp, *rev, *sav)}
+
+    chosen = sorted([p for p in lookback if p in filled][:nb_months])
+    partial = {p for p in chosen if p == cur_cal}
+    basis = [p for p in chosen if p not in partial] or chosen      # base des moyennes
+    n = max(len(basis), 1)
+    in_basis = set(basis)
+    skipped = [p for p in lookback if chosen and chosen[0] <= p <= end and p not in filled]
+
+    def fmt(p: tuple[int, int]) -> str:
+        return f"{p[0]}-{p[1]:02d}"
 
     by_cat: dict[str, float] = defaultdict(float)
     by_label: dict[str, float] = defaultdict(float)
     by_payee: dict[str, float] = defaultdict(float)
+    cat_month: dict[tuple[int, int], dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    tot: dict[str, dict[tuple[int, int], float]] = {k: defaultdict(float)
+                                                     for k in ("rev", "exp", "sav")}
     for e in exp:
-        by_cat[cats.get(e["category_id"], "?")] += e["amount"]
+        p = id2p[e["month_id"]]
+        name = cats.get(e["category_id"], "?")
+        tot["exp"][p] += e["amount"]
+        cat_month[p][name] += e["amount"]
+        if p not in in_basis:
+            continue
+        by_cat[name] += e["amount"]
         key = (e.get("label") or "").strip() or (e.get("payee") or "").strip()
         if key:
             by_label[key] += e["amount"]
@@ -372,44 +545,63 @@ def ai_context(repo: Repo, year: int, month: int, nb_months: int) -> dict:
             by_payee[e["payee"]] += e["amount"]
     by_src: dict[str, float] = defaultdict(float)
     for r in rev:
-        by_src[r["source"]] += r["amount"]
-
-    per_month = []
-    mid_to_month = {m["id"]: m for m in months}
-    for m in sorted(months, key=lambda x: (x["year"], x["month"])):
-        per_month.append({
-            "period": f"{m['year']}-{m['month']:02d}",
-            "rev": round(sum(r["amount"] for r in rev if r["month_id"] == m["id"]), 2),
-            "exp": round(sum(e["amount"] for e in exp if e["month_id"] == m["id"]), 2),
-            "sav": round(sum(s["amount"] for s in sav if s["month_id"] == m["id"]), 2),
-        })
+        p = id2p[r["month_id"]]
+        tot["rev"][p] += r["amount"]
+        if p in in_basis:
+            by_src[r["source"]] += r["amount"]
+    by_acc: dict[str, float] = defaultdict(float)
+    for s in sav:
+        p = id2p[s["month_id"]]
+        tot["sav"][p] += s["amount"]
+        if p in in_basis:
+            by_acc[(s.get("account") or "").strip() or "Sans compte"] += s["amount"]
 
     def top(d: dict, k: int) -> list[dict]:
         return [{"name": name, "per_month": round(v / n, 2)}
                 for name, v in sorted(d.items(), key=lambda kv: -kv[1])[:k]]
 
-    # Budgets du mois courant à partir des dépenses déjà chargées (pas de
-    # second aller-retour via month_summary).
-    cur_ids = {m["id"] for m in months if (m["year"], m["month"]) == (year, month)}
-    spent_cur: dict[str, float] = defaultdict(float)
-    for e in exp:
-        if e["month_id"] in cur_ids:
-            spent_cur[cats.get(e["category_id"], "?")] += e["amount"]
-    budgets_cur = budget_status(repo, year, month, spent_cur)
+    per_month = []
+    for p in chosen:
+        top_cats = sorted(cat_month[p].items(), key=lambda kv: -kv[1])[:10]
+        per_month.append({
+            "period": fmt(p), "partial": p in partial,
+            "rev": round(tot["rev"][p], 2), "exp": round(tot["exp"][p], 2),
+            "sav": round(tot["sav"][p], 2),
+            "solde": round(tot["rev"][p] - tot["exp"][p] - tot["sav"][p], 2),
+            "categories": {k: round(v, 2) for k, v in top_cats},
+        })
+    avg = {k: round(sum(tot[k][p] for p in basis) / n, 2) if chosen else None
+           for k in ("rev", "exp", "sav")}
+
+    # Budgets et signaux du dernier mois retenu (pas d'un mois vide).
+    last = chosen[-1] if chosen else end
+    spent_last: dict[str, float] = dict(cat_month.get(last, {}))
+    budgets_last = budget_status(repo, last[0], last[1], spent_last)
     pat = patrimoine(repo)
-    an = analytics(repo, year, month, months=1)
+    an = analytics(repo, last[0], last[1], months=1)
+    notes = [f"Moyennes calculées sur {len(basis)} mois saisi(s) : "
+             + ", ".join(fmt(p) for p in basis) + "."] if chosen else             ["Aucune saisie sur la période : aucune moyenne disponible."]
+    if partial:
+        notes.append(f"{fmt(cur_cal)} est le mois en cours (jour {t.day}) : données "
+                     "partielles, exclues des moyennes.")
+    if skipped:
+        notes.append("Mois sans aucune saisie ignorés : " + ", ".join(fmt(p) for p in skipped) + ".")
     return {
-        "period_end": f"{year}-{month:02d}", "months_with_data": len(mid_to_month),
-        "per_month": per_month,
-        "top_categories": top(by_cat, 8), "top_expenses": top(by_label, 8),
+        "today": t.isoformat(), "period_end": fmt(last),
+        "months_with_data": len(chosen), "averages_months": len(basis), "notes": notes,
+        "per_month": per_month, "averages_per_month": avg,
+        "savings_rate_pct": round(avg["sav"] / avg["rev"] * 100, 1)
+        if chosen and avg["rev"] else None,
+        "top_categories": top(by_cat, 10), "top_expenses": top(by_label, 8),
         "top_payees": top(by_payee, 8), "revenue_sources": top(by_src, 5),
-        "current_month_budgets": [{k: round(v, 2) if isinstance(v, float) else v
-                                   for k, v in b.items()} for b in budgets_cur],
+        "savings_by_account": top(by_acc, 6),
+        "budgets_of_period_end": [{k: round(v, 2) if isinstance(v, float) else v
+                                   for k, v in b.items()} for b in budgets_last],
         "patrimoine": {"by_type": pat["by_type"], "net_worth": round(pat["net_worth"], 2),
                        "liabilities_total": round(pat["total_liabilities"], 2)},
         # Signaux déjà calculés (seuils prudents) : l'IA s'appuie dessus au
         # lieu de deviner ce qui est « inhabituel ».
-        "unusual_this_month": {k: an[k] for k in ("unusual", "large_expenses")},
+        "unusual_period_end": {k: an[k] for k in ("unusual", "large_expenses")},
     }
 
 

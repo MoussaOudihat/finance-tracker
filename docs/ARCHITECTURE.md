@@ -28,7 +28,7 @@ flowchart LR
 | **Moindre privilège** | Aucune clé `service_role`. Appel service → service sans utilisateur (finance-api → notifier) : secret partagé dédié. Clés IA uniquement dans ai-service, secret TickTick uniquement dans notifier. Conséquence assumée : aucun traitement planifié ne lit les données financières (le bilan IA est généré à la demande, les alertes partent lors d'une saisie). |
 | **Sans état quand c'est possible** | web, finance-api, ai-service : réplicables (HPA). notifier (planificateur + SQLite) et Redis : 1 instance. |
 | **Défaillance isolée** | web fonctionne sans ai-service / notifier (fonctions masquées) ; une alerte qui échoue n'empêche jamais une saisie. |
-| **Données minimales vers l'IA** | ai-service ne reçoit qu'un contexte agrégé (totaux, moyennes, top postes), jamais les opérations une à une ; consentement explicite dans l'interface ; sortie de catégorisation validée contre la liste réelle. |
+| **Données minimales vers l'IA** | ai-service ne reçoit qu'un contexte agrégé (totaux mensuels et par catégorie, moyennes calculées sur les seuls mois saisis et complets, top postes), plus les quelques dépenses inhabituelles déjà détectées — jamais la liste des opérations ; consentement explicite dans l'interface ; sortie de catégorisation validée contre la liste réelle. |
 
 ## Écriture des données : desktop et web
 

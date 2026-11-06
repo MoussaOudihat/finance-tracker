@@ -79,7 +79,7 @@ h2 { font-size: 1.05rem; margin: 0 0 .75rem; }
 .kpi strong { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
 
 /* ── Navigation mensuelle ── */
-.month-nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; }
+.month-nav { display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; flex-wrap: wrap; }
 .month-nav h1 { margin: 0; }
 .badge {
   display: inline-block; font-size: .72rem; font-weight: 600; padding: .1rem .45rem;
@@ -189,6 +189,20 @@ details.card[open] > summary { margin-bottom: .75rem; }
 tr.row-error td { background: var(--red-soft); }
 tr.row-error-msg td { border-top: 0; padding-top: 0; }
 .badge-ai { color: var(--primary); border-color: var(--primary); white-space: nowrap; }
+tr.row-blank td, tr.row-skipped td { opacity: .45; transition: opacity .15s; }
+tr.row-blank:focus-within td { opacity: 1; }
+.grid select.field-error { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-soft); }
+.bulk-summary { margin: .75rem 0 .25rem; font-weight: 600; min-height: 1.4em; }
+.bulk-summary:empty { display: none; }
+.btn.is-busy { cursor: progress; opacity: .8; }
+.btn.is-busy::before {
+  content: ""; display: inline-block; width: .85em; height: .85em; margin-right: .45em;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  vertical-align: -.1em; animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn.is-busy::before { animation: none; } }
+.btn:disabled { cursor: not-allowed; }
 
 /* ── v2.1 : analyses ── */
 .trend { width: 100%; height: 200px; display: block; }
@@ -203,3 +217,22 @@ tr.row-error-msg td { border-top: 0; padding-top: 0; }
 ul.plain { list-style: none; padding: 0; margin: 0 0 .75rem; display: grid; gap: .45rem; }
 .kpi .small { display: block; margin-top: .2rem; }
 .kpi .small span { display: inline; font-size: inherit; }
+
+/* ── v2.2 : clôture, patrimoine, épargne ── */
+details.month-close, details.confirm { position: relative; }
+details.month-close > summary, details.confirm > summary { list-style: none; }
+details.month-close > summary::-webkit-details-marker,
+details.confirm > summary::-webkit-details-marker { display: none; }
+.month-close-panel, .confirm-panel {
+  position: absolute; z-index: 5; top: calc(100% + .35rem); right: 0; width: min(18rem, 80vw);
+  display: grid; gap: .5rem; padding: .75rem; background: var(--card, var(--light));
+  border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18);
+}
+.month-close-panel { left: 0; right: auto; }
+.month-close-panel p, .confirm-panel p { margin: 0; }
+.inline-form { display: flex; gap: .35rem; align-items: center; }
+.inline-form .input-sm { width: 7.5rem; padding: .3rem .4rem; }
+.form-pair { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+@media (max-width: 520px) { .form-pair { grid-template-columns: 1fr; } }
+.bars li.bars-empty .bar-label a { color: var(--muted); }
+.asset-table td { vertical-align: middle; }

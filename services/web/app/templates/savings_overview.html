@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Épargne — vue d'ensemble{% endblock %}
+{% block content %}
+<div class="month-nav">
+  <a class="btn btn-ghost" href="?y={{ prev[0] }}&m={{ prev[1] }}" aria-label="Mois précédent">‹</a>
+  <h1>Épargne <span class="muted total">12 mois jusqu'à {{ MONTHS_FR[m - 1] }} {{ y }}</span></h1>
+  <a class="btn btn-ghost" href="?y={{ next[0] }}&m={{ next[1] }}" aria-label="Mois suivant">›</a>
+  <a class="btn btn-ghost btn-sm" href="/epargne?y={{ y }}&m={{ m }}">← Saisies du mois</a>
+</div>
+
+<section class="kpis">
+  <div class="card kpi"><span class="muted">Épargné sur 12 mois</span><strong class="pos">{{ ov.total|eur }}</strong></div>
+  <div class="card kpi"><span class="muted">Moyenne / mois saisi</span>
+    <strong>{{ ov.average|eur if ov.average is not none else '—' }}</strong>
+    <span class="muted small">{{ ov.months_with_data }} mois saisi(s)</span></div>
+  <div class="card kpi"><span class="muted">Taux d'épargne</span>
+    <strong>{{ (ov.rate|string ~ ' %')|replace('.', ',') if ov.rate is not none else '—' }}</strong>
+    <span class="muted small">épargne / revenus</span></div>
+  <div class="card kpi"><span class="muted">Comptes d'épargne</span><strong>{{ ov.accounts_total|eur }}</strong>
+    <span class="muted small">solde patrimoine</span></div>
+</section>
+
+<section class="card">
+  <h2>Épargne par mois</h2>
+  <ul class="bars">
+    {% for p in ov.per_month %}
+    <li {% if not p.has_data %}class="bars-empty"{% endif %}>
+      <span class="bar-label"><a href="/epargne?y={{ p.year }}&m={{ p.month }}">{{ MONTHS_FR[p.month - 1][:3] }} {{ p.year }}</a></span>
+      <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+        <rect class="bar-bg" width="100" height="8" rx="2"/>
+        <rect class="bar-fg" width="{{ (p.sav / max_sav * 100)|round(1) }}" height="8" rx="2"/>
+      </svg>
+      <span class="bar-value">
+        {% if p.has_data %}{{ p.sav|eur }}{% if p.rate is not none %} <span class="muted small">· {{ (p.rate|string)|replace('.', ',') }} %</span>{% endif %}
+        {% else %}<span class="muted small">non saisi</span>{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <h2>Par compte <span class="muted total">versements sur 12 mois</span></h2>
+    {% if ov.by_account %}
+    <ul class="bars">
+      {% for a in ov.by_account %}
+      <li>
+        <span class="bar-label">{{ a.account }}</span>
+        <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+          <rect class="bar-bg" width="100" height="8" rx="2"/>
+          <rect class="bar-fg" width="{{ (a.total / max_acc * 100)|round(1) }}" height="8" rx="2"/>
+        </svg>
+        <span class="bar-value">{{ a.total|eur }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="muted">Aucune épargne saisie sur la période.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Soldes des comptes <span class="muted total">patrimoine</span></h2>
+    {% if ov.accounts %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Compte</th><th>Mise à jour</th><th class="num">Solde</th></tr></thead>
+      <tbody>
+      {% for a in ov.accounts %}
+      <tr><td>{{ a.asset_name }}</td><td>{{ MONTHS_FR[a.month - 1][:3] }} {{ a.year }}</td><td class="num">{{ a.value|eur }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}<p class="muted">Aucun compte d'épargne suivi.</p>{% endif %}
+    <p class="muted small"><a href="/patrimoine">Mettre à jour les soldes dans Patrimoine</a> — une épargne saisie sur un compte reconnu met son solde à jour automatiquement.</p>
+  </section>
+</div>
+
+{% if ov.goals %}
+<section class="card">
+  <h2>Objectifs d'épargne</h2>
+  <ul class="bars">
+    {% for g in ov.goals %}
+    <li>
+      <span class="bar-label">{{ g.name }}{% if g.target_date %} <span class="muted small">· {{ g.target_date }}</span>{% endif %}</span>
+      <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
+        <rect class="bar-bg" width="100" height="8" rx="2"/>
+        <rect class="bar-fg" width="{{ g.pct or 0 }}" height="8" rx="2"/>
+      </svg>
+      <span class="bar-value">{{ (g.current_amount or 0)|eur }} / {{ g.target_amount|eur }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

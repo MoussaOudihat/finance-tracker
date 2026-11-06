@@ -280,7 +280,7 @@ def test_analytics_trends_comparisons_and_anomalies(api, user_id, notifier):
     assert [(e["amount"], e["label"]) for e in an["large_expenses"]] == [(310, ""), (150, "Anniversaire")]
     # le contexte IA reprend ces signaux
     ctx = api.get("/v1/ai-context?year=2026&month=10&months=3", headers=h(user_id)).json()
-    assert ctx["unusual_this_month"]["unusual"][0]["category"] == "ALIMENTATION"
+    assert ctx["unusual_period_end"]["unusual"][0]["category"] == "ALIMENTATION"
     # alerte automatique, une fois par catégorie (en tâche de fond, après la réponse)
     unusual = [e for e in notifier.events if e["type"] == "spending.unusual"]
     assert {e["category"] for e in unusual} == {"ALIMENTATION", "RESTAURANTS"}

@@ -1,11 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Assistant IA{% endblock %}
 {% block content %}
-<h1>Assistant IA</h1>
+<div class="month-nav">
+  <h1>Assistant IA</h1>
+  <span class="muted">Analyse jusqu'à</span>
+  <a class="btn btn-ghost btn-sm" href="?y={{ prev[0] }}&m={{ prev[1] }}" aria-label="Mois précédent">‹</a>
+  <strong>{{ MONTHS_FR[m - 1] }} {{ y }}</strong>
+  <a class="btn btn-ghost btn-sm" href="?y={{ next[0] }}&m={{ next[1] }}" aria-label="Mois suivant">›</a>
+</div>
 {% if not ai.providers %}
 <section class="card"><p class="muted">Aucun fournisseur IA n'est configuré sur ce serveur (clés ANTHROPIC_API_KEY / GEMINI_API_KEY de ai-service).</p></section>
 {% else %}
-<p class="muted small">Seul un <strong>résumé agrégé</strong> (totaux mensuels, principales catégories et postes, budgets, patrimoine par type) est envoyé au fournisseur choisi, jamais vos opérations une par une.
+<p class="muted small">Seul un <strong>résumé agrégé</strong> (totaux mensuels et par catégorie, principaux postes, budgets, patrimoine par type) est envoyé au fournisseur choisi.
+Les mois sans saisie sont ignorés et le mois en cours, incomplet, n'entre pas dans les moyennes.
 Requêtes restantes aujourd'hui : {{ ai.remaining }} / {{ ai.daily_limit }}.</p>
 
 {% macro provider_fields() %}
@@ -28,8 +35,8 @@ Requêtes restantes aujourd'hui : {{ ai.remaining }} / {{ ai.daily_limit }}.</p>
       <label>Période
         <select name="months">
           <option value="1">{{ MONTHS_FR[m - 1] }} {{ y }}</option>
-          <option value="3" selected>3 derniers mois</option>
-          <option value="6">6 derniers mois</option>
+          <option value="3" selected>3 derniers mois saisis</option>
+          <option value="6">6 derniers mois saisis</option>
         </select>
       </label>
       {{ provider_fields() }}
