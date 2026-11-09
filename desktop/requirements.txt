@@ -1,7 +1,7 @@
 customtkinter>=6.0.0
 matplotlib>=3.11.2
 openpyxl>=3.1.5
-supabase>=2.33.0
+supabase>=2.34.1
 bcrypt>=5.0.0
 
 # Épinglé : anthropic/openai tirent httpx>=0.28 en dépendance transitive,
