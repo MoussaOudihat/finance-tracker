@@ -3,6 +3,6 @@
 pytest==9.2.0
 fakeredis==2.40.0
 respx==0.23.1
-ruff==0.17.3
+ruff==0.17.4
 bandit[toml]==1.9.4
 pip-audit==2.10.1
