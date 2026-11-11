@@ -29,6 +29,8 @@ data:
   FORWARDED_ALLOW_IPS: {{ .Values.config.forwardedAllowIps | quote }}
   {{- if .Values.mcp.enabled }}
   MCP_PUBLIC_URL: {{ include "fintrack.mcpPublicUrl" . | quote }}
+  {{- $_ := include "fintrack.mcpPath" . }}{{/* validation de mcp.publicUrl, Ingress ou non */}}
+  MCP_ALLOW_INSECURE_HTTP: {{ ternary "true" "false" .Values.mcp.allowInsecureHttp | quote }}
   MCP_EXPOSE_DETAILS: {{ ternary "true" "false" .Values.mcp.exposeDetails | quote }}
   OAUTH_ALLOWED_REDIRECT_HOSTS: {{ .Values.mcp.allowedRedirectHosts | quote }}
   {{- end }}

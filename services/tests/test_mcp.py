@@ -247,3 +247,17 @@ def test_jwks_outage_is_503_not_401(make, verifier, monkeypatch):
         r = rpc(c, "tools/list", token=oauth_token())
     assert r.status_code == 503 and r.headers["retry-after"] == "5"
     assert "www-authenticate" not in r.headers
+
+
+
+def test_insecure_http_only_with_explicit_opt_in(make, monkeypatch):
+    """Cluster local sans TLS (ex. http://fintrack.localtest.me:9080/mcp) :
+    refusé par défaut, accepté avec MCP_ALLOW_INSECURE_HTTP=true."""
+    from fintrack_common.config import ConfigError
+    url = "http://fintrack.localtest.me:9080/mcp"
+    with pytest.raises(ConfigError):
+        make(MCP_PUBLIC_URL=url)
+    with make(MCP_PUBLIC_URL=url, MCP_ALLOW_INSECURE_HTTP="true",
+              MCP_EXTRA_ALLOWED_HOSTS="fin.example.com") as c:
+        meta = c.get("/.well-known/oauth-protected-resource/mcp").json()
+    assert meta["resource"] == url

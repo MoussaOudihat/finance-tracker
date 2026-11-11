@@ -63,18 +63,34 @@ capabilities:
 {{- if .Values.mcp.publicUrl -}}
 {{ .Values.mcp.publicUrl }}
 {{- else -}}
-https://{{ .Values.ingress.host }}/mcp
+{{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}/mcp
 {{- end -}}
+{{- end -}}
+
+{{/* Nom d'hôte (sans port) de l'URL publique du MCP */}}
+{{- define "fintrack.mcpHostname" -}}
+{{- (split ":" (urlParse (include "fintrack.mcpPublicUrl" .)).host)._0 -}}
+{{- end -}}
+
+{{/* "true" si le MCP est servi par l'Ingress ; "false" en mode port-forward
+     (publicUrl sur localhost / 127.0.0.1 : aucune route Ingress). */}}
+{{- define "fintrack.mcpViaIngress" -}}
+{{- $h := include "fintrack.mcpHostname" . -}}
+{{- if and .Values.ingress.enabled (not (has $h (list "localhost" "127.0.0.1"))) -}}true{{- else -}}false{{- end -}}
 {{- end -}}
 
 {{/* Chemin du serveur MCP, déduit de l'URL publique (Ingress = application) */}}
 {{- define "fintrack.mcpPath" -}}
 {{- $u := urlParse (include "fintrack.mcpPublicUrl" .) -}}
-{{- if ne $u.host .Values.ingress.host -}}
-{{- fail (printf "mcp.publicUrl doit utiliser l'hôte de l'Ingress (%s), reçu : %s" .Values.ingress.host $u.host) -}}
+{{- $h := include "fintrack.mcpHostname" . -}}
+{{- if and (eq (include "fintrack.mcpViaIngress" .) "true") (ne $h .Values.ingress.host) -}}
+{{- fail (printf "mcp.publicUrl doit utiliser l'hôte de l'Ingress (%s) — ou localhost pour un port-forward ; reçu : %s" .Values.ingress.host $h) -}}
 {{- end -}}
 {{- if or (not $u.path) (eq $u.path "/") -}}
 {{- fail "mcp.publicUrl doit contenir un chemin, ex. https://<hôte>/mcp" -}}
+{{- end -}}
+{{- if and (eq $u.scheme "http") (not (has $h (list "localhost" "127.0.0.1"))) (not .Values.mcp.allowInsecureHttp) -}}
+{{- fail (printf "MCP en http:// sur %s : activez ingress.tls, utilisez le port-forward (mcp.publicUrl=http://localhost:8090/mcp), ou, sur un cluster LOCAL uniquement, mcp.allowInsecureHttp=true" $h) -}}
 {{- end -}}
 {{- $u.path -}}
 {{- end -}}
