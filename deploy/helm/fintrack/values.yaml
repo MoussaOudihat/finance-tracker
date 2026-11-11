@@ -85,7 +85,13 @@ mcp:
   # clients, Site URL = https://<ingress.host>, Authorization path =
   # /oauth/consent, et migration supabase/migration_mcp_readonly.sql appliquée.
   enabled: false
-  publicUrl: ""             # vide = https://<ingress.host>/mcp
+  # vide = <http|https selon ingress.tls>://<ingress.host>/mcp (servi par l'Ingress).
+  # http://localhost:8090/mcp = mode port-forward (aucune route Ingress) :
+  #   kubectl -n <ns> port-forward svc/mcp 8090:8000
+  publicUrl: ""
+  # Cluster local SANS TLS uniquement : autorise une URL publique en http://
+  # sur un hôte autre que localhost (ex. *.localtest.me). Jamais en production.
+  allowInsecureHttp: false
   exposeDetails: true       # false : agrégats seulement (pas de liste d'opérations)
   # Hôtes https acceptés comme adresse de retour OAuth (la boucle locale
   # http://localhost des clients CLI est toujours acceptée)

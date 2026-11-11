@@ -297,11 +297,15 @@ def register_tools(server: MCPServer, fin: Finance, *, expose_details: bool) -> 
 
 # ── Application ──────────────────────────────────────────────
 
-def _public_url(raw: str) -> str:
+def _public_url(raw: str, *, allow_insecure: bool = False) -> str:
+    """URL publique (identifiant de ressource OAuth). https obligatoire, sauf
+    localhost (port-forward) ou MCP_ALLOW_INSECURE_HTTP=true (cluster local
+    sans TLS, ex. *.localtest.me — jamais en production)."""
     p = urlsplit(raw)
     local = p.hostname in ("localhost", "127.0.0.1")
-    if p.scheme != "https" and not (p.scheme == "http" and local):
-        raise ConfigError("MCP_PUBLIC_URL doit être en https:// (http accepté pour localhost).")
+    if p.scheme != "https" and not (p.scheme == "http" and (local or allow_insecure)):
+        raise ConfigError("MCP_PUBLIC_URL doit être en https:// (http accepté pour localhost, "
+                          "ou avec MCP_ALLOW_INSECURE_HTTP=true sur un cluster local).")
     if not p.netloc or p.query or p.fragment or not p.path.startswith("/") or p.path == "/":
         raise ConfigError("MCP_PUBLIC_URL attendu : https://<hôte>/mcp")
     return raw.rstrip("/")
@@ -310,7 +314,10 @@ def _public_url(raw: str) -> str:
 def create_app(*, verifier: Optional[TokenVerifier] = None,
                finance_http: Optional[httpx.AsyncClient] = None) -> Starlette:
     supabase_url = env("SUPABASE_URL", required=True).rstrip("/")
-    public_url = _public_url(env("MCP_PUBLIC_URL", required=True))
+    insecure = env_bool("MCP_ALLOW_INSECURE_HTTP", False)
+    public_url = _public_url(env("MCP_PUBLIC_URL", required=True), allow_insecure=insecure)
+    if insecure and urlsplit(public_url).scheme == "http":
+        log.warning("MCP en http:// (MCP_ALLOW_INSECURE_HTTP) : réservé à un cluster local")
     expose_details = env_bool("MCP_EXPOSE_DETAILS", True)
     require_client = env_bool("MCP_REQUIRE_OAUTH_CLIENT", True)
     pub = urlsplit(public_url)

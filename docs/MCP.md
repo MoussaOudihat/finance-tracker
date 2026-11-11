@@ -91,6 +91,27 @@ L'Ingress route `/mcp` et `/.well-known/oauth-protected-resource*` vers le
 pod `mcp`, le reste vers `web`. Image : `fintrack-mcp` (même Dockerfile,
 `SERVICE=mcp_server`).
 
+### Cluster local (sans TLS)
+
+Deux variantes. L'accès web habituel par l'Ingress est conservé dans les deux cas.
+
+| Variante | Valeurs Helm | URL à donner au client MCP |
+|---|---|---|
+| **Port-forward** (recommandé) | `mcp.enabled=true`, `mcp.publicUrl=http://localhost:8090/mcp` (aucune route Ingress pour le MCP) | `http://localhost:8090/mcp` après `kubectl -n <ns> port-forward svc/mcp 8090:8000` |
+| Par l'Ingress en http | `mcp.enabled=true`, `mcp.publicUrl=http://<ingress.host>:<port>/mcp`, `mcp.allowInsecureHttp=true` | `http://<ingress.host>:<port>/mcp` |
+
+La variante Ingress en http n'est acceptée que sur un cluster local : en
+production, activez `ingress.tls`. Certains clients MCP n'acceptent un
+serveur en http que sur `localhost`. Dans ce cas, utilisez le port-forward.
+
+**Site URL Supabase.** Supabase envoie l'utilisateur sur
+*Site URL* + *Authorization path* pour le consentement. La *Site URL* doit
+donc être l'adresse du **web** que vous utilisez, par exemple
+`http://fintrack.localtest.me:9080`. Les *Redirect URLs* ne suffisent pas.
+La Site URL sert aussi de lien par défaut dans les e-mails d'authentification
+(confirmation, réinitialisation). Sur un projet partagé avec une production,
+préférez un projet Supabase de test.
+
 ### 3. Clients
 
 **Claude Code**

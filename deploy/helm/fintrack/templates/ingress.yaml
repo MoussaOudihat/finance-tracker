@@ -23,7 +23,7 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          {{- if .Values.mcp.enabled }}
+          {{- if and .Values.mcp.enabled (eq (include "fintrack.mcpViaIngress" .) "true") }}
           # Serveur MCP + métadonnées OAuth RFC 9728 (découverte par les clients)
           # Prefix : « /mcp/ » (barre finale) atteint aussi le serveur MCP
           - path: {{ include "fintrack.mcpPath" . }}

@@ -61,3 +61,7 @@ desktop.ini
 *.log
 *.tmp
 *.bak
+
+# Sauvegardes de base (données personnelles) — jamais dans git
+*.dump
+*.dump.gz

@@ -6,6 +6,16 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [2.3.1] — 2026-11-11
+
+### Corrigé
+- ☸️ **MCP sur un cluster local** : avec un Ingress en http sur un hôte autre que localhost (ex. `http://fintrack.localtest.me:9080`), aucune valeur de `mcp.publicUrl` n'était acceptée.
+  - l'hôte est comparé à `ingress.host` **sans le port** ;
+  - `mcp.publicUrl=http://localhost:…` (mode port-forward) est accepté même avec un Ingress actif, sans route Ingress pour le MCP ;
+  - nouvelle option `mcp.allowInsecureHttp` (`MCP_ALLOW_INSECURE_HTTP`), réservée aux clusters locaux, pour servir le MCP en http par l'Ingress ;
+  - l'URL par défaut suit `ingress.tls` (http ou https), avec un message d'erreur explicite au rendu.
+- `.gitignore` : sauvegardes `*.dump` jamais versionnées.
+
 ## [2.3.0] — 2026-11-11
 
 > Migration de la base requise : voir [docs/MIGRATION_V2_3.md](docs/MIGRATION_V2_3.md).
