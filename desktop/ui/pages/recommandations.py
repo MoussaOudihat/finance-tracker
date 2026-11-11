@@ -142,7 +142,7 @@ def _render_body(container, db, app, nb_months: int,
                         ai_provider, ai_key, _next_row, user_context)
 
     # ── Recommandations règles par thème ─────────────────────
-    for cat_key, cat_label, cat_icon, cat_recs in categories:
+    for _cat_key, cat_label, cat_icon, cat_recs in categories:
         if not cat_recs:
             continue
 

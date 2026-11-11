@@ -3,124 +3,43 @@ web — BFF (Backend For Frontend) de Fintrack : pages HTML, sessions,
 orchestration des appels à finance-api, ai-service et notifier.
 
 Sans état (sessions dans Redis) : réplicable (HPA). Ne touche jamais la
-base directement.
+base directement. Les routes sont réparties par domaine dans routes_*.py ;
+ce module crée l'application et les dépendances partagées (session, rendu,
+appels aux services).
 """
 from __future__ import annotations
 
 import contextvars
-import hashlib
-import html
 import os
-import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
-from typing import Annotated, Optional
-from urllib.parse import urlsplit
-
-from pydantic import BaseModel, Field
+from typing import Optional
+from types import SimpleNamespace
+from urllib.parse import quote, urlsplit
 
 import httpx
-from fastapi import FastAPI, Form, Header, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from markupsafe import Markup
 
 from fintrack_common.auth import secure_equals
 from fintrack_common.config import VERSION, env, env_bool, env_int
-from fintrack_common.fmt import MONTHS_FR as _MONTHS
-from fintrack_common.fmt import fmt_eur, shift_month
+from fintrack_common.fmt import fmt_eur
 from fintrack_common.http import RequestContextMiddleware, add_health_routes, service_client
-from fintrack_common.logs import setup_logging
 from fintrack_common.ratelimit import Counter, redis_from_url
 
-from . import bulk
 from .backends import AuthExpired, BackendError, Backends, SupabaseAuth
 from .session import SessionStore
 
-log = setup_logging("web")
-_HERE = os.path.dirname(os.path.abspath(__file__))
-
-MONTHS_FR = [n.capitalize() for n in _MONTHS]
-ASSET_LABEL = {"bourse": "Bourse / ETF / PEA", "immobilier": "Immobilier", "crypto": "Crypto",
-               "or_metaux": "Or & Métaux", "compte": "Compte / Épargne", "autre": "Autre"}
-LIABILITY_LABEL = {"voiture": "Prêt voiture", "conso": "Prêt conso/perso", "autre": "Autre"}
-SECTIONS = {"depenses": ("expenses", "Dépenses"), "revenus": ("revenues", "Revenus"),
-            "epargne": ("savings", "Épargne")}
-COOKIE = "fintrack_sid"
-THEME_COOKIE = "fintrack_theme"      # préférence d'affichage par appareil (non sensible)
-THEME_LABEL = {"auto": "Auto", "light": "Clair", "dark": "Sombre"}
-CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
-       "connect-src 'self'; form-action 'self' https://ticktick.com; "
-       "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
-LOGIN_MAX_PER_IP_ID = 5        # échecs / 15 min pour un couple (IP, identifiant)
-LOGIN_MAX_PER_IP = 30          # échecs / 15 min pour une IP, tous comptes confondus
-CHAT_MAX_MESSAGES = 20
-
-
-class CategorizeReq(BaseModel):
-    label: Annotated[str, Field(max_length=120)] = ""
-    payee: Annotated[str, Field(max_length=60)] = ""
-
-
-class _Redirect(Exception):
-    def __init__(self, url: str):
-        self.url = url
-
-
-def render_ai_text(text: str) -> Markup:  # sûr : chaque ligne passe par html.escape()
-    """Mise en forme MINIMALE et sûre d'une réponse IA : tout est échappé,
-    seuls **gras** et les listes « - » sont rendus."""
-    out, in_list = [], False
-    for line in (text or "").splitlines():
-        esc = html.escape(line.strip())
-        esc = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)
-        if esc.startswith(("- ", "• ", "* ")):
-            if not in_list:
-                out.append("<ul>")
-                in_list = True
-            out.append(f"<li>{esc[2:]}</li>")
-            continue
-        if in_list:
-            out.append("</ul>")
-            in_list = False
-        if esc:
-            out.append(f"<p>{esc}</p>")
-    if in_list:
-        out.append("</ul>")
-    return Markup("".join(out))  # noqa: S704  # nosec B704
-
-
-def _static_hashes(directory: str) -> dict[str, str]:
-    """Empreinte (12 caractères hexadécimaux du SHA-256) de chaque fichier
-    statique, calculée une fois au démarrage."""
-    out = {}
-    for name in sorted(os.listdir(directory)):
-        full = os.path.join(directory, name)
-        if os.path.isfile(full):
-            with open(full, "rb") as f:
-                out[name] = hashlib.sha256(f.read()).hexdigest()[:12]
-    return out
-
-
-def line_points(values: list[float], vmax: float, *, width: float = 100.0,
-                height: float = 40.0, pad: float = 2.0) -> str:
-    """Attribut `points` d'une polyline SVG (viewBox 0 0 width height)."""
-    if not values:
-        return ""
-    vmax = vmax or 1.0
-    step = width / max(len(values) - 1, 1)
-    def y(v: float) -> float:
-        ratio = min(max(v / vmax, 0.0), 1.0)         # écrêté : jamais hors du cadre
-        return height - pad - ratio * (height - 2 * pad)
-    return " ".join(f"{i * step:.2f},{y(v):.2f}" for i, v in enumerate(values))
-
-
-def parse_amount(raw: str) -> str:
-    """Normalise la saisie ('1 234,50') ; la validation (> 0, fini) est
-    faite par finance-api (pydantic : NaN/inf refusés)."""
-    return (raw or "").replace(" ", "").replace("\xa0", "").replace(" ", "") \
-        .replace("€", "").replace(",", ".").strip()
+from . import routes_auth, routes_finance, routes_ia, routes_settings, routes_misc, routes_entries
+from .common import (ASSET_LABEL, COOKIE, CSP, LIABILITY_LABEL, MONTHS_FR,
+                     OAUTH_DEFAULT_REDIRECT_HOSTS, SECTIONS, THEME_COOKIE, THEME_LABEL,
+                     _HERE, _Redirect, _static_hashes)
+# Ré-exportés : API historique de ce module (tests, outils)
+from .common import (line_points, oauth_redirect_allowed, parse_amount,  # noqa: F401
+                     render_ai_text)
+from .common import safe_next
 
 
 def create_app(*, backends: Optional[Backends] = None, sessions: Optional[SessionStore] = None,
@@ -133,6 +52,8 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         idle_ttl=env_int("SESSION_IDLE_TTL", 3600),
         absolute_ttl=env_int("SESSION_ABSOLUTE_TTL", 12 * 3600))
     limiter = counter or Counter(redis, prefix="login")
+    oauth_hosts = tuple(h.strip().lower() for h in env(
+        "OAUTH_ALLOWED_REDIRECT_HOSTS", OAUTH_DEFAULT_REDIRECT_HOSTS).split(",") if h.strip())
     if backends is None:
         def _opt(name):
             url = env(name, "")
@@ -182,10 +103,16 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
             raise _Redirect("/connexion")
         return sid, sess
 
-    def call(sid: str, sess: dict, service: str, method: str, path: str, **kw):
+    def refresh(sid: str, sess: dict) -> None:
+        """Rafraîchit le jeton Supabase s'il expire bientôt et enregistre la
+        session (rotation du refresh token) — point UNIQUE pour toutes les
+        routes."""
         if backends.fresh_token(sess):
             sessions.update(sid, access_token=sess["access_token"],
                             refresh_token=sess["refresh_token"], expires_at=sess["expires_at"])
+
+    def call(sid: str, sess: dict, service: str, method: str, path: str, **kw):
+        refresh(sid, sess)
         return backends.call(sess, service, method, path, **kw)
 
     def call_parallel(sid: str, sess: dict, *specs: tuple) -> list:
@@ -194,9 +121,7 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         fois avant (pas de rotation concurrente) ; le contexte de la requête
         (request_id) est copié dans chaque thread. Chaque spec :
         (service, méthode, chemin) ou (service, méthode, chemin, kwargs)."""
-        if backends.fresh_token(sess):
-            sessions.update(sid, access_token=sess["access_token"],
-                            refresh_token=sess["refresh_token"], expires_at=sess["expires_at"])
+        refresh(sid, sess)
         futures = [
             pool.submit(contextvars.copy_context().run, backends.call, sess, *spec[:3],
                         **(spec[3] if len(spec) > 3 else {}))
@@ -221,11 +146,9 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
 
     def redirect(url: str) -> RedirectResponse:
-        """Redirection LOCALE uniquement (anti open-redirect) : un chemin
-        absolu du site, jamais « //hôte » ni une barre oblique inverse."""
-        if not url.startswith("/") or url.startswith(("//", "/\\")):
-            url = "/"
-        return RedirectResponse(url, status_code=303)
+        """Redirection LOCALE uniquement (anti open-redirect, règle unique :
+        common.safe_next)."""
+        return RedirectResponse(safe_next(url), status_code=303)
 
     def ticktick_handoff(request: Request, sid: str, sess: dict, url: str) -> HTMLResponse:
         """Seule navigation externe de l'application : l'autorisation OAuth
@@ -277,7 +200,14 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
     @app.exception_handler(AuthExpired)
     async def _on_auth_expired(request: Request, exc):
         sessions.delete(request.cookies.get(COOKIE))
-        resp = redirect("/connexion")
+        # GET : revenir sur la page demandée après reconnexion (indispensable
+        # pour le consentement OAuth : le client MCP attend son retour).
+        target = "/connexion"
+        if request.method == "GET":
+            here = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+            if here != "/":
+                target += "?next=" + quote(safe_next(here), safe="")
+        resp = redirect(target)
         resp.delete_cookie(COOKIE)
         return resp
 
@@ -301,858 +231,16 @@ def create_app(*, backends: Optional[Backends] = None, sessions: Optional[Sessio
         flash(sid, sess, exc.message, "error")   # POST : retour au formulaire
         return redirect(back_url(request))
 
-    # ── Connexion ────────────────────────────────────────────
-    def client_ip(request: Request) -> str:
-        # request.client vient d'uvicorn --proxy-headers, qui ne fait confiance
-        # à X-Forwarded-For QUE depuis FORWARDED_ALLOW_IPS (le proxy d'entrée).
-        return request.client.host if request.client else "?"
-
-    @app.get("/connexion", response_class=HTMLResponse)
-    def login_form(request: Request):
-        if sessions.get(request.cookies.get(COOKIE)):
-            return redirect("/")
-        # Jeton CSRF de pré-session (cookie dédié, SameSite=Strict)
-        pre = request.cookies.get("fintrack_pre") or os.urandom(24).hex()
-        resp = render(request, "login.html", None, None, csrf=pre)
-        resp.set_cookie("fintrack_pre", pre, httponly=True, secure=cookie_secure,
-                        samesite="strict", max_age=1800)
-        return resp
-
-    @app.post("/connexion")
-    def login(request: Request, identifier: str = Form(""), password: str = Form(""),
-              csrf: str = Form("")):
-        pre = request.cookies.get("fintrack_pre", "")
-
-        def fail(msg: str, code: int):
-            return render(request, "login.html", None, None, code, csrf=pre or "",
-                          error=msg, identifier=identifier[:120])
-
-        if not pre or not secure_equals(csrf, pre):
-            return fail("Formulaire expiré — réessayez.", 400)
-        ip, ident = client_ip(request), identifier.strip().lower()[:120]
-        if (limiter.get("ipid", ip, ident) >= LOGIN_MAX_PER_IP_ID
-                or limiter.get("ip", ip) >= LOGIN_MAX_PER_IP):
-            return fail("Trop de tentatives. Réessayez dans quelques minutes.", 429)
-        if not ident or not password:
-            return fail("Email et mot de passe requis.", 400)
-        try:
-            supa = backends.auth.sign_in(ident, password)
-        except httpx.HTTPError:
-            return fail("Service d'authentification indisponible.", 503)
-        if supa is None:
-            limiter.incr("ipid", ip, ident, window=900)
-            limiter.incr("ip", ip, window=900)
-            log.info("Connexion refusée")
-            return fail("Email ou mot de passe incorrect.", 401)
-        limiter.reset("ipid", ip, ident)
-        sid = sessions.create(supa)      # nouvel identifiant : anti-fixation
-        resp = redirect("/")
-        resp.set_cookie(COOKIE, sid, httponly=True, secure=cookie_secure, samesite="lax",
-                        max_age=sessions.absolute_ttl, path="/")
-        resp.delete_cookie("fintrack_pre")
-        return resp
-
-    @app.post("/deconnexion")
-    def logout(request: Request, csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        backends.auth.sign_out(sess["access_token"])     # scope local
-        sessions.delete(sid)                              # révocation réelle
-        resp = redirect("/connexion")
-        resp.delete_cookie(COOKIE, path="/")
-        return resp
-
-    # ── Tableau de bord ──────────────────────────────────────
-    @app.get("/", response_class=HTMLResponse)
-    def dashboard(request: Request, y: Optional[str] = None, m: Optional[str] = None):
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        s, hist, pat = call_parallel(
-            sid, sess,
-            ("finance", "GET", f"/v1/months/{yy}/{mm}/summary"),
-            ("finance", "GET", "/v1/history", {"params": {"limit": 12}}),
-            ("finance", "GET", "/v1/patrimoine"))
-        return render(request, "dashboard.html", sid, sess, active="dashboard", y=yy, m=mm,
-                      month_actions=True,
-                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), s=s, history=hist,
-                      closed=s["closed"], net_worth=pat["net_worth"],
-                      max_cat=max((c["total"] for c in s["by_category"]), default=0) or 1,
-                      max_hist=max((max(h["rev"], h["exp"]) for h in hist), default=0) or 1)
-
-    # ── Saisies ──────────────────────────────────────────────
-    def entry_payload(kind, amount, label, category_id, payee, source, account) -> dict:
-        p = {"amount": parse_amount(amount), "label": label}
-        if kind == "expenses":
-            try:
-                p.update(category_id=int(category_id), payee=payee)
-            except ValueError:
-                raise BackendError(422, "Catégorie invalide.") from None
-        elif kind == "revenues":
-            p["source"] = source
-        else:
-            p["account"] = account
-        return p
-
-    @app.get("/patrimoine", response_class=HTMLResponse)
-    def patrimoine(request: Request):
-        sid, sess = load(request)
-        pat = call(sid, sess, "finance", "GET", "/v1/patrimoine")
-        today = date.today()
-        return render(request, "patrimoine.html", sid, sess, active="patrimoine", pat=pat,
-                      this_month=f"{today.year}-{today.month:02d}",
-                      max_type=max((t["total"] for t in pat["by_type"]), default=0) or 1)
-
-    @app.get("/budgets", response_class=HTMLResponse)
-    def budgets(request: Request, y: Optional[str] = None, m: Optional[str] = None):
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        s, cats = call_parallel(sid, sess,
-                                ("finance", "GET", f"/v1/months/{yy}/{mm}/summary"),
-                                ("finance", "GET", "/v1/categories"))
-        budgeted = {b["category"] for b in s["budgets"]}
-        spent = {c["name"]: c["total"] for c in s["by_category"]}
-        return render(request, "budgets.html", sid, sess, active="budgets", y=yy, m=mm,
-                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), s=s, closed=False,
-                      unbudgeted=[{"name": c["name"], "spent": spent.get(c["name"], 0.0)}
-                                  for c in cats if c["name"] not in budgeted])
-
-    @app.post("/budgets")
-    def set_budget(request: Request, y: int = Form(...), m: int = Form(...),
-                   category: str = Form(""), amount: str = Form("0"), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        call(sid, sess, "finance", "PUT", f"/v1/budgets/{y}/{m}",
-             json={"category": category, "amount": parse_amount(amount) or "0"})
-        flash(sid, sess, "Budget enregistré.")
-        return redirect(f"/budgets?y={y}&m={m}")
-
-    @app.post("/budgets/copier")
-    def copy_budgets(request: Request, y: int = Form(...), m: int = Form(...),
-                     csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        n = call(sid, sess, "finance", "POST", f"/v1/budgets/{y}/{m}/copy-previous")["copied"]
-        flash(sid, sess, f"{n} budget(s) copié(s) depuis le mois précédent.")
-        return redirect(f"/budgets?y={y}&m={m}")
-
-    # ── Clôture du mois ──────────────────────────────────────
-    @app.post("/mois/cloture")
-    def month_close(request: Request, y: int = Form(...), m: int = Form(...),
-                    action: str = Form("close"), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = month_params(sid, sess, str(y), str(m))
-        closed = action != "reopen"
-        call(sid, sess, "finance", "PUT", f"/v1/months/{yy}/{mm}/closed", json={"closed": closed})
-        flash(sid, sess, f"{MONTHS_FR[mm - 1]} {yy} "
-              + ("clôturé : saisie verrouillée." if closed else "rouvert : saisie possible."))
-        return redirect(back_url(request, f"/?y={yy}&m={mm}"))
-
-    # ── Épargne : vue d'ensemble ─────────────────────────────
-    @app.get("/epargne/vue", response_class=HTMLResponse)
-    def savings_view(request: Request, y: Optional[str] = None, m: Optional[str] = None):
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        ov = call(sid, sess, "finance", "GET", "/v1/savings-overview",
-                  params={"year": yy, "month": mm, "months": 12})
-        return render(request, "savings_overview.html", sid, sess, active="epargne", y=yy, m=mm,
-                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), closed=False,
-                      ov=ov, max_sav=max((p["sav"] for p in ov["per_month"]), default=0) or 1,
-                      max_acc=max((a["total"] for a in ov["by_account"]), default=0) or 1)
-
-    # ── Patrimoine : saisie ──────────────────────────────────
-    def parse_period(raw: str) -> tuple[int, int]:
-        """<input type="month"> : 'AAAA-MM' ; vide -> mois en cours."""
-        if not raw:
-            t = date.today()
-            return t.year, t.month
-        try:
-            yi, mi = (int(x) for x in raw.split("-", 1))
-        except ValueError:
-            raise BackendError(422, "Mois de valeur invalide (AAAA-MM).") from None
-        if not (2000 <= yi <= 2100 and 1 <= mi <= 12):
-            raise BackendError(422, "Mois de valeur invalide (AAAA-MM).")
-        return yi, mi
-
-    def opt_amount(raw: str) -> Optional[str]:
-        v = parse_amount(raw)
-        return v or None
-
-    @app.post("/patrimoine/actif")
-    def asset_save(request: Request, asset_type: str = Form(...), name: str = Form(...),
-                   value: str = Form(...), cost_basis: str = Form(""), period: str = Form(""),
-                   csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = parse_period(period)
-        call(sid, sess, "finance", "PUT", "/v1/assets",
-             json={"year": yy, "month": mm, "asset_type": asset_type, "name": name,
-                   "value": parse_amount(value), "cost_basis": opt_amount(cost_basis)})
-        flash(sid, sess, f"« {name.strip()} » : valeur enregistrée pour {MONTHS_FR[mm - 1]} {yy}.")
-        return redirect("/patrimoine")
-
-    @app.post("/patrimoine/actif/supprimer")
-    def asset_delete(request: Request, asset_type: str = Form(...), name: str = Form(...),
-                     csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        call(sid, sess, "finance", "POST", "/v1/assets/delete",
-             json={"asset_type": asset_type, "name": name})
-        flash(sid, sess, f"« {name} » n'est plus suivi (historique supprimé).")
-        return redirect("/patrimoine")
-
-    @app.post("/patrimoine/passif")
-    def liability_save(request: Request, name: str = Form(...), liability_type: str = Form("autre"),
-                       remaining_capital: str = Form(...), monthly_payment: str = Form(""),
-                       end_date: str = Form(""), period: str = Form(""), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = parse_period(period)
-        call(sid, sess, "finance", "PUT", "/v1/liabilities",
-             json={"year": yy, "month": mm, "name": name, "liability_type": liability_type,
-                   "remaining_capital": parse_amount(remaining_capital) or "0",
-                   "monthly_payment": opt_amount(monthly_payment),
-                   "end_date": end_date.strip() or None})
-        flash(sid, sess, f"Passif « {name.strip()} » enregistré.")
-        return redirect("/patrimoine")
-
-    @app.post("/patrimoine/passif/supprimer")
-    def liability_delete(request: Request, name: str = Form(...), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        call(sid, sess, "finance", "POST", "/v1/liabilities/delete", json={"name": name})
-        flash(sid, sess, f"Passif « {name} » supprimé.")
-        return redirect("/patrimoine")
-
-    # ── IA ───────────────────────────────────────────────────
-    def ai_state(sid, sess) -> dict:
-        try:
-            return call(sid, sess, "ai", "GET", "/v1/providers")
-        except BackendError:
-            return {"providers": [], "daily_limit": 0, "remaining": 0}
-
-    @app.get("/ia", response_class=HTMLResponse)
-    def ia_page(request: Request, y: Optional[str] = None, m: Optional[str] = None):
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        st = ai_state(sid, sess)
-        chat = sess.get("chat", [])
-        return render(request, "ia.html", sid, sess, active="ia", y=yy, m=mm, ai=st,
-                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
-                      provider=sess.get("ai_provider") or (st["providers"] or ["claude"])[0],
-                      consent=sess.get("ai_consent", False),
-                      insight=render_ai_text(sess.get("insight", {}).get("text", "")),
-                      insight_meta=sess.get("insight", {}),
-                      chat=[{"role": c["role"], "html": render_ai_text(c["content"])
-                             if c["role"] == "assistant" else c["content"]} for c in chat])
-
-    def ai_common(sess, provider: str, consent: str) -> str:
-        if provider not in ("claude", "gemini"):
-            raise BackendError(422, "Fournisseur IA inconnu.")
-        if consent != "1" and not sess.get("ai_consent"):
-            raise BackendError(400, "Cochez la case de consentement avant d'utiliser l'IA.")
-        sess["ai_consent"] = True
-        sess["ai_provider"] = provider
-        return provider
-
-    @app.post("/ia/analyse")
-    def ia_insights(request: Request, y: int = Form(...), m: int = Form(...),
-                    months: int = Form(3), provider: str = Form("claude"),
-                    consent: str = Form(""), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        provider = ai_common(sess, provider, consent)
-        res = call(sid, sess, "ai", "POST", "/v1/insights", timeout=120.0,
-                   json={"provider": provider, "year": y, "month": m,
-                         "months": max(1, min(months, 12))})
-        sessions.update(sid, ai_consent=True, ai_provider=provider,
-                        insight={"text": res["text"], "provider": provider,
-                                 "period": f"{MONTHS_FR[m - 1]} {y}", "months": months})
-        return redirect(f"/ia?y={y}&m={m}")
-
-    @app.post("/ia/chat")
-    def ia_chat(request: Request, y: int = Form(...), m: int = Form(...),
-                question: str = Form(""), provider: str = Form("claude"),
-                consent: str = Form(""), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        provider = ai_common(sess, provider, consent)
-        q = question.strip()[:2000]
-        if not q:
-            raise BackendError(422, "Posez une question.")
-        history = (sess.get("chat", []) + [{"role": "user", "content": q}])[-CHAT_MAX_MESSAGES:]
-        if history[0]["role"] != "user":
-            history = history[1:]
-        res = call(sid, sess, "ai", "POST", "/v1/chat", timeout=120.0,
-                   json={"provider": provider, "year": y, "month": m, "messages": history})
-        sessions.update(sid, ai_consent=True, ai_provider=provider,
-                        chat=(history + [{"role": "assistant", "content": res["text"]}])[-CHAT_MAX_MESSAGES:])
-        return redirect(f"/ia?y={y}&m={m}#chat")
-
-    @app.post("/ia/chat/effacer")
-    def ia_chat_clear(request: Request, y: int = Form(...), m: int = Form(...),
-                      csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        sessions.update(sid, chat=[])
-        return redirect(f"/ia?y={y}&m={m}#chat")
-
-    @app.post("/api/categorize")
-    def api_categorize(request: Request, body: CategorizeReq,
-                       x_csrf_token: str = Header("")):
-        sid = request.cookies.get(COOKIE)
-        sess = sessions.get(sid)
-        if sess is None:
-            return JSONResponse({"detail": "Session expirée."}, status_code=401)
-        check_csrf(sess, x_csrf_token)
-        if not sess.get("ai_consent"):
-            raise BackendError(400, "Activez d'abord l'IA depuis la page « Assistant IA ».")
-        return call(sid, sess, "ai", "POST", "/v1/categorize", timeout=60.0,
-                    json={"provider": sess.get("ai_provider") or "claude",
-                          "label": body.label, "payee": body.payee})
-
-    # ── Paramètres / notifications ───────────────────────────
-    @app.get("/parametres", response_class=HTMLResponse)
-    def settings_page(request: Request):
-        sid, sess = load(request)
-        try:
-            prefs = call(sid, sess, "notifier", "GET", "/v1/prefs")
-        except BackendError as exc:
-            prefs, err = None, exc.message
-        else:
-            err = None
-        projects = []
-        if prefs and prefs.get("ticktick_connected"):
-            try:
-                projects = call(sid, sess, "notifier", "GET", "/v1/ticktick/projects")
-            except BackendError as exc:
-                err = exc.message
-        return render(request, "settings.html", sid, sess, active="parametres", prefs=prefs,
-                      projects=projects, notifier_error=err)
-
-    @app.post("/parametres/notifications")
-    def save_prefs(request: Request, budget_alerts: str = Form(""),
-                   unusual_alerts: str = Form(""),
-                   reminder_enabled: str = Form(""), reminder_day: int = Form(1),
-                   ntfy_url: str = Form(""), webhook_url: str = Form(""),
-                   clear_ntfy: str = Form(""), clear_webhook: str = Form(""),
-                   ticktick_project: Optional[str] = Form(None), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        body = {"budget_alerts": budget_alerts == "1",
-                "unusual_alerts": unusual_alerts == "1",
-                "reminder_enabled": reminder_enabled == "1",
-                "reminder_day": max(1, min(reminder_day, 28)),
-                # champ vide = inchangé (les URLs enregistrées ne sont jamais réaffichées)
-                "ntfy_url": "" if clear_ntfy else (ntfy_url.strip() or None),
-                "webhook_url": "" if clear_webhook else (webhook_url.strip() or None)}
-        if ticktick_project is not None:
-            body["ticktick_project"] = ticktick_project
-        call(sid, sess, "notifier", "PUT", "/v1/prefs", json=body)
-        flash(sid, sess, "Préférences de notification enregistrées.")
-        return redirect("/parametres")
-
-    @app.post("/parametres/test")
-    def test_notif(request: Request, csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        res = call(sid, sess, "notifier", "POST", "/v1/test")
-        if res["failures"]:
-            flash(sid, sess, "Échec sur : " + ", ".join(res["failures"]), "error")
-        else:
-            flash(sid, sess, "Notification de test envoyée.")
-        return redirect("/parametres")
-
-    @app.post("/parametres/ticktick/connecter")
-    def ticktick_connect(request: Request, csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        url = call(sid, sess, "notifier", "POST", "/v1/ticktick/authorize")["url"]
-        return ticktick_handoff(request, sid, sess, url)
-
-    @app.get("/parametres/ticktick/callback")
-    def ticktick_callback(request: Request, code: str = "", state: str = "",
-                          error: str = ""):
-        sid, sess = load(request)
-        if error or not code or not state:
-            flash(sid, sess, "Connexion TickTick annulée.", "error")
-            return redirect("/parametres")
-        call(sid, sess, "notifier", "POST", "/v1/ticktick/callback",
-             json={"code": code[:512], "state": state[:128]})
-        flash(sid, sess, "TickTick connecté. Choisissez la liste où créer les tâches.")
-        return redirect("/parametres")
-
-    @app.post("/parametres/ticktick/deconnecter")
-    def ticktick_disconnect(request: Request, csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        call(sid, sess, "notifier", "DELETE", "/v1/ticktick")
-        flash(sid, sess, "TickTick déconnecté.")
-        return redirect("/parametres")
-
-    # ── Analyses ─────────────────────────────────────────────
-    @app.get("/analyses", response_class=HTMLResponse)
-    def analyses(request: Request, y: Optional[str] = None, m: Optional[str] = None):
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        an = call(sid, sess, "finance", "GET", "/v1/analytics",
-                  params={"year": yy, "month": mm, "months": 12})
-        pm = an["per_month"]
-        top = max((max(p["rev"], p["exp"], p["sav"]) for p in pm), default=0.0)
-        lines = {k: line_points([p[k] for p in pm], top) for k in ("rev", "exp", "sav")}
-        lines["max"] = top
-        sparks = {c["category"]: line_points(c["series"], max(c["series"]) or 1.0)
-                  for c in an["categories"]}
-        report = sess.get("report") or {}
-        return render(request, "analyses.html", sid, sess, active="analyses", y=yy, m=mm,
-                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1), closed=False,
-                      an=an, lines=lines, sparks=sparks, ai_enabled=bool(sess.get("ai_consent")),
-                      period=f"{yy}-{mm:02d}", report=report,
-                      report_html=render_ai_text(report.get("text", "")))
-
-    @app.post("/analyses/bilan")
-    def analyses_report(request: Request, y: int = Form(...), m: int = Form(...),
-                        send: str = Form(""), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = month_params(sid, sess, str(y), str(m))
-        if not sess.get("ai_consent"):
-            raise BackendError(400, "Activez d'abord l'IA depuis la page « Assistant IA ».")
-        provider = sess.get("ai_provider") or "claude"
-        res = call(sid, sess, "ai", "POST", "/v1/insights", timeout=120.0,
-                   json={"provider": provider, "year": yy, "month": mm, "months": 3})
-        report = {"text": res["text"], "provider": provider, "period": f"{yy}-{mm:02d}",
-                  "sent": False}
-        message, kind = "Bilan généré.", "ok"
-        if send == "1":
-            try:
-                out = call(sid, sess, "notifier", "POST", "/v1/report",
-                           json={"year": yy, "month": mm, "text": res["text"]})
-                report["sent"] = True
-                message = "Bilan généré et envoyé sur vos notifications."
-                if out.get("failures"):
-                    message += f" Échec sur : {', '.join(out['failures'])}."
-            except BackendError as exc:              # le bilan reste affiché
-                message, kind = f"Bilan généré, mais non envoyé : {exc.message}", "error"
-        sessions.update(sid, report=report)
-        flash(sid, sess, message, kind)
-        return redirect(f"/analyses?y={yy}&m={mm}")
-
-    # ── Thème ────────────────────────────────────────────────
-    @app.post("/theme")
-    def set_theme(request: Request, theme: str = Form("auto"), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        resp = redirect(back_url(request))
-        resp.set_cookie(THEME_COOKIE, theme if theme in THEME_LABEL else "auto",
-                        max_age=365 * 24 * 3600, path="/", httponly=True,
-                        secure=cookie_secure, samesite="lax")
-        return resp
-
-    # ── Transactions récurrentes ─────────────────────────────
-    @app.get("/recurrentes", response_class=HTMLResponse)
-    def recurring_page(request: Request, y: Optional[str] = None, m: Optional[str] = None):
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        rec, cats = call_parallel(
-            sid, sess,
-            ("finance", "GET", "/v1/recurring", {"params": {"year": yy, "month": mm}}),
-            ("finance", "GET", "/v1/categories"))
-        return render(request, "recurring.html", sid, sess, active="recurrentes", y=yy, m=mm,
-                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
-                      closed=rec["closed"], items=rec["items"], categories=cats,
-                      pending=[r for r in rec["items"] if r["pending"]])
-
-    @app.post("/recurrentes")
-    def add_recurring(request: Request, y: int = Form(...), m: int = Form(...),
-                      type: str = Form("expense"), label: str = Form(""),
-                      amount: str = Form(""), category_id: str = Form(""),
-                      payee: str = Form(""), source: str = Form(""), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        body: dict = {"type": type, "label": label, "amount": parse_amount(amount)}
-        if type == "expense":
-            try:
-                body.update(category_id=int(category_id), payee=payee)
-            except ValueError:
-                raise BackendError(422, "Catégorie invalide.") from None
-        else:
-            body["source"] = source or label
-        call(sid, sess, "finance", "POST", "/v1/recurring", json=body)
-        flash(sid, sess, "Transaction récurrente ajoutée.")
-        return redirect(f"/recurrentes?y={y}&m={m}")
-
-    @app.post("/recurrentes/appliquer")
-    def apply_recurring(request: Request, y: int = Form(...), m: int = Form(...),
-                        sel: list[str] = Form([]), ids: list[str] = Form([]),
-                        amounts: list[str] = Form([]), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        if len(ids) != len(amounts):
-            raise BackendError(400, "Formulaire incomplet — rechargez la page.")
-        chosen = set(sel)
-        items = [{"id": i, "amount": parse_amount(a)}
-                 for i, a in zip(ids, amounts, strict=True) if i in chosen]
-        if not items:
-            raise BackendError(422, "Aucune transaction sélectionnée.")
-        try:
-            items = [{**it, "id": int(it["id"])} for it in items]
-        except ValueError:
-            raise BackendError(422, "Sélection invalide.") from None
-        n = call(sid, sess, "finance", "POST", "/v1/recurring/apply",
-                 json={"year": y, "month": m, "items": items})["applied"]
-        flash(sid, sess, f"{n} transaction(s) récurrente(s) appliquée(s).")
-        return redirect(f"/recurrentes?y={y}&m={m}")
-
-    @app.post("/recurrentes/{rec_id}/activer")
-    def toggle_recurring(request: Request, rec_id: int, active: str = Form("1"),
-                         y: int = Form(...), m: int = Form(...), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        call(sid, sess, "finance", "PUT", f"/v1/recurring/{rec_id}/active",
-             json={"active": active == "1"})
-        flash(sid, sess, "Récurrente activée." if active == "1" else "Récurrente désactivée.")
-        return redirect(f"/recurrentes?y={y}&m={m}")
-
-    @app.post("/recurrentes/{rec_id}/supprimer")
-    def delete_recurring(request: Request, rec_id: int, y: int = Form(...), m: int = Form(...),
-                         csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        call(sid, sess, "finance", "DELETE", f"/v1/recurring/{rec_id}")
-        flash(sid, sess, "Récurrente supprimée.")
-        return redirect(f"/recurrentes?y={y}&m={m}")
-
-    # ── Recherche ────────────────────────────────────────────
-    def _amount_param(raw: str) -> Optional[float]:
-        raw = parse_amount(raw)
-        if not raw:
-            return None
-        try:
-            v = float(raw)
-        except ValueError:
-            v = -1.0
-        if not (0 <= v <= 1e9):              # NaN inclus
-            raise BackendError(400, "Montant de filtre invalide.")
-        return v
-
-    @app.get("/recherche", response_class=HTMLResponse)
-    def search_page(request: Request, type: str = "depenses", q: str = "", cat: str = "",
-                    min: str = "", max: str = ""):  # noqa: A002 — noms des champs du formulaire
-        sid, sess = load(request)
-        section = type if type in SECTIONS else "depenses"
-        q = q.strip()[:80]
-        try:
-            cat_id = int(cat) if cat and section == "depenses" else None
-        except ValueError:
-            cat_id = None
-        lo, hi = _amount_param(min), _amount_param(max)
-        searched = bool(q or cat_id is not None or lo is not None or hi is not None)
-        params = {k: v for k, v in {"q": q, "category_id": cat_id,
-                                    "min_amount": lo, "max_amount": hi}.items()
-                  if v not in (None, "")}
-        specs = [("finance", "GET", "/v1/categories")]
-        if searched:
-            specs.append(("finance", "GET", f"/v1/search/{SECTIONS[section][0]}",
-                          {"params": params}))
-        cats, *rest = call_parallel(sid, sess, *specs)
-        results = rest[0] if rest else []
-        return render(request, "search.html", sid, sess, active="recherche", section=section,
-                      q=q, cat=cat_id, min=min, max=max, categories=cats, searched=searched,
-                      results=results, total=sum(r["amount"] for r in results))
-
-    # ── Dupliquer le mois précédent (dépenses) ───────────────
-    @app.get("/depenses/dupliquer", response_class=HTMLResponse)
-    def duplicate_form(request: Request, y: Optional[str] = None, m: Optional[str] = None):
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        py, pm = shift_month(yy, mm, -1)
-        src, cur = call_parallel(sid, sess,
-                                 ("finance", "GET", f"/v1/months/{py}/{pm}/entries"),
-                                 ("finance", "GET", f"/v1/months/{yy}/{mm}/entries"))
-        return render(request, "duplicate.html", sid, sess, active="depenses", y=yy, m=mm,
-                      src=(py, pm), rows=src["expenses"], closed=cur["closed"],
-                      existing=len(cur["expenses"]))
-
-    @app.post("/depenses/dupliquer")
-    def duplicate_month(request: Request, y: int = Form(...), m: int = Form(...),
-                        sel: list[str] = Form([]), cat: list[str] = Form([]),
-                        label: list[str] = Form([]), payee: list[str] = Form([]),
-                        amounts: list[str] = Form([]), csrf: str = Form("")):
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        if not (len(cat) == len(label) == len(payee) == len(amounts)):
-            raise BackendError(400, "Formulaire incomplet — rechargez la page.")
-        try:
-            chosen = sorted({int(i) for i in sel})
-            rows = [{"category_id": int(cat[i]), "amount": parse_amount(amounts[i]),
-                     "label": label[i], "payee": payee[i]}
-                    for i in chosen if 0 <= i < len(cat)]
-        except ValueError:
-            raise BackendError(422, "Sélection invalide.") from None
-        if not rows:
-            raise BackendError(422, "Aucune dépense sélectionnée.")
-        n = call(sid, sess, "finance", "POST", "/v1/expenses/batch",
-                 json={"year": y, "month": m, "rows": rows})["created"]
-        flash(sid, sess, f"{n} dépense(s) copiée(s) depuis le mois précédent.")
-        return redirect(f"/depenses?y={y}&m={m}")
-
-    # ── Saisie en masse (dépenses, revenus) ──────────────────
-    BULK_SECTIONS = ("depenses", "revenus")
-
-    def suggest_categories(sid, sess, rows: list) -> tuple[list[str], list[str]]:
-        """Catégories manquantes proposées par l'IA, en UN appel (une requête
-        du quota quotidien). Jamais bloquant : en cas d'échec, la grille
-        reste telle quelle avec un avertissement. -> (infos, avertissements)"""
-        missing = [r for r in rows if r.keep and not r.blank and r.category_id is None
-                   and (r.label.strip() or r.extra.strip())]
-        if not missing:
-            return [], []
-        if not sess.get("ai_consent"):
-            return [], ["Activez d'abord l'IA depuis la page « Assistant IA » pour obtenir "
-                        "des suggestions de catégorie."]
-        todo = missing[:bulk.AI_BATCH_MAX]
-        try:
-            res = call(sid, sess, "ai", "POST", "/v1/categorize/batch", timeout=90.0, json={
-                "provider": sess.get("ai_provider") or "claude",
-                "items": [{"label": r.label[:120], "payee": r.extra[:60]} for r in todo]})
-        except BackendError as exc:
-            return [], [f"Suggestion IA indisponible : {exc.message}"]
-        found = 0
-        for r, s in zip(todo, res.get("results") or [], strict=False):
-            if s and s.get("category_id") is not None:
-                r.category_id, r.suggested = int(s["category_id"]), True
-                found += 1
-        infos = [f"✨ {found} catégorie(s) suggérée(s) par l'IA, signalée(s) par « IA » : "
-                 "vérifiez-les avant d'enregistrer."] if found else []
-        warns = []
-        if len(missing) > len(todo):
-            warns.append(f"Suggestion limitée aux {bulk.AI_BATCH_MAX} premières lignes : "
-                         "relancez « Suggérer » pour les suivantes.")
-        if found < len(todo):
-            warns.append(f"{len(todo) - found} ligne(s) sans suggestion : catégorie à choisir.")
-        return infos, warns
-
-    def bulk_page(request, sid, sess, section, yy, mm, rows, *, categories, payees=(),
-                  closed=False, paste="", warnings=(), error=None, status_code=200,
-                  infos=(), blank_rows: Optional[int] = None):
-        filled = any(not r.blank for r in rows)
-        if blank_rows is None:
-            blank_rows = 3 if filled else bulk.GRID_BLANK_ROWS
-        blank_rows = max(0, min(blank_rows, bulk.MAX_ROWS - len(rows)))
-        grid = rows + [bulk.Row() for _ in range(blank_rows)]
-        return render(request, "bulk.html", sid, sess, status_code=status_code, active=section,
-                      section=section, title=SECTIONS[section][1], y=yy, m=mm,
-                      prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
-                      closed=closed, rows=grid, rows_filled=filled, categories=categories,
-                      payees=payees, paste=paste, warnings=list(warnings), error=error,
-                      infos=list(infos), ai_enabled=bool(sess.get("ai_consent")), ai_max=bulk.AI_BATCH_MAX,
-                      max_rows=bulk.MAX_ROWS, max_paste=bulk.MAX_PASTE_CHARS)
-
-    @app.get("/{section}/saisie", response_class=HTMLResponse)
-    def bulk_form(request: Request, section: str, y: Optional[str] = None,
-                  m: Optional[str] = None):
-        if section not in BULK_SECTIONS:
-            return Response(status_code=404)
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        data, cats, payees = call_parallel(
-            sid, sess,
-            ("finance", "GET", f"/v1/months/{yy}/{mm}/entries"),
-            ("finance", "GET", "/v1/categories"),
-            ("finance", "GET", "/v1/payees"))
-        return bulk_page(request, sid, sess, section, yy, mm, [], categories=cats,
-                         payees=payees if section == "depenses" else (), closed=data["closed"])
-
-    @app.post("/{section}/saisie/apercu", response_class=HTMLResponse)
-    def bulk_preview(request: Request, section: str, y: int = Form(...), m: int = Form(...),
-                     paste: str = Form(""), ai: str = Form(""), csrf: str = Form("")):
-        if section not in BULK_SECTIONS:
-            return Response(status_code=404)
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = month_params(sid, sess, str(y), str(m))
-        kind = SECTIONS[section][0]
-        cats = call(sid, sess, "finance", "GET", "/v1/categories")
-        if len(paste) > bulk.MAX_PASTE_CHARS:
-            return bulk_page(request, sid, sess, section, yy, mm, [], categories=cats,
-                             status_code=413, error="Collage trop volumineux : découpez-le en "
-                             f"plusieurs fois ({bulk.MAX_ROWS} lignes max).")
-        rows, warnings = bulk.parse_paste(paste, kind, cats)
-        infos: list[str] = []
-        if ai == "1" and kind == "expenses":
-            infos, more = suggest_categories(sid, sess, rows)
-            warnings += more
-        bulk.validate(rows, kind, cats)            # signale les lignes à corriger
-        return bulk_page(request, sid, sess, section, yy, mm, rows, categories=cats,
-                         paste=paste, warnings=warnings, infos=infos)
-
-    @app.post("/depenses/saisie/suggestion", response_class=HTMLResponse)
-    def bulk_suggest(request: Request, y: int = Form(...), m: int = Form(...),
-                     keep: list[str] = Form([]), amount: list[str] = Form([]),
-                     cat: list[str] = Form([]), label: list[str] = Form([]),
-                     extra: list[str] = Form([]), csrf: str = Form("")):
-        """Bouton « Suggérer » de la grille : complète les catégories
-        manquantes sans rien enregistrer."""
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = month_params(sid, sess, str(y), str(m))
-        try:
-            rows = bulk.rows_from_form(keep, amount, cat, label, extra)
-        except ValueError as exc:
-            raise BackendError(400, str(exc)) from None
-        cats = call(sid, sess, "finance", "GET", "/v1/categories")
-        rows = [r for r in rows if not r.blank]
-        infos, warnings = suggest_categories(sid, sess, rows)
-        if not infos and not warnings:
-            infos = ["Aucune catégorie manquante à suggérer."]
-        bulk.validate(rows, "expenses", cats)
-        return bulk_page(request, sid, sess, "depenses", yy, mm, rows, categories=cats,
-                         infos=infos, warnings=warnings)
-
-    @app.post("/{section}/saisie/lignes", response_class=HTMLResponse)
-    def bulk_more_rows(request: Request, section: str, y: int = Form(...), m: int = Form(...),
-                       keep: list[str] = Form([]), amount: list[str] = Form([]),
-                       cat: list[str] = Form([]), label: list[str] = Form([]),
-                       extra: list[str] = Form([]), csrf: str = Form("")):
-        """« + Ajouter des lignes » sans JavaScript : la grille revient
-        avec sa saisie et des lignes vides en plus (le script le fait sur place)."""
-        if section not in BULK_SECTIONS:
-            return Response(status_code=404)
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = month_params(sid, sess, str(y), str(m))
-        try:
-            rows = bulk.rows_from_form(keep, amount, cat, label, extra)
-        except ValueError as exc:
-            raise BackendError(400, str(exc)) from None
-        cats = call(sid, sess, "finance", "GET", "/v1/categories")
-        return bulk_page(request, sid, sess, section, yy, mm, [r for r in rows if not r.blank],
-                         categories=cats, blank_rows=sum(r.blank for r in rows) + bulk.GRID_ADD_ROWS)
-
-    @app.post("/{section}/saisie", response_class=HTMLResponse)
-    def bulk_save(request: Request, section: str, y: int = Form(...), m: int = Form(...),
-                  keep: list[str] = Form([]), amount: list[str] = Form([]),
-                  cat: list[str] = Form([]), label: list[str] = Form([]),
-                  extra: list[str] = Form([]), csrf: str = Form("")):
-        if section not in BULK_SECTIONS:
-            return Response(status_code=404)
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        yy, mm = month_params(sid, sess, str(y), str(m))
-        kind = SECTIONS[section][0]
-        try:
-            rows = bulk.rows_from_form(keep, amount, cat, label, extra)
-        except ValueError as exc:
-            raise BackendError(400, str(exc)) from None
-        cats = call(sid, sess, "finance", "GET", "/v1/categories")
-
-        def again(message: str, status: int = 422):
-            return bulk_page(request, sid, sess, section, yy, mm,
-                             [r for r in rows if not r.blank], categories=cats,
-                             error=message, status_code=status)
-
-        payload = bulk.validate(rows, kind, cats)
-        if any(r.errors for r in rows):
-            return again("Corrigez les lignes signalées : rien n'a été enregistré.")
-        if not payload:
-            return again("Aucune ligne à enregistrer.")
-        if len(payload) > bulk.MAX_ROWS:
-            return again(f"{len(payload)} lignes : {bulk.MAX_ROWS} maximum par enregistrement.")
-        try:
-            n = call(sid, sess, "finance", "POST", f"/v1/{kind}/batch",
-                     json={"year": yy, "month": mm, "rows": payload})["created"]
-        except BackendError as exc:           # la grille est conservée
-            return again(f"{exc.message} Rien n'a été enregistré.",
-                         exc.status if 400 <= exc.status < 600 else 502)
-        noun = "dépense(s)" if kind == "expenses" else "revenu(s)"
-        flash(sid, sess, f"{n} {noun} enregistré(e)s.")
-        return redirect(f"/{section}?y={yy}&m={mm}")
-
-    # ── Saisies (routes génériques en dernier) ───────────────
-    @app.get("/{section}", response_class=HTMLResponse)
-    def list_entries(request: Request, section: str, y: Optional[str] = None,
-                     m: Optional[str] = None):
-        if section not in SECTIONS:
-            return Response(status_code=404)
-        kind, title = SECTIONS[section]
-        sid, sess = load(request)
-        yy, mm = month_params(sid, sess, y, m)
-        if kind == "expenses":
-            data, cats, payees = call_parallel(
-                sid, sess,
-                ("finance", "GET", f"/v1/months/{yy}/{mm}/entries"),
-                ("finance", "GET", "/v1/categories"),
-                ("finance", "GET", "/v1/payees"))
-        else:
-            data, cats, payees = call(sid, sess, "finance", "GET", f"/v1/months/{yy}/{mm}/entries"), [], []
-        rows = data[kind]
-        return render(request, "entries.html", sid, sess, active=section, section=section,
-                      title=title, y=yy, m=mm, prev=shift_month(yy, mm, -1), next=shift_month(yy, mm, 1),
-                      rows=rows, total=sum(r["amount"] for r in rows), categories=cats,
-                      payees=payees, closed=data["closed"], month_actions=True,
-                      ai_enabled=bool(sess.get("ai_consent")))
-
-    @app.post("/{section}")
-    def add_entry(request: Request, section: str, y: int = Form(...), m: int = Form(...),
-                  amount: str = Form(""), label: str = Form(""), category_id: str = Form(""),
-                  payee: str = Form(""), source: str = Form(""), account: str = Form(""),
-                  csrf: str = Form("")):
-        if section not in SECTIONS:
-            return Response(status_code=404)
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        kind = SECTIONS[section][0]
-        yy, mm = month_params(sid, sess, str(y), str(m))
-        body = entry_payload(kind, amount, label, category_id, payee, source, account)
-        row = call(sid, sess, "finance", "POST", f"/v1/{kind}", json={**body, "year": yy, "month": mm})
-        msg = {"expenses": "Dépense ajoutée.", "revenues": "Revenu ajouté.",
-               "savings": "Épargne ajoutée."}[kind]
-        if kind == "savings" and row.get("linked_asset_name"):
-            msg += f" Compte « {row['linked_asset_name']} » mis à jour dans le patrimoine."
-        flash(sid, sess, msg)
-        return redirect(f"/{section}?y={yy}&m={mm}")
-
-    @app.get("/{section}/{entry_id}/modifier", response_class=HTMLResponse)
-    def edit_form(request: Request, section: str, entry_id: int):
-        if section not in SECTIONS:
-            return Response(status_code=404)
-        kind, title = SECTIONS[section]
-        sid, sess = load(request)
-        if kind == "expenses":
-            entry, cats = call_parallel(sid, sess,
-                                        ("finance", "GET", f"/v1/entries/{kind}/{entry_id}"),
-                                        ("finance", "GET", "/v1/categories"))
-        else:
-            entry, cats = call(sid, sess, "finance", "GET", f"/v1/entries/{kind}/{entry_id}"), []
-        return render(request, "edit.html", sid, sess, active=section, section=section,
-                      title=title, entry=entry, categories=cats, closed=entry["closed"])
-
-    @app.post("/{section}/{entry_id}/modifier")
-    def edit_entry(request: Request, section: str, entry_id: int, amount: str = Form(""),
-                   label: str = Form(""), category_id: str = Form(""), payee: str = Form(""),
-                   source: str = Form(""), account: str = Form(""), csrf: str = Form("")):
-        if section not in SECTIONS:
-            return Response(status_code=404)
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        kind = SECTIONS[section][0]
-        body = entry_payload(kind, amount, label, category_id, payee, source, account)
-        entry = call(sid, sess, "finance", "GET", f"/v1/entries/{kind}/{entry_id}")
-        call(sid, sess, "finance", "PUT", f"/v1/{kind}/{entry_id}", json=body)
-        flash(sid, sess, "Modification enregistrée.")
-        return redirect(f"/{section}?y={entry['year']}&m={entry['month']}")
-
-    @app.post("/{section}/{entry_id}/supprimer")
-    def delete_entry(request: Request, section: str, entry_id: int, csrf: str = Form("")):
-        if section not in SECTIONS:
-            return Response(status_code=404)
-        sid, sess = load(request)
-        check_csrf(sess, csrf)
-        res = call(sid, sess, "finance", "DELETE", f"/v1/{SECTIONS[section][0]}/{entry_id}")
-        flash(sid, sess, "Élément supprimé.")
-        return redirect(f"/{section}?y={res['year']}&m={res['month']}")
-
+    w = SimpleNamespace(
+        cookie_secure=cookie_secure, limiter=limiter, oauth_hosts=oauth_hosts, sessions=sessions,
+        backends=backends, pool=pool, templates=templates, load=load, refresh=refresh, call=call,
+        call_parallel=call_parallel, flash=flash, render=render, redirect=redirect,
+        ticktick_handoff=ticktick_handoff, check_csrf=check_csrf, back_url=back_url,
+        month_params=month_params)
+    # Ordre d'enregistrement significatif : les routes génériques /{section}
+    # (routes_entries) doivent rester les dernières.
+    for module in (routes_auth, routes_finance, routes_ia, routes_settings, routes_misc, routes_entries):
+        module.register(app, w)
     return app
 
 

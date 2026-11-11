@@ -1,5 +1,6 @@
 -r ai_service/requirements.txt
 -r web/requirements.txt
+-r mcp_server/requirements.txt
 pytest==9.2.0
 fakeredis==2.40.0
 respx==0.23.1

@@ -74,7 +74,7 @@ def draw_icon(size: int) -> Image.Image:
         chart_b - (chart_b - chart_t) * 0.74,
         chart_b - (chart_b - chart_t) * 0.94,
     ]
-    pts = [(int(x), int(y)) for x, y in zip(xs, ys)]
+    pts = [(int(x), int(y)) for x, y in zip(xs, ys, strict=False)]
 
     # ── Ligne ────────────────────────────────────────────────
     lw = max(1, int(size * 0.055))

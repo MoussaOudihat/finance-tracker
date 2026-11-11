@@ -12,6 +12,8 @@
         "secrets" (list (list "REDIS_URL" false) (list "ANTHROPIC_API_KEY" true) (list "GEMINI_API_KEY" true)))
   (dict "name" "notifier" "key" "notifier" "enabled" .Values.notifier.enabled "stateful" true
         "secrets" (list (list "NOTIFIER_INTERNAL_TOKEN" false) (list "NOTIFIER_ENCRYPTION_KEY" false) (list "TICKTICK_CLIENT_SECRET" true)))
+  (dict "name" "mcp" "key" "mcp" "enabled" .Values.mcp.enabled "stateful" false
+        "secrets" (list))
 -}}
 {{- range $app := $apps }}
 {{- if $app.enabled }}
@@ -77,6 +79,7 @@ spec:
             - { name: http, containerPort: 8000 }
           envFrom:
             - configMapRef: { name: {{ $.Release.Name }}-config }
+          {{- if $app.secrets }}
           env:
             {{- range $s := $app.secrets }}
             - name: {{ index $s 0 }}
@@ -88,6 +91,7 @@ spec:
                   optional: true
                   {{- end }}
             {{- end }}
+          {{- end }}
           securityContext:
             {{- include "fintrack.containerSecurity" $ | nindent 12 }}
           resources:

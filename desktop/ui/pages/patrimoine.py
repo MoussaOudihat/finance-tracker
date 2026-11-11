@@ -1066,10 +1066,10 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
                         marker="s", ms=4, label="Investi", zorder=3)
                 lines_data.append(("Investi", x, bases, C["amber"]))
                 ax.fill_between(x, vals, bases,
-                                where=[v >= b for v, b in zip(vals, bases)],
+                                where=[v >= b for v, b in zip(vals, bases, strict=False)],
                                 alpha=0.12, color=C["green"], label="_nolegend_")
                 ax.fill_between(x, vals, bases,
-                                where=[v < b for v, b in zip(vals, bases)],
+                                where=[v < b for v, b in zip(vals, bases, strict=False)],
                                 alpha=0.12, color=C["red"], label="_nolegend_")
 
         ax.set_title(_filter_title("Évolution du patrimoine"),
@@ -1197,7 +1197,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
         ax2.set_title(pie_title, fontsize=10, color=C["muted"], pad=6, loc="left")
         ax2.legend(wedges,
                    [f"{l}  —  {v:,.0f} €  ({v/total_pie*100:.1f}%)"
-                    for l, v in zip(pie_labels, pie_vals)],
+                    for l, v in zip(pie_labels, pie_vals, strict=False)],
                    loc="lower left", bbox_to_anchor=(-0.08, -0.44),
                    fontsize=8, frameon=False)
         fig2.tight_layout(pad=1.4)
@@ -1301,7 +1301,7 @@ def _render_patrimoine_charts(card, db, app, type_filter=FILTER_ALL_TYPES,
                          height=0.62, edgecolor="white", linewidth=1.5)
 
         max_v = max(b_vals) if b_vals else 1
-        for bar, val in zip(bars3, b_vals):
+        for bar, val in zip(bars3, b_vals, strict=False):
             ax3.text(bar.get_width() + max_v * 0.015,
                      bar.get_y() + bar.get_height() / 2,
                      f"{val:,.0f} €", va="center", ha="left",

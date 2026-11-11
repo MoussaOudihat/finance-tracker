@@ -32,8 +32,14 @@ flowchart LR
 
 ## Écriture des données : desktop et web
 
-- **Web (finance-api)** : écritures ligne par ligne via PostgREST. Chaque écriture met à jour `app_settings.last_supabase_sync`. Identifiants `max(id)+1` par utilisateur avec reprise sur conflit (le schéma partagé avec l'app desktop impose des id attribués par le client).
-- **Desktop** : synchronisation par instantané (tout supprimer puis réinsérer). **Verrou optimiste** ajouté en v2.0 : avant d'envoyer, l'app compare l'horodatage distant au sien ; s'il est plus récent (saisie web ou autre PC), l'envoi est refusé avec un message invitant à récupérer d'abord. Plus aucune perte silencieuse.
+Depuis la v2.3, toutes les écritures passent par deux fonctions SQL
+(`supabase/migration_v2_3_atomic.sql`), en `SECURITY INVOKER` (la RLS de
+l'appelant s'applique) et sous un verrou transactionnel par utilisateur
+(`pg_advisory_xact_lock`) qui sérialise ses écritures.
+
+- **Web (finance-api)** : chaque opération métier (saisie, saisie groupée, récurrentes, épargne → compte lié du patrimoine, budgets, clôture…) est une liste d'opérations exécutée par `fintrack_apply` en **une transaction** : tout ou rien. Les identifiants sont attribués en SQL (plus de `max(id)+1` côté client ni de réessais), « mois clôturé ? » est vérifié dans la transaction, et la version de synchro `app_settings.last_supabase_sync` avance dans cette même transaction.
+- **Desktop** : l'envoi complet passe par `fintrack_replace_snapshot`, qui supprime et réinsère toutes les tables de l'utilisateur en **une transaction**. Une panne au milieu ne laisse plus Supabase à moitié vide.
+- **Verrou optimiste par version** : `last_supabase_sync` est un jeton opaque attribué par le serveur et comparé par **égalité**. Le PC envoie la version qu'il connaît (dernier envoi ou dernière récupération) ; si elle a changé (saisie web, autre PC), le serveur refuse l'envoi, sous verrou, sans fenêtre entre contrôle et écriture. Les horloges du PC et du serveur ne sont jamais comparées : un PC dont l'horloge avance ne peut plus écraser une saisie web.
 
 ## Sécurité de la plateforme
 

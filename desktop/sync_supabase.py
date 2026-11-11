@@ -3,9 +3,13 @@ sync_supabase.py — Synchronisation SQLite ↔ Supabase PostgreSQL (tables)
 
 Stratégie :
   • L'app utilise TOUJOURS SQLite local comme source principale.
-  • Au démarrage : pull depuis Supabase si le timestamp distant est plus récent.
-  • À la fermeture : push (upsert) toutes les tables vers Supabase.
-  • Un timestamp `last_supabase_sync` dans app_settings pilote la direction.
+  • Au démarrage : pull depuis Supabase si la version distante diffère de
+    celle connue localement.
+  • À la fermeture : push de toutes les tables en UNE transaction
+    (fonction SQL fintrack_replace_snapshot : tout ou rien).
+  • La version `last_supabase_sync` (jeton opaque attribué par le serveur)
+    pilote la direction. Elle est comparée par ÉGALITÉ, jamais par ordre :
+    les horloges du PC et du serveur ne sont jamais comparées entre elles.
   • Les clés sensibles (URL, mode DB, identité) ne sont jamais synchronisées.
 
 Mode cloud (multi-utilisateur) :
@@ -23,7 +27,6 @@ import os
 import shutil
 import sqlite3
 import threading
-import datetime
 from concurrent.futures import ThreadPoolExecutor
 from logger import log
 
@@ -93,6 +96,13 @@ SETTINGS_EXCLUDE = {
 }
 
 SYNC_TS_KEY = "last_supabase_sync"
+CONFLICT_MSG = (
+    "⚠️  Les données Supabase ont été modifiées ailleurs (interface web ou "
+    "autre PC) depuis votre dernière synchronisation. Envoi annulé pour ne "
+    "pas les écraser : récupérez d'abord les données depuis Supabase "
+    "(Paramètres → Synchronisation), puis ressaisissez vos modifications "
+    "locales récentes si besoin."
+)
 BATCH_SIZE  = 500
 
 # Ensemble des noms de tables autorisés dans les requêtes dynamiques.
@@ -103,6 +113,24 @@ _ALLOWED_TABLES: frozenset[str] = frozenset(PUSH_ORDER)
 # Si le local a moins de la moitié du total distant, on refuse un push
 # destructeur sans confirmation explicite (voir check_push_safety).
 _PUSH_SAFETY_RATIO = 0.5
+
+
+def _push_error_message(exc: Exception) -> str:
+    """Message utilisateur d'un envoi refusé, d'après le CODE d'erreur
+    PostgREST/PostgreSQL (jamais d'après le texte, qui peut citer le nom de
+    la fonction pour une toute autre erreur)."""
+    code = str(getattr(exc, "code", "") or "")
+    message = str(getattr(exc, "message", "") or exc)
+    if "fintrack:sync_conflict" in message:
+        log.warning("[Sync] Push refusé par le serveur : version distante modifiée.")
+        return CONFLICT_MSG
+    if code == "PGRST202":                  # fonction RPC introuvable
+        return ("⚠️  Push échoué : base Supabase non migrée — exécutez "
+                "supabase/migration_v2_3_atomic.sql.")
+    if code == "57014":                     # statement_timeout dépassé
+        return ("⚠️  Push échoué : délai dépassé côté Supabase (base volumineuse). "
+                "Rien n'a été modifié. Voir docs/MIGRATION_V2_3.md, « Délai d'envoi ».")
+    return f"⚠️  Push échoué : {exc}"
 
 
 def _safe_table(table: str) -> str:
@@ -136,7 +164,7 @@ class SupabaseSync:
     #  Pull — téléchargement si Supabase plus récent
     # ─────────────────────────────────────────────────────────
     def pull_if_newer(self) -> tuple[bool, str]:
-        """Compare les timestamps et télécharge si le distant est plus récent."""
+        """Télécharge si la version distante diffère de la version locale."""
         try:
             # Y a-t-il des données distantes pour CET utilisateur ?
             chk = (
@@ -146,39 +174,12 @@ class SupabaseSync:
             if not chk.data:
                 return False, "Aucune donnée distante — premier lancement."
 
-            # Timestamp distant — son absence ne doit JAMAIS empêcher un pull
+            # Version distante — son absence ne doit JAMAIS empêcher un pull
             # nécessaire : elle ne sert qu'à éviter un pull redondant quand on
-            # peut prouver que le local est déjà à jour. Si on ne peut pas le
-            # prouver (timestamp distant ou local absent/invalide), on pull
-            # par sécurité plutôt que de risquer de laisser l'app vide alors
-            # que des données distantes existent (chk ci-dessus l'a confirmé).
-            res_ts = (
-                self._client.table("app_settings")
-                .select("value")
-                .eq("key", SYNC_TS_KEY)
-                .eq("user_id", self._user_id)
-                .execute()
-            )
-            remote_ts = None
-            if res_ts.data:
-                try:
-                    remote_ts = datetime.datetime.fromisoformat(res_ts.data[0]["value"])
-                except ValueError:
-                    remote_ts = None
-
-            if remote_ts is not None:
-                con = sqlite3.connect(self._db_path)
-                local_row = con.execute(
-                    "SELECT value FROM app_settings WHERE key=?", (SYNC_TS_KEY,)
-                ).fetchone()
-                con.close()
-                if local_row:
-                    try:
-                        local_ts = datetime.datetime.fromisoformat(local_row[0])
-                        if local_ts >= remote_ts:
-                            return False, "Base locale déjà à jour."
-                    except ValueError:
-                        pass  # timestamp local invalide — on pull par sécurité
+            # peut prouver que le local est déjà à jour (même version).
+            remote_v = self._remote_version()
+            if remote_v is not None and remote_v == self._local_version():
+                return False, "Base locale déjà à jour."
 
             self._do_pull()
             return True, "✅  Données synchronisées depuis Supabase."
@@ -216,7 +217,7 @@ class SupabaseSync:
             # ── 3. Vider les tables locales (ordre inverse FK) ──
             for table in DELETE_ORDER:
                 try:
-                    con.execute(f"DELETE FROM {_safe_table(table)}")
+                    con.execute(f"DELETE FROM {_safe_table(table)}")  # noqa: S608
                 except sqlite3.OperationalError as e:
                     log.warning("Pull — impossible de vider la table %s : %s", table, e)
             con.execute("DELETE FROM app_settings")
@@ -228,42 +229,53 @@ class SupabaseSync:
                 )
             con.commit()
 
-            # ── 5. Remplir depuis Supabase (ordre FK), filtré par user_id ──
-            for table in PUSH_ORDER:
-                try:
-                    all_rows = self._fetch_all(table)
-                    if not all_rows:
-                        continue
-                    # La table locale n'a pas de colonne user_id — la retirer.
-                    all_rows = [
-                        {k: v for k, v in row.items() if k != "user_id"}
-                        for row in all_rows
-                    ]
-                    cols         = list(all_rows[0].keys())
-                    col_names    = ",".join(cols)
-                    placeholders = ",".join(["?" for _ in cols])
-                    for row in all_rows:
-                        con.execute(
-                            f"INSERT OR REPLACE INTO {_safe_table(table)} ({col_names}) VALUES ({placeholders})",
-                            [row[c] for c in cols],
-                        )
-                except Exception:
-                    log.warning("Pull — erreur lors du remplissage de la table %s", table, exc_info=True)
+            # ── 5. Version distante lue AVANT les données ───────
+            # Si une saisie web arrive pendant le téléchargement, la version
+            # locale reste l'ANCIENNE : le prochain envoi sera refusé (version
+            # différente) au lieu d'écraser une saisie absente du local.
+            # Lue après les données, elle pouvait être plus récente qu'elles.
+            version = self._remote_version()
 
-            # ── 6. Sync app_settings distants (hors clés sensibles) ──
-            try:
-                res = (
-                    self._client.table("app_settings").select("*")
-                    .eq("user_id", self._user_id).execute()
-                )
-                for row in res.data:
-                    if row["key"] not in SETTINGS_EXCLUDE:
-                        con.execute(
-                            "INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)",
-                            (row["key"], row["value"]),
-                        )
-            except Exception:
-                log.warning("Pull — erreur sync app_settings distants", exc_info=True)
+            # ── 6. Remplir depuis Supabase (ordre FK), filtré par user_id ──
+            # Une table illisible annule TOUTE la récupération (sauvegarde
+            # restaurée) : une base locale partielle marquée « à jour »
+            # écraserait ensuite les données distantes au prochain envoi.
+            for table in PUSH_ORDER:
+                all_rows = self._fetch_all(table)
+                if not all_rows:
+                    continue
+                # La table locale n'a pas de colonne user_id — la retirer.
+                all_rows = [
+                    {k: v for k, v in row.items() if k != "user_id"}
+                    for row in all_rows
+                ]
+                cols         = list(all_rows[0].keys())
+                col_names    = ",".join(cols)
+                placeholders = ",".join(["?" for _ in cols])
+                for row in all_rows:
+                    con.execute(
+                        f"INSERT OR REPLACE INTO {_safe_table(table)} ({col_names}) VALUES ({placeholders})",  # noqa: S608
+                        [row[c] for c in cols],
+                    )
+
+            # ── 7. Sync app_settings distants (hors clés sensibles) ──
+            # Échec = récupération annulée, comme pour les tables : marquée à
+            # jour sans ses réglages, la base locale les effacerait sur le
+            # serveur au prochain envoi.
+            res = (
+                self._client.table("app_settings").select("*")
+                .eq("user_id", self._user_id).execute()
+            )
+            for row in res.data:
+                if row["key"] not in SETTINGS_EXCLUDE and row["key"] != SYNC_TS_KEY:
+                    con.execute(
+                        "INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)",
+                        (row["key"], row["value"]),
+                    )
+            # Version locale = celle lue AVANT les données (voir étape 5)
+            if version is not None:
+                con.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)",
+                            (SYNC_TS_KEY, version))
 
             con.execute("PRAGMA foreign_keys=ON")
             con.commit()
@@ -323,13 +335,13 @@ class SupabaseSync:
 
         with ThreadPoolExecutor(max_workers=len(PUSH_ORDER)) as pool:
             results = pool.map(_count_one, PUSH_ORDER)
-        return dict(zip(PUSH_ORDER, results))
+        return dict(zip(PUSH_ORDER, results, strict=False))
 
     def _local_row_counts(self) -> dict[str, int]:
         con = sqlite3.connect(self._db_path)
         try:
             counts = {
-                t: con.execute(f"SELECT COUNT(*) FROM {_safe_table(t)}").fetchone()[0]
+                t: con.execute(f"SELECT COUNT(*) FROM {_safe_table(t)}").fetchone()[0]  # noqa: S608
                 for t in PUSH_ORDER
             }
         finally:
@@ -382,43 +394,58 @@ class SupabaseSync:
                     self._idle.set() # redevient disponible
             threading.Thread(target=_run, daemon=True).start()
 
-    def check_remote_newer(self) -> tuple[bool, str]:
-        """Verrou optimiste : les données distantes ont-elles changé depuis
-        la dernière synchronisation de CETTE base (saisie depuis l'interface
-        web, ou depuis un autre PC) ? Le push supprime puis réinsère tout :
-        pousser par-dessus effacerait ces modifications.
-        Retourne (plus_récent, message)."""
+    def _remote_version(self) -> str | None:
         res = (
             self._client.table("app_settings").select("value")
             .eq("key", SYNC_TS_KEY).eq("user_id", self._user_id).execute()
         )
-        if not res.data:
-            return False, ""
-        try:
-            remote_ts = datetime.datetime.fromisoformat(res.data[0]["value"])
-        except ValueError:
-            return False, ""
+        return res.data[0]["value"] if res.data else None
+
+    def _local_version(self) -> str | None:
         con = sqlite3.connect(self._db_path)
         try:
             row = con.execute("SELECT value FROM app_settings WHERE key=?",
                               (SYNC_TS_KEY,)).fetchone()
         finally:
             con.close()
-        local_ts = None
-        if row and row[0]:
-            try:
-                local_ts = datetime.datetime.fromisoformat(row[0])
-            except ValueError:
-                local_ts = None
-        if local_ts is not None and remote_ts <= local_ts + datetime.timedelta(seconds=1):
+        return row[0] if row and row[0] else None
+
+    def _set_local_version(self, version: str) -> None:
+        con = sqlite3.connect(self._db_path)
+        try:
+            con.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)",
+                        (SYNC_TS_KEY, version))
+            con.commit()
+        finally:
+            con.close()
+
+    def check_remote_newer(self) -> tuple[bool, str]:
+        """Verrou optimiste : les données distantes ont-elles changé depuis
+        la dernière synchronisation de CETTE base (saisie depuis l'interface
+        web, ou depuis un autre PC) ? Le push remplace tout : pousser
+        par-dessus effacerait ces modifications.
+
+        Comparaison par ÉGALITÉ de la version (et non « plus récent que ») :
+        un PC dont l'horloge avance ne peut plus faire passer une saisie web
+        pour plus ancienne. Retourne (modifiées_ailleurs, message)."""
+        remote_v = self._remote_version()
+        if remote_v is None or remote_v == self._local_version():
             return False, ""
-        return True, (
-            "⚠️  Les données Supabase ont été modifiées ailleurs (interface web ou "
-            "autre PC) depuis votre dernière synchronisation. Envoi annulé pour ne "
-            "pas les écraser : récupérez d'abord les données depuis Supabase "
-            "(Paramètres → Synchronisation), puis ressaisissez vos modifications "
-            "locales récentes si besoin."
-        )
+        return True, CONFLICT_MSG
+
+    def _snapshot(self) -> tuple[dict, dict]:
+        """Toutes les tables locales + réglages non sensibles."""
+        con = sqlite3.connect(self._db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            tables = {t: [dict(r) for r in con.execute(f"SELECT * FROM {_safe_table(t)}")]  # noqa: S608
+                      for t in PUSH_ORDER}
+            settings = {r["key"]: r["value"]
+                        for r in con.execute("SELECT key, value FROM app_settings")
+                        if r["key"] not in SETTINGS_EXCLUDE and r["key"] != SYNC_TS_KEY}
+        finally:
+            con.close()
+        return tables, settings
 
     def _do_push(self, force: bool = False) -> str:
         with self._lock:
@@ -426,90 +453,35 @@ class SupabaseSync:
                 safe, msg, _, _ = self.check_push_safety()
                 if not safe:
                     log.warning("[Sync] Push refusé par le garde-fou : %s", msg)
-                    return msg  # abandon — aucun delete, aucun upload
+                    return msg  # abandon — rien n'est envoyé
                 try:
                     newer, msg = self.check_remote_newer()
                 except Exception as exc:
                     return f"⚠️  Push annulé : vérification impossible ({exc})"
                 if newer:
-                    log.warning("[Sync] Push refusé : données distantes plus récentes.")
+                    log.warning("[Sync] Push refusé : données distantes modifiées ailleurs.")
                     return msg
 
             try:
-                con = sqlite3.connect(self._db_path)
-                con.row_factory = sqlite3.Row
-
-                # ── 1. Supprimer les données distantes DE CET UTILISATEUR ──
-                for table in DELETE_ORDER:
-                    try:
-                        (
-                            self._client.table(_safe_table(table))
-                            .delete().eq("user_id", self._user_id).execute()
-                        )
-                    except Exception:
-                        log.warning("Push — impossible de vider la table distante %s", table, exc_info=True)
-
-                # app_settings : supprimer uniquement les clés non-sensibles de cet utilisateur
-                try:
-                    existing = (
-                        self._client.table("app_settings").select("key")
-                        .eq("user_id", self._user_id).execute()
-                    )
-                    for row in existing.data:
-                        if row["key"] not in SETTINGS_EXCLUDE:
-                            (
-                                self._client.table("app_settings")
-                                .delete()
-                                .eq("key", row["key"])
-                                .eq("user_id", self._user_id)
-                                .execute()
-                            )
-                except Exception:
-                    log.warning("Push — erreur nettoyage app_settings distants", exc_info=True)
-
-                # ── 2. Insérer les données locales (ordre FK), taguées user_id ──
-                for table in PUSH_ORDER:
-                    rows = con.execute(f"SELECT * FROM {_safe_table(table)}").fetchall()
-                    if not rows:
-                        continue
-                    data = [dict(r) | {"user_id": self._user_id} for r in rows]
-                    for i in range(0, len(data), BATCH_SIZE):
-                        self._client.table(table).upsert(
-                            data[i : i + BATCH_SIZE], on_conflict="user_id,id"
-                        ).execute()
-
-                # ── 3. app_settings non-sensibles + timestamp de sync ──────
-                # Un seul upsert groupé plutôt qu'un appel réseau par clé.
-                settings = con.execute(
-                    "SELECT key, value FROM app_settings"
-                ).fetchall()
-                ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                payload = [
-                    {"key": row["key"], "value": row["value"], "user_id": self._user_id}
-                    for row in settings
-                    if row["key"] not in SETTINGS_EXCLUDE and row["key"] != SYNC_TS_KEY
-                ]
-                # Ajouté une seule fois ici, avec l'horodatage frais — ne doit
-                # jamais aussi apparaître dans la liste ci-dessus (sinon deux
-                # lignes pour la même clé dans le même upsert -> Postgres
-                # refuse : "ON CONFLICT DO UPDATE command cannot affect row a
-                # second time").
-                payload.append({"key": SYNC_TS_KEY, "value": ts, "user_id": self._user_id})
-                self._client.table("app_settings").upsert(
-                    payload, on_conflict="user_id,key"
-                ).execute()
-
-                con.execute(
-                    "INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)",
-                    (SYNC_TS_KEY, ts),
-                )
-                con.commit()
-                con.close()
-
+                tables, settings = self._snapshot()
+                # UNE transaction côté serveur : suppression + réinsertion +
+                # nouvelle version, ou rien du tout. La version attendue est
+                # revérifiée SOUS VERROU (pas de fenêtre entre contrôle et envoi).
+                res = self._client.rpc("fintrack_replace_snapshot", {
+                    "p_tables": tables,
+                    "p_settings": settings,
+                    "p_exclude": sorted(SETTINGS_EXCLUDE),
+                    "p_expected": self._local_version(),
+                    "p_force": bool(force),
+                }).execute()
+                version = res.data
+                if not isinstance(version, str) or not version:
+                    return "⚠️  Push échoué : réponse inattendue du serveur."
+                self._set_local_version(version)
                 return "✅  Synchronisation Supabase OK"
 
             except Exception as e:
-                return f"⚠️  Push échoué : {e}"
+                return _push_error_message(e)
 
     # ─────────────────────────────────────────────────────────
     #  Construction

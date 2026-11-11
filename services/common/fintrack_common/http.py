@@ -5,11 +5,13 @@ import logging
 import re
 import time
 import uuid
+from urllib.parse import parse_qs
 
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .config import VERSION
 from .logs import request_id_var
@@ -20,48 +22,68 @@ _RID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 API_CSP = "default-src 'none'; frame-ancestors 'none'"
 
 
-class RequestContextMiddleware(BaseHTTPMiddleware):
+class RequestContextMiddleware:
     """Propage/génère X-Request-ID, journalise chaque requête (sans corps ni
     en-têtes : aucune donnée financière ni jeton dans les logs), ajoute les
-    en-têtes de sécurité de base."""
+    en-têtes de sécurité de base.
 
-    def __init__(self, app, csp: str = API_CSP, static_prefix: str | None = None):
-        super().__init__(app)
+    Middleware ASGI pur (et non BaseHTTPMiddleware, qui isole mal les
+    contextvars et retarde les tâches de fond) : le request_id est posé pour
+    toute la durée de la requête puis TOUJOURS retiré — il ne déborde plus
+    sur la requête suivante traitée par le même worker."""
+
+    def __init__(self, app: ASGIApp, csp: str = API_CSP, static_prefix: str | None = None):
+        self.app = app
         self.csp = csp
         self.static_prefix = static_prefix
 
-    async def dispatch(self, request, call_next):
-        rid = request.headers.get("x-request-id", "")
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        rid = Headers(scope=scope).get("x-request-id", "")
         if not _RID_RE.match(rid):
             rid = uuid.uuid4().hex
-        token = request_id_var.set(rid)
+        path, method = scope["path"], scope["method"]
+        cache = self._cache_policy(path, scope.get("query_string", b""))
+        state = {"status": 500, "started": False, "end": None}
         start = time.perf_counter()
+
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                state["status"], state["started"] = message["status"], True
+                h = MutableHeaders(scope=message)
+                h["X-Request-ID"] = rid
+                h.setdefault("X-Content-Type-Options", "nosniff")
+                h.setdefault("Content-Security-Policy", self.csp)
+                h.setdefault("Referrer-Policy", "same-origin")
+                h.setdefault("Cache-Control", cache)
+            elif message["type"] == "http.response.body" and not message.get("more_body"):
+                state["end"] = time.perf_counter()      # hors tâches de fond
+            await send(message)
+
+        token = request_id_var.set(rid)
         try:
-            response = await call_next(request)
-        except Exception:
-            log.exception("Erreur non gérée")
-            response = JSONResponse({"detail": "Erreur interne."}, status_code=500)
+            try:
+                await self.app(scope, receive, send_wrapper)
+            except Exception:
+                log.exception("Erreur non gérée")
+                if state["started"]:
+                    raise
+                await JSONResponse({"detail": "Erreur interne."}, status_code=500)(
+                    scope, receive, send_wrapper)
+            if path not in ("/healthz", "/readyz"):
+                elapsed = ((state["end"] or time.perf_counter()) - start) * 1000
+                log.info("%s %s -> %s (%.0f ms)", method, path, state["status"], elapsed)
         finally:
             request_id_var.reset(token)
-        elapsed = (time.perf_counter() - start) * 1000
-        if request.url.path not in ("/healthz", "/readyz"):
-            request_id_var.set(rid)
-            log.info("%s %s -> %s (%.0f ms)", request.method, request.url.path,
-                     response.status_code, elapsed)
-        h = response.headers
-        h["X-Request-ID"] = rid
-        h.setdefault("X-Content-Type-Options", "nosniff")
-        h.setdefault("Content-Security-Policy", self.csp)
-        h.setdefault("Referrer-Policy", "same-origin")
-        h.setdefault("Cache-Control", self._cache_policy(request))
-        return response
 
-    def _cache_policy(self, request) -> str:
+    def _cache_policy(self, path: str, query_string: bytes) -> str:
         """Pages et API : jamais en cache (données financières). Fichiers
         statiques : mis en cache — un an s'ils sont versionnés (?v=<version>,
         l'URL change à chaque release), sinon revalidés par ETag (304)."""
-        if self.static_prefix and request.url.path.startswith(self.static_prefix):
-            if request.query_params.get("v"):
+        if self.static_prefix and path.startswith(self.static_prefix):
+            if parse_qs(query_string.decode("latin-1")).get("v"):
                 return "public, max-age=31536000, immutable"
             return "no-cache"
         return "no-store"

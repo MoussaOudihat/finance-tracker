@@ -119,7 +119,7 @@ def generate_monthly_report(db, year: int, month: int, output_path: str) -> str:
     ]
 
     kpi_rows = []
-    for label, value, color in kpi_data:
+    for label, value, _color in kpi_data:
         cell = [
             Paragraph(label, ParagraphStyle(
                 "KPILabel", parent=styles["Normal"],
@@ -135,7 +135,7 @@ def generate_monthly_report(db, year: int, month: int, output_path: str) -> str:
         kpi_rows.append(cell)
 
     kpi_table = Table(
-        list(zip(*kpi_rows)),
+        list(zip(*kpi_rows, strict=False)),
         colWidths=[4.5*cm, 4.5*cm, 4.5*cm, 4.5*cm],
         hAlign="CENTER",
     )

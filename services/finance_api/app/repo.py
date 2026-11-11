@@ -6,22 +6,22 @@ Bearer) : PostgreSQL applique alors la Row Level Security (user_id =
 auth.uid()). Le filtre user_id=eq.<uid> est ajouté en plus (défense en
 profondeur). La clé service_role n'est jamais utilisée.
 
-Écritures LIGNE PAR LIGNE (et non plus « tout supprimer puis tout
-réinsérer » comme la synchro desktop) : une saisie web ne peut plus effacer
-les données d'un autre appareil. Chaque écriture fait avancer l'horodatage
-`last_supabase_sync` : l'app desktop sait ainsi qu'elle doit récupérer les
-données avant d'envoyer les siennes (voir sync_supabase.check_remote_newer).
-
-Identifiants : le schéma (partagé avec l'app desktop/SQLite) utilise des
-id BIGINT attribués par le client, uniques par (user_id, id). On prend
-max(id)+1 et on réessaie en cas de conflit (HTTP 409).
+Lectures : PostgREST (select paginé). Écritures : UNE transaction par
+opération métier, via la fonction SQL `fintrack_apply` (migration
+supabase/migration_v2_3_atomic.sql) :
+  • tout ou rien (récurrentes, épargne → patrimoine, saisie groupée…) ;
+  • identifiants attribués en SQL sous un verrou par utilisateur (plus de
+    max(id)+1 côté client ni de réessais) ;
+  • « mois clôturé ? » vérifié dans la même transaction que l'écriture ;
+  • la version de synchronisation (`last_supabase_sync`) avance dans cette
+    même transaction : l'app desktop sait toujours qu'elle doit récupérer
+    les données avant d'envoyer les siennes.
 """
 from __future__ import annotations
 
-import datetime as dt
 import logging
+from collections.abc import Callable, Iterable
 from typing import Any
-from collections.abc import Iterable
 
 import httpx
 from fastapi import HTTPException
@@ -32,6 +32,21 @@ log = logging.getLogger(__name__)
 
 PAGE = 1000
 SYNC_TS_KEY = "last_supabase_sync"
+CLOSED_MSG = "Ce mois est clôturé : saisie verrouillée."
+
+# Erreurs levées par fintrack_apply (RAISE EXCEPTION 'fintrack:…')
+_RPC_ERRORS = {
+    "fintrack:month_closed": (409, CLOSED_MSG),
+    "fintrack:not_found": (404, "Élément introuvable."),
+    "fintrack:conflict": (409, "Modifié entre-temps par une autre requête — rechargez la page "
+                               "et réessayez."),
+}
+
+
+def ref(index: int, field: str = "id") -> dict:
+    """Référence au résultat d'une opération précédente du même lot
+    (ex. l'id du mois créé par l'opération 0)."""
+    return {"$ref": [index, field]}
 
 
 class Repo:
@@ -43,6 +58,7 @@ class Repo:
             "Authorization": f"Bearer {user.token}",
             "Accept": "application/json",
         }
+        self._cache: dict[str, Any] = {}
 
     # ── Bas niveau ───────────────────────────────────────────
     def _check(self, r: httpx.Response) -> httpx.Response:
@@ -82,76 +98,42 @@ class Repo:
                 return rows
             offset += page
 
-    def _next_id(self, table: str) -> int:
-        rows = self.select(table, columns="id", order="id.desc", limit=1)
-        return (rows[0]["id"] + 1) if rows else 1
+    def apply(self, ops: list[dict]) -> list[Any]:
+        """Exécute `ops` en UNE transaction (fonction SQL fintrack_apply) et
+        renvoie le résultat de chaque opération."""
+        r = self.http.post("/rest/v1/rpc/fintrack_apply", json={"ops": ops},
+                           headers=self.headers)
+        self._cache.clear()                 # données modifiées : relire
+        if r.status_code >= 400 and r.status_code not in (401, 403):
+            try:
+                err = r.json()
+            except ValueError:
+                err = {}
+            msg, code = str(err.get("message", "")), str(err.get("code", ""))
+            if msg in _RPC_ERRORS:
+                raise HTTPException(*_RPC_ERRORS[msg])
+            if code == "23503":             # clé étrangère : catégorie, mois…
+                raise HTTPException(422, "Référence inconnue (catégorie ou mois).")
+            if code == "23505":
+                raise HTTPException(409, "Conflit d'écriture — réessayez.")
+            if code == "PGRST202":          # fonction absente
+                log.error("fintrack_apply introuvable : appliquez supabase/migration_v2_3_atomic.sql")
+                raise HTTPException(503, "Base de données non migrée (v2.3).")
+        return self._check(r).json()["results"]
 
-    def insert(self, table: str, row: dict, *, attempts: int = 5) -> dict:
-        for _ in range(attempts):
-            payload = {**row, "id": self._next_id(table), "user_id": self.user.id}
-            r = self.http.post(f"/rest/v1/{table}", json=payload, headers={
-                **self.headers, "Prefer": "return=representation"})
-            if r.status_code == 409:      # id pris entre-temps : on réessaie
-                continue
-            return self._check(r).json()[0]
-        raise HTTPException(409, "Conflit d'écriture — réessayez.")
-
-    def insert_many(self, table: str, rows: list[dict], *, attempts: int = 5) -> list[dict]:
-        """Insertion de plusieurs lignes en UNE requête PostgREST, donc une
-        seule instruction INSERT : tout ou rien (aucune ligne écrite si l'une
-        est refusée). Identifiants consécutifs à partir de max(id)+1."""
-        if not rows:
-            return []
-        for _ in range(attempts):
-            first = self._next_id(table)
-            payload = [{**row, "id": first + i, "user_id": self.user.id} for i, row in enumerate(rows)]
-            r = self.http.post(f"/rest/v1/{table}", json=payload, headers={
-                **self.headers, "Prefer": "return=representation"})
-            if r.status_code == 409:      # plage d'id prise entre-temps : on réessaie
-                continue
-            return self._check(r).json()
-        raise HTTPException(409, "Conflit d'écriture — réessayez.")
-
-    def update(self, table: str, filters: dict, values: dict) -> list[dict]:
-        r = self.http.patch(f"/rest/v1/{table}", params=self._params(filters), json=values,
-                            headers={**self.headers, "Prefer": "return=representation"})
-        return self._check(r).json()
-
-    def delete(self, table: str, filters: dict) -> list[dict]:
-        r = self.http.delete(f"/rest/v1/{table}", params=self._params(filters),
-                             headers={**self.headers, "Prefer": "return=representation"})
-        return self._check(r).json()
-
-    def upsert(self, table: str, row: dict, on_conflict: str) -> None:
-        r = self.http.post(
-            f"/rest/v1/{table}", params={"on_conflict": on_conflict},
-            json={**row, "user_id": self.user.id},
-            headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"},
-        )
-        self._check(r)
-
-    def touch_sync_ts(self) -> None:
-        """Signale aux autres appareils (desktop) que les données distantes
-        ont changé : leur prochain envoi sera refusé tant qu'ils n'ont pas
-        récupéré ces modifications."""
-        ts = dt.datetime.now(dt.UTC).isoformat()
-        self.upsert("app_settings", {"key": SYNC_TS_KEY, "value": ts}, "user_id,key")
+    def cached(self, key: str, load: Callable[[], Any]) -> Any:
+        """Mémoïsation pour la durée de la requête (un Repo par requête) ;
+        vidée à chaque écriture."""
+        if key not in self._cache:
+            self._cache[key] = load()
+        return self._cache[key]
 
     # ── Mois ─────────────────────────────────────────────────
-    def month(self, year: int, month: int, *, create: bool) -> dict | None:
+    def month(self, year: int, month: int) -> dict | None:
+        """Lecture seule. La création d'un mois se fait dans la transaction
+        de l'écriture (opération « month » de fintrack_apply)."""
         rows = self.select("months", {"year": f"eq.{year}", "month": f"eq.{month}"})
-        if rows:
-            return rows[0]
-        if not create:
-            return None
-        try:
-            return self.insert("months", {"year": year, "month": month, "closed": 0})
-        except HTTPException:
-            # Créé en parallèle (contrainte unique user_id/year/month) : relire.
-            rows = self.select("months", {"year": f"eq.{year}", "month": f"eq.{month}"})
-            if rows:
-                return rows[0]
-            raise
+        return rows[0] if rows else None
 
     def months_by_id(self, ids: Iterable[int]) -> dict[int, dict]:
         ids = sorted(set(ids))

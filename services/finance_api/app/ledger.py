@@ -1,6 +1,10 @@
 """
 ledger.py — Règles métier de finance-api (portage de database.py) :
 saisies, synchronisation Épargne → Patrimoine, budgets, agrégats.
+
+Chaque écriture construit une liste d'opérations exécutée en UNE
+transaction par Repo.apply (voir repo.py) : pas d'état intermédiaire
+visible ni de demi-écriture en cas de panne.
 """
 from __future__ import annotations
 
@@ -14,21 +18,42 @@ from fastapi import HTTPException
 
 from fintrack_common.fmt import shift_month
 
-from .repo import Repo, in_filter
+from .repo import CLOSED_MSG, Repo, in_filter, ref
 
 log = logging.getLogger(__name__)
 
 ENTRY_TABLES = {"expenses": "expenses", "revenues": "revenues", "savings": "savings"}
 _MIN_MATCH_LEN = 3
+ASSET_KEY = ["year", "month", "asset_type", "asset_name"]
+LIABILITY_KEY = ["year", "month", "liability_name"]
+BUDGET_KEY = ["year", "month", "category"]
 
 
 # ── Mois / clôture ───────────────────────────────────────────
 
-def ensure_open(repo: Repo, year: int, month: int) -> dict:
-    mo = repo.month(year, month, create=True)
-    if mo.get("closed"):
-        raise HTTPException(409, "Ce mois est clôturé : saisie verrouillée.")
+def open_month_op(year: int, month: int) -> dict:
+    """Crée le mois si besoin et refuse l'écriture s'il est clôturé — dans
+    la transaction (pas de course avec une clôture simultanée)."""
+    return {"op": "month", "year": year, "month": month, "require_open": True}
+
+
+def assert_open_op(mo: dict) -> dict:
+    return {"op": "assert_open", "month_id": mo["id"]}
+
+
+def existing_month(repo: Repo, year: int, month: int) -> dict | None:
+    """Mois existant (ou None), refusé tout de suite s'il est clôturé : le
+    message arrive avant tout calcul. La vérification qui fait foi reste
+    celle de la transaction."""
+    mo = repo.month(year, month)
+    if mo and mo.get("closed"):
+        raise HTTPException(409, CLOSED_MSG)
     return mo
+
+
+def _require_open(mo: dict) -> None:
+    if mo.get("closed"):
+        raise HTTPException(409, CLOSED_MSG)
 
 
 def entry_with_month(repo: Repo, table: str, entry_id: int) -> tuple[dict, dict]:
@@ -44,8 +69,11 @@ def entry_with_month(repo: Repo, table: str, entry_id: int) -> tuple[dict, dict]
 # ── Catégories ───────────────────────────────────────────────
 
 def categories(repo: Repo) -> list[dict]:
-    return sorted(repo.select("categories", columns="id,name,is_default"),
-                  key=lambda c: c["name"])
+    """Lues une fois par requête (contexte IA, analyses, saisies groupées…
+    les demandaient chacun)."""
+    rows = repo.cached("categories", lambda: sorted(
+        repo.select("categories", columns="id,name,is_default"), key=lambda c: c["name"]))
+    return [dict(c) for c in rows]
 
 
 def category_id_or_404(repo: Repo, cat_id: int) -> dict:
@@ -58,7 +86,7 @@ def category_id_or_404(repo: Repo, cat_id: int) -> dict:
 # ── Lecture d'un mois ────────────────────────────────────────
 
 def month_entries(repo: Repo, year: int, month: int) -> dict:
-    mo = repo.month(year, month, create=False)
+    mo = repo.month(year, month)
     if mo is None:
         return {"closed": False, "expenses": [], "revenues": [], "savings": []}
     cats = {c["id"]: c["name"] for c in categories(repo)}
@@ -121,9 +149,9 @@ def last_month(repo: Repo, today: date | None = None) -> dict | None:
 
 
 def set_month_closed(repo: Repo, year: int, month: int, closed: bool) -> dict:
-    mo = repo.month(year, month, create=True)
-    repo.update("months", {"id": f"eq.{mo['id']}"}, {"closed": 1 if closed else 0})
-    repo.touch_sync_ts()
+    repo.apply([{"op": "month", "year": year, "month": month},
+                {"op": "update", "table": "months", "where": {"id": ref(0)},
+                 "set": {"closed": 1 if closed else 0}}])
     return {"year": year, "month": month, "closed": closed}
 
 
@@ -152,12 +180,16 @@ def payees(repo: Repo, limit: int = 200) -> list[str]:
 # ── Patrimoine ───────────────────────────────────────────────
 
 def assets_current(repo: Repo) -> list[dict]:
-    latest: dict[tuple[str, str], dict] = {}
-    for a in repo.select("assets"):
-        k = (a["asset_type"], a["asset_name"])
-        if k not in latest or (a["year"], a["month"]) > (latest[k]["year"], latest[k]["month"]):
-            latest[k] = a
-    return sorted(latest.values(), key=lambda a: (a["asset_type"], a["asset_name"]))
+    """Dernier instantané de chaque actif. Lu une seule fois par requête
+    (patrimoine, épargne, contexte IA le demandent chacun)."""
+    def load() -> list[dict]:
+        latest: dict[tuple[str, str], dict] = {}
+        for a in repo.select("assets"):
+            k = (a["asset_type"], a["asset_name"])
+            if k not in latest or (a["year"], a["month"]) > (latest[k]["year"], latest[k]["month"]):
+                latest[k] = a
+        return sorted(latest.values(), key=lambda a: (a["asset_type"], a["asset_name"]))
+    return [dict(a) for a in repo.cached("assets_current", load)]
 
 
 def liabilities_current(repo: Repo) -> list[dict]:
@@ -207,23 +239,16 @@ def match_compte_asset(account: str, assets: list[dict]) -> dict | None:
     return match
 
 
-def apply_saving_to_asset(repo: Repo, year: int, month: int, asset_name: str,
-                          delta: float) -> None:
-    current = next((a for a in assets_current(repo)
-                    if a["asset_type"] == "compte" and a["asset_name"] == asset_name), None)
-    if current is None:
-        log.warning("Épargne liée à un compte introuvable — ajustement ignoré.")
-        return
-    if (year, month) < (current["year"], current["month"]):
-        return   # mois antérieur au dernier instantané : on ne réécrit pas l'historique
-    repo.upsert("assets", {
-        "id": current["id"] if (current["year"], current["month"]) == (year, month)
-        else repo._next_id("assets"),
-        "year": year, "month": month, "asset_type": "compte", "asset_name": asset_name,
-        "value": max(0.0, (current["value"] or 0) + delta),
-        "cost_basis": max(0.0, (current["cost_basis"] or 0) + delta),
-        "notes": current.get("notes") or "",
-    }, "user_id,year,month,asset_type,asset_name")
+def saving_asset_ops(year: int, month: int, deltas: dict[str, float]) -> list[dict]:
+    """Ajustements des comptes liés : UNE opération par compte (variations
+    d'un même compte cumulées). La nouvelle valeur est calculée PAR LA BASE,
+    dans la transaction et sous le verrou de l'utilisateur, à partir du
+    dernier instantané : deux versements simultanés s'additionnent (une
+    valeur absolue calculée ici, avant la transaction, faisait perdre l'un
+    des deux)."""
+    return [{"op": "adjust_asset", "asset_name": name, "year": year, "month": month,
+             "delta": delta}
+            for name, delta in deltas.items() if name and delta]
 
 
 # ── Patrimoine : saisie (instantanés mensuels, comme le desktop) ──
@@ -244,22 +269,17 @@ def set_asset_value(repo: Repo, year: int, month: int, asset_type: str, name: st
               "cost_basis": cost_basis if cost_basis is not None
               else (prev or {}).get("cost_basis") or 0.0,
               "notes": notes if notes is not None else (prev or {}).get("notes") or ""}
-    same = next((s for s in snaps if (s["year"], s["month"]) == (year, month)), None)
-    if same:
-        row = repo.update("assets", {"id": f"eq.{same['id']}"}, values)[0]
-    else:
-        row = repo.insert("assets", {"year": year, "month": month, "asset_type": asset_type,
-                                     "asset_name": name, **values})
-    repo.touch_sync_ts()
-    return row
+    return repo.apply([{"op": "upsert", "table": "assets", "conflict": ASSET_KEY,
+                        "row": {"year": year, "month": month, "asset_type": asset_type,
+                                "asset_name": name, **values}}])[0]
 
 
 def delete_asset(repo: Repo, asset_type: str, name: str) -> int:
     """Arrête le suivi d'un actif : supprime tous ses instantanés."""
-    gone = repo.delete("assets", {"asset_type": f"eq.{asset_type}", "asset_name": f"eq.{name}"})
+    gone = repo.apply([{"op": "delete", "table": "assets",
+                        "where": {"asset_type": asset_type, "asset_name": name}}])[0]
     if not gone:
         raise HTTPException(404, "Actif introuvable.")
-    repo.touch_sync_ts()
     return len(gone)
 
 
@@ -273,21 +293,16 @@ def set_liability(repo: Repo, year: int, month: int, liability_type: str, name: 
               else prev.get("monthly_payment") or 0.0,
               "end_date": end_date if end_date is not None else prev.get("end_date") or "",
               "notes": prev.get("notes") or ""}
-    same = next((s for s in snaps if (s["year"], s["month"]) == (year, month)), None)
-    if same:
-        row = repo.update("liabilities", {"id": f"eq.{same['id']}"}, values)[0]
-    else:
-        row = repo.insert("liabilities", {"year": year, "month": month,
-                                          "liability_name": name, **values})
-    repo.touch_sync_ts()
-    return row
+    return repo.apply([{"op": "upsert", "table": "liabilities", "conflict": LIABILITY_KEY,
+                        "row": {"year": year, "month": month, "liability_name": name,
+                                **values}}])[0]
 
 
 def delete_liability(repo: Repo, name: str) -> int:
-    gone = repo.delete("liabilities", {"liability_name": f"eq.{name}"})
+    gone = repo.apply([{"op": "delete", "table": "liabilities",
+                        "where": {"liability_name": name}}])[0]
     if not gone:
         raise HTTPException(404, "Passif introuvable.")
-    repo.touch_sync_ts()
     return len(gone)
 
 
@@ -362,127 +377,138 @@ def _budget_amount(repo: Repo, year: int, month: int, category: str) -> float:
     return b[0]["amount"] if b else 0.0
 
 
+def _expense_row(r: dict, month_ref) -> dict:
+    return {"month_id": month_ref, "category_id": r["category_id"], "amount": r["amount"],
+            "label": r.get("label", ""), "payee": (r.get("payee") or "").strip().upper()}
+
+
+def _budget_checks(repo: Repo, year: int, month: int, mo: dict | None,
+                   rows: list[dict], cats: dict[int, str]) -> list[BudgetCheck]:
+    """Dépense par catégorie avant / après l'ajout de `rows` (alertes)."""
+    added: dict[int, float] = defaultdict(float)
+    for r in rows:
+        added[r["category_id"]] += r["amount"]
+    checks = []
+    for cid in sorted(added):
+        before = _spent(repo, mo["id"], cid) if mo else 0.0
+        checks.append(BudgetCheck(cats[cid], year, month,
+                                  _budget_amount(repo, year, month, cats[cid]),
+                                  before, before + added[cid]))
+    return checks
+
+
 def add_expense(repo: Repo, year: int, month: int, category_id: int, amount: float,
                 label: str, payee: str) -> tuple[dict, BudgetCheck]:
-    """Une seule lecture de la catégorie, du mois et du budget (avant : ~12
-    allers-retours PostgREST par saisie)."""
     cat = category_id_or_404(repo, category_id)
-    mo = ensure_open(repo, year, month)
-    before = _spent(repo, mo["id"], category_id)
-    row = repo.insert("expenses", {"month_id": mo["id"], "category_id": category_id,
-                                   "amount": amount, "label": label,
-                                   "payee": payee.strip().upper()})
-    repo.touch_sync_ts()
-    return row, BudgetCheck(cat["name"], year, month,
-                            _budget_amount(repo, year, month, cat["name"]),
-                            before, before + amount)
+    mo = existing_month(repo, year, month)
+    row_in = {"category_id": category_id, "amount": amount, "label": label, "payee": payee}
+    [chk] = _budget_checks(repo, year, month, mo, [row_in], {category_id: cat["name"]})
+    res = repo.apply([open_month_op(year, month),
+                      {"op": "insert", "table": "expenses", "row": _expense_row(row_in, ref(0))}])
+    return res[1], chk
 
 
 def update_expense(repo: Repo, entry_id: int, category_id: int, amount: float,
                    label: str, payee: str) -> tuple[dict, BudgetCheck]:
     entry, mo = entry_with_month(repo, "expenses", entry_id)
-    if mo.get("closed"):
-        raise HTTPException(409, "Ce mois est clôturé : saisie verrouillée.")
+    _require_open(mo)
     cat = category_id_or_404(repo, category_id)
     current = _spent(repo, mo["id"], category_id)        # inclut l'ancienne ligne si même catégorie
     before = current
     after = current - (entry["amount"] if entry["category_id"] == category_id else 0) + amount
-    row = repo.update("expenses", {"id": f"eq.{entry_id}"},
-                      {"category_id": category_id, "amount": amount, "label": label,
-                       "payee": payee.strip().upper()})[0]
-    repo.touch_sync_ts()
-    return row, BudgetCheck(cat["name"], mo["year"], mo["month"],
-                            _budget_amount(repo, mo["year"], mo["month"], cat["name"]),
-                            before, after)
+    res = repo.apply([assert_open_op(mo),
+                      {"op": "update", "table": "expenses", "where": {"id": entry_id}, "require": True,
+                       "set": {"category_id": category_id, "amount": amount, "label": label,
+                               "payee": payee.strip().upper()}}])
+    return res[1][0], BudgetCheck(cat["name"], mo["year"], mo["month"],
+                                  _budget_amount(repo, mo["year"], mo["month"], cat["name"]),
+                                  before, after)
 
 
 def add_revenue(repo: Repo, year: int, month: int, source: str, amount: float,
                 label: str) -> dict:
-    mo = ensure_open(repo, year, month)
-    row = repo.insert("revenues", {"month_id": mo["id"], "source": source,
-                                   "amount": amount, "label": label})
-    repo.touch_sync_ts()
-    return row
+    return repo.apply([open_month_op(year, month),
+                       {"op": "insert", "table": "revenues",
+                        "row": {"month_id": ref(0), "source": source, "amount": amount,
+                                "label": label}}])[1]
 
 
 def update_revenue(repo: Repo, entry_id: int, source: str, amount: float, label: str) -> dict:
     _, mo = entry_with_month(repo, "revenues", entry_id)
-    if mo.get("closed"):
-        raise HTTPException(409, "Ce mois est clôturé : saisie verrouillée.")
-    row = repo.update("revenues", {"id": f"eq.{entry_id}"},
-                      {"source": source, "amount": amount, "label": label})[0]
-    repo.touch_sync_ts()
-    return row
+    _require_open(mo)
+    return repo.apply([assert_open_op(mo),
+                       {"op": "update", "table": "revenues", "where": {"id": entry_id},
+                        "require": True,
+                        "set": {"source": source, "amount": amount, "label": label}}])[1][0]
 
 
 def add_saving(repo: Repo, year: int, month: int, account: str, amount: float,
                label: str) -> dict:
-    mo = ensure_open(repo, year, month)
-    matched = match_compte_asset(account, assets_current(repo))
+    """Versement + ajustement du compte lié (patrimoine) : même transaction."""
+    assets = assets_current(repo)
+    matched = match_compte_asset(account, assets)
     linked = matched["asset_name"] if matched else ""
-    row = repo.insert("savings", {"month_id": mo["id"], "account": account, "amount": amount,
-                                  "label": label, "linked_asset_name": linked})
-    if linked:
-        apply_saving_to_asset(repo, year, month, linked, amount)
-    repo.touch_sync_ts()
-    return row
+    ops = [open_month_op(year, month),
+           {"op": "insert", "table": "savings",
+            "row": {"month_id": ref(0), "account": account, "amount": amount,
+                    "label": label, "linked_asset_name": linked}}]
+    ops += saving_asset_ops(year, month, {linked: amount})
+    return repo.apply(ops)[1]
 
 
 def update_saving(repo: Repo, entry_id: int, account: str, amount: float, label: str) -> dict:
     old, mo = entry_with_month(repo, "savings", entry_id)
-    if mo.get("closed"):
-        raise HTTPException(409, "Ce mois est clôturé : saisie verrouillée.")
-    y, m = mo["year"], mo["month"]
+    _require_open(mo)
+    assets = assets_current(repo)
     linked = old.get("linked_asset_name") or ""
+    deltas: dict[str, float] = defaultdict(float)
     if old["account"] != account:
-        if linked:
-            apply_saving_to_asset(repo, y, m, linked, -old["amount"])
-        matched = match_compte_asset(account, assets_current(repo))
+        deltas[linked] -= old["amount"]
+        matched = match_compte_asset(account, assets)
         linked = matched["asset_name"] if matched else ""
-        if linked:
-            apply_saving_to_asset(repo, y, m, linked, amount)
-    elif linked and old["amount"] != amount:
-        apply_saving_to_asset(repo, y, m, linked, amount - old["amount"])
-    row = repo.update("savings", {"id": f"eq.{entry_id}"},
-                      {"account": account, "amount": amount, "label": label,
-                       "linked_asset_name": linked})[0]
-    repo.touch_sync_ts()
-    return row
+        deltas[linked] += amount
+    elif linked:
+        deltas[linked] += amount - old["amount"]
+    ops = [assert_open_op(mo),
+           *saving_asset_ops(mo["year"], mo["month"], deltas),
+           {"op": "update", "table": "savings", "where": {"id": entry_id}, "require": True,
+            "set": {"account": account, "amount": amount, "label": label,
+                    "linked_asset_name": linked}}]
+    return repo.apply(ops)[-1][0]
 
 
 def delete_entry(repo: Repo, table: str, entry_id: int) -> dict:
     entry, mo = entry_with_month(repo, table, entry_id)
-    if mo.get("closed"):
-        raise HTTPException(409, "Ce mois est clôturé : saisie verrouillée.")
-    repo.delete(table, {"id": f"eq.{entry_id}"})
+    _require_open(mo)
+    ops = [assert_open_op(mo),
+           {"op": "delete", "table": table, "where": {"id": entry_id}, "require": True}]
     if table == "savings" and entry.get("linked_asset_name"):
-        apply_saving_to_asset(repo, mo["year"], mo["month"], entry["linked_asset_name"],
-                              -entry["amount"])
-    repo.touch_sync_ts()
+        ops += saving_asset_ops(mo["year"], mo["month"],
+                                {entry["linked_asset_name"]: -entry["amount"]})
+    repo.apply(ops)
     return {"year": mo["year"], "month": mo["month"]}
 
 
 # ── Budgets ──────────────────────────────────────────────────
 
+def _budget_op(year: int, month: int, category: str, amount: float) -> dict:
+    if amount <= 0:                 # 0 = suppression du plafond
+        return {"op": "delete", "table": "budgets",
+                "where": {"year": year, "month": month, "category": category}}
+    return {"op": "upsert", "table": "budgets", "conflict": BUDGET_KEY,
+            "row": {"year": year, "month": month, "category": category, "amount": amount}}
+
+
 def set_budget(repo: Repo, year: int, month: int, category: str, amount: float) -> None:
-    existing = repo.select("budgets", {"year": f"eq.{year}", "month": f"eq.{month}",
-                                       "category": f"eq.{category}"}, limit=1)
-    if amount <= 0:
-        if existing:
-            repo.delete("budgets", {"id": f"eq.{existing[0]['id']}"})
-    elif existing:
-        repo.update("budgets", {"id": f"eq.{existing[0]['id']}"}, {"amount": amount})
-    else:
-        repo.insert("budgets", {"year": year, "month": month, "category": category,
-                                "amount": amount})
-    repo.touch_sync_ts()
+    repo.apply([_budget_op(year, month, category, amount)])
 
 
 def copy_budgets(repo: Repo, year: int, month: int) -> int:
+    """Tous les plafonds du mois précédent, en une transaction."""
     py, pm = shift_month(year, month, -1)
     prev = repo.select("budgets", {"year": f"eq.{py}", "month": f"eq.{pm}"})
-    for b in prev:
-        set_budget(repo, year, month, b["category"], b["amount"])
+    if prev:
+        repo.apply([_budget_op(year, month, b["category"], b["amount"]) for b in prev])
     return len(prev)
 
 
@@ -607,36 +633,31 @@ def ai_context(repo: Repo, year: int, month: int, nb_months: int,
 
 # ── Saisie groupée (atomique) ────────────────────────────────
 
-def add_expenses_batch(repo: Repo, year: int, month: int, rows: list[dict]) -> tuple[list[dict], list[BudgetCheck]]:
-    """rows : [{category_id, amount, label, payee}]. Une seule insertion
-    PostgREST : tout ou rien. Renvoie aussi le bilan budget par catégorie."""
-    mo = ensure_open(repo, year, month)
+def add_expenses_batch(repo: Repo, year: int, month: int,
+                       rows: list[dict]) -> tuple[list[dict], list[BudgetCheck]]:
+    """rows : [{category_id, amount, label, payee}]. Une transaction : tout
+    ou rien. Renvoie aussi le bilan budget par catégorie."""
+    mo = existing_month(repo, year, month)
     cats = {c["id"]: c["name"] for c in categories(repo)}
     unknown = sorted({r["category_id"] for r in rows} - set(cats))
     if unknown:
         raise HTTPException(422, f"Catégorie inconnue : {unknown[0]}.")
-    used = sorted({r["category_id"] for r in rows})
-    before = {cid: _spent(repo, mo["id"], cid) for cid in used}
-    created = repo.insert_many("expenses", [
-        {"month_id": mo["id"], "category_id": r["category_id"], "amount": r["amount"],
-         "label": r.get("label", ""), "payee": (r.get("payee") or "").strip().upper()}
-        for r in rows])
-    repo.touch_sync_ts()
-    added: dict[int, float] = defaultdict(float)
-    for r in rows:
-        added[r["category_id"]] += r["amount"]
-    checks = [BudgetCheck(cats[cid], year, month, _budget_amount(repo, year, month, cats[cid]),
-                          before[cid], before[cid] + added[cid]) for cid in used]
-    return created, checks
+    checks = _budget_checks(repo, year, month, mo, rows, cats)
+    res = repo.apply([open_month_op(year, month),
+                      {"op": "insert", "table": "expenses",
+                       "rows": [_expense_row(r, ref(0)) for r in rows]}])
+    return res[1], checks
+
+
+def _revenue_row(r: dict, month_ref) -> dict:
+    return {"month_id": month_ref, "source": r["source"], "amount": r["amount"],
+            "label": r.get("label", "")}
 
 
 def add_revenues_batch(repo: Repo, year: int, month: int, rows: list[dict]) -> list[dict]:
-    mo = ensure_open(repo, year, month)
-    created = repo.insert_many("revenues", [
-        {"month_id": mo["id"], "source": r["source"], "amount": r["amount"], "label": r.get("label", "")}
-        for r in rows])
-    repo.touch_sync_ts()
-    return created
+    return repo.apply([open_month_op(year, month),
+                       {"op": "insert", "table": "revenues",
+                        "rows": [_revenue_row(r, ref(0)) for r in rows]}])[1]
 
 
 # ── Transactions récurrentes (même règle que l'app desktop) ──
@@ -656,35 +677,36 @@ def recurring(repo: Repo, year: int, month: int) -> list[dict]:
 def add_recurring(repo: Repo, data: dict) -> dict:
     if data["type"] == "expense":
         category_id_or_404(repo, data["category_id"])
-    row = repo.insert("recurring_transactions", {
+    return repo.apply([{"op": "insert", "table": "recurring_transactions", "row": {
         "label": data["label"], "amount": data["amount"], "type": data["type"],
         "category_id": data.get("category_id") if data["type"] == "expense" else None,
         "source": data.get("source", "") if data["type"] == "revenue" else "",
         "payee": (data.get("payee") or "").strip().upper() if data["type"] == "expense" else "",
-        "active": 1, "last_applied_year": 0, "last_applied_month": 0})
-    repo.touch_sync_ts()
-    return row
+        "active": 1, "last_applied_year": 0, "last_applied_month": 0}}])[0]
 
 
 def set_recurring_active(repo: Repo, rec_id: int, active: bool) -> dict:
-    rows = repo.update("recurring_transactions", {"id": f"eq.{rec_id}"}, {"active": int(active)})
+    rows = repo.apply([{"op": "update", "table": "recurring_transactions",
+                        "where": {"id": rec_id}, "set": {"active": int(active)}}])[0]
     if not rows:
         raise HTTPException(404, "Récurrente introuvable.")
-    repo.touch_sync_ts()
     return rows[0]
 
 
 def delete_recurring(repo: Repo, rec_id: int) -> None:
-    if not repo.delete("recurring_transactions", {"id": f"eq.{rec_id}"}):
+    if not repo.apply([{"op": "delete", "table": "recurring_transactions",
+                        "where": {"id": rec_id}}])[0]:
         raise HTTPException(404, "Récurrente introuvable.")
-    repo.touch_sync_ts()
 
 
-def apply_recurring(repo: Repo, year: int, month: int, items: list[dict]) -> tuple[int, list[BudgetCheck]]:
-    """items : [{id, amount}]. Toutes doivent être en attente pour ce mois ;
-    les écritures de chaque type partent en une insertion groupée."""
+def apply_recurring(repo: Repo, year: int, month: int,
+                    items: list[dict]) -> tuple[int, list[BudgetCheck]]:
+    """items : [{id, amount}]. Toutes doivent être en attente pour ce mois.
+    Saisies ET marquage « appliquée » dans UNE transaction : une panne ne
+    laisse jamais des saisies créées avec des récurrentes encore « en
+    attente » (ce qui provoquait des doublons au nouvel essai)."""
     by_id = {r["id"]: r for r in recurring(repo, year, month)}
-    expenses, revenues = [], []
+    expenses, revenues, marks = [], [], []
     for it in items:
         r = by_id.get(it["id"])
         if r is None:
@@ -699,15 +721,28 @@ def apply_recurring(repo: Repo, year: int, month: int, items: list[dict]) -> tup
         else:
             revenues.append({"source": r.get("source") or r["label"], "amount": it["amount"],
                              "label": r["label"]})
+        # Garde optimiste : la ligne doit être encore dans l'état lu (sinon
+        # appliquée entre-temps par une autre requête -> tout est annulé).
+        marks.append({"op": "update", "table": "recurring_transactions", "require": True,
+                      "on_missing": "conflict",
+                      "where": {"id": r["id"], "last_applied_year": r.get("last_applied_year"),
+                                "last_applied_month": r.get("last_applied_month")},
+                      "set": {"last_applied_year": year, "last_applied_month": month}})
+    mo = existing_month(repo, year, month)
     checks: list[BudgetCheck] = []
+    ops = [open_month_op(year, month)]
     if expenses:
-        _, checks = add_expenses_batch(repo, year, month, expenses)
+        cats = {c["id"]: c["name"] for c in categories(repo)}
+        gone = next((e for e in expenses if e["category_id"] not in cats), None)
+        if gone:
+            raise HTTPException(422, f"« {gone['label']} » : catégorie supprimée, modifiez la récurrente.")
+        checks = _budget_checks(repo, year, month, mo, expenses, cats)
+        ops.append({"op": "insert", "table": "expenses",
+                    "rows": [_expense_row(e, ref(0)) for e in expenses]})
     if revenues:
-        add_revenues_batch(repo, year, month, revenues)
-    for it in items:
-        repo.update("recurring_transactions", {"id": f"eq.{it['id']}"},
-                    {"last_applied_year": year, "last_applied_month": month})
-    repo.touch_sync_ts()
+        ops.append({"op": "insert", "table": "revenues",
+                    "rows": [_revenue_row(r, ref(0)) for r in revenues]})
+    repo.apply(ops + marks)
     return len(items), checks
 
 
@@ -732,11 +767,13 @@ def search(repo: Repo, kind: str, q: str = "", category_id: int | None = None,
         filters["or"] = "(" + ",".join(f"{f}.ilike.{pattern}" for f in fields) + ")"
     if category_id is not None and kind == "expenses":
         filters["category_id"] = f"eq.{category_id}"
-    if min_amount is not None:
-        filters["amount"] = f"gte.{min_amount}"
+    # Bornes de montant filtrées PAR LA BASE, avant la limite (filtrées en
+    # Python après coup, des résultats manquaient sans le signaler).
+    bounds = ([f"amount.gte.{min_amount}"] if min_amount is not None else []) + \
+             ([f"amount.lte.{max_amount}"] if max_amount is not None else [])
+    if bounds:
+        filters["and"] = f"({','.join(bounds)})"
     rows = repo.select(table, filters, order="id.desc", limit=2000)
-    if max_amount is not None:                     # deux bornes sur la même colonne
-        rows = [r for r in rows if r["amount"] <= max_amount]
     months = repo.months_by_id(r["month_id"] for r in rows)
     cats = {c["id"]: c["name"] for c in categories(repo)} if kind == "expenses" else {}
     out = []

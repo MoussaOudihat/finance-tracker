@@ -432,7 +432,7 @@ class AssetEvolutionDialog:
                     marker="s", ms=4, label="Prix d'achat / Investi")
 
         # Étiquettes de valeur sur chaque point
-        for xi, vi in zip(x, vals):
+        for xi, vi in zip(x, vals, strict=False):
             ax.annotate(f"{vi:,.0f} €", (xi, vi),
                         textcoords="offset points", xytext=(0, 8),
                         ha="center", fontsize=7.5, color=C["primary"])
@@ -1171,7 +1171,7 @@ class RecurringManagerDialog(ctk.CTkToplevel):
             active_var = ctk.BooleanVar(value=bool(r["active"]))
             rec_id = r["id"]
 
-            def _toggle(v=active_var, rid=rec_id, row_data=dict(r)):
+            def _toggle(v=active_var, rid=rec_id, row_data=dict(r)):  # noqa: B006
                 self._db.update_recurring(
                     rid, row_data["label"], row_data["amount"], row_data["type"],
                     row_data["category_id"], row_data["source"] or "",
@@ -1187,7 +1187,7 @@ class RecurringManagerDialog(ctk.CTkToplevel):
             btn_f = ctk.CTkFrame(row_f, fg_color="transparent")
             btn_f.grid(row=0, column=5, padx=8)
 
-            def _edit(row_data=dict(r)):
+            def _edit(row_data=dict(r)):  # noqa: B006
                 self._open_edit(row_data)
 
             def _del(rid=rec_id):
@@ -1583,7 +1583,7 @@ class MonthCloseDialog(ctk.CTkToplevel):
                      text_color="#A5B4FC").pack(anchor="w", padx=18, pady=(22, 18))
 
         self._step_labels = []
-        for i, (icon, label) in enumerate(self._STEPS):
+        for _i, (icon, label) in enumerate(self._STEPS):
             f = ctk.CTkFrame(self._side, fg_color="transparent", corner_radius=8)
             f.pack(fill="x", padx=10, pady=2)
             lbl = ctk.CTkLabel(f, text=f"  {icon}  {label}",
@@ -1920,10 +1920,12 @@ class MonthCloseDialog(ctk.CTkToplevel):
                             text_color=C["green"]),
                         gen_btn.configure(state="normal"),
                     ))
-                except Exception:
-                    self.after(0, lambda: (
+                except Exception as exc:
+                    # msg=… : `exc` n'existe plus quand la callback s'exécute
+                    # (avant : NameError, erreur jamais affichée, bouton bloqué).
+                    self.after(0, lambda msg=str(exc): (
                         status_lbl.configure(
-                            text=f"❌  Erreur : {e}",
+                            text=f"❌  Erreur : {msg}",
                             text_color=C["red"]),
                         gen_btn.configure(state="normal"),
                     ))

@@ -41,7 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r services/requirements-dev.txt
       - name: Ruff (lint + règles sécurité S)
-        run: ruff check services desktop/tests --output-format github
+        run: ruff check services desktop --output-format github
       - name: Syntaxe de tout le dépôt
         run: python -m compileall -q . -x "(\.venv|build|dist)"
       - name: Tests microservices
@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        req: [services/web, services/finance_api, services/ai_service, services/notifier]
+        req: [services/web, services/finance_api, services/ai_service, services/notifier, services/mcp_server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -164,7 +164,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [web, finance_api, ai_service, notifier]
+        service: [web, finance_api, ai_service, notifier, mcp_server]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -211,6 +211,7 @@ jobs:
             --security-opt no-new-privileges -v svcdata:/data \
             -e SUPABASE_URL=https://example.supabase.co -e SUPABASE_ANON_KEY=x \
             -e FINANCE_API_URL=http://127.0.0.1:1 -e SESSION_ENCRYPTION_KEY="$key" \
+            -e MCP_PUBLIC_URL=https://fintrack.example.com/mcp \
             -e NOTIFIER_INTERNAL_TOKEN="$(openssl rand -hex 24)" -e NOTIFIER_ENCRYPTION_KEY="$key" \
             "fintrack-${SERVICE}:ci"
           for _ in $(seq 1 30); do

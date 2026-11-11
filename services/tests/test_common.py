@@ -55,6 +55,13 @@ def test_counter_with_redis():
     assert c.incr("x", "a", window=60) == 1
     assert c.incr("x", "a", window=60) == 2
     assert c.get("x", "a") == 2
+    c.decr("x", "a")
+    c.decr("x", "a")
+    c.decr("x", "a")                      # jamais sous zéro
+    assert c.get("x", "a") == 0
+    c.decr("absent", "k")                 # clé inexistante : rien n'est créé
+    assert c.redis.keys("t:absent:*") == []
+    c.incr("x", "a", window=60)
     c.reset("x", "a")
     assert c.get("x", "a") == 0
 
@@ -94,3 +101,41 @@ def test_uvicorn_logs_are_json_and_access_log_disabled(capsys):
     assert len(lines) == 1, lines                      # l'accès uvicorn n'apparaît pas
     rec = json.loads(lines[0])                          # et le reste est du JSON
     assert rec["service"] == "svc" and rec["msg"] == "Started server process [1]"
+
+
+def test_request_context_middleware_headers_errors_and_no_leak():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from fintrack_common.http import RequestContextMiddleware
+    from fintrack_common.logs import request_id_var
+
+    app = FastAPI()
+    app.add_middleware(RequestContextMiddleware, static_prefix="/static/")
+    seen = {}
+
+    @app.get("/ok")
+    def ok():
+        seen["rid"] = request_id_var.get()
+        return {"ok": 1}
+
+    @app.get("/boom")
+    def boom():
+        raise RuntimeError("x")
+
+    @app.get("/static/a.css")
+    def css():
+        return "x"
+
+    c = TestClient(app, raise_server_exceptions=False)
+    r = c.get("/ok", headers={"X-Request-ID": "abcdef123456"})
+    assert r.headers["x-request-id"] == "abcdef123456" and seen["rid"] == "abcdef123456"
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert request_id_var.get() == "-"                         # rien ne déborde
+    assert c.get("/ok", headers={"X-Request-ID": "bad id!"}).headers["x-request-id"] != "bad id!"
+    r = c.get("/boom")
+    assert r.status_code == 500 and r.json() == {"detail": "Erreur interne."}
+    assert r.headers["x-request-id"]
+    assert c.get("/static/a.css?v=1").headers["cache-control"].startswith("public")
+    assert c.get("/static/a.css").headers["cache-control"] == "no-cache"

@@ -56,6 +56,36 @@ class SupabaseAuth:
             raise AuthExpired()
         return _session_from(r.json())
 
+    # ── Serveur OAuth 2.1 de Supabase Auth (consentement des clients MCP) ──
+    def _oauth(self, method: str, path: str, access_token: str, json: dict | None = None,
+               *, what: str = "") -> dict:
+        try:
+            r = self.http.request(method, path, json=json, headers={
+                "apikey": self.anon_key, "Authorization": f"Bearer {access_token}"})
+        except httpx.HTTPError as exc:
+            raise BackendError(503, "Service d'authentification indisponible.") from exc
+        if r.status_code == 401:
+            raise AuthExpired()
+        if r.status_code in (400, 404, 410, 422):
+            raise BackendError(400, "Demande d'autorisation invalide ou expirée — relancez "
+                                    "la connexion depuis votre client MCP.")
+        if r.status_code >= 400:
+            log.warning("Supabase OAuth (%s) -> %s", what or method, r.status_code)
+            raise BackendError(502, "Erreur du service d'authentification.")
+        return r.json()
+
+    def oauth_authorization(self, access_token: str, authorization_id: str) -> dict:
+        """Détails de la demande (client, redirect_uri, scope) ; si l'accès a
+        déjà été accordé : {"redirect_url": …} directement."""
+        return self._oauth("GET", f"/auth/v1/oauth/authorizations/{authorization_id}",
+                           access_token, what="détails de la demande")
+
+    def oauth_consent(self, access_token: str, authorization_id: str, approve: bool) -> str:
+        data = self._oauth("POST", f"/auth/v1/oauth/authorizations/{authorization_id}/consent",
+                           access_token, {"action": "approve" if approve else "deny"},
+                           what="consentement")
+        return data.get("redirect_url", "")
+
     def sign_out(self, access_token: str) -> None:
         try:
             self._post("/auth/v1/logout?scope=local", {}, token=access_token)

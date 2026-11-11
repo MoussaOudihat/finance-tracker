@@ -28,6 +28,10 @@ class User:
     id: str
     email: str
     token: str          # jeton brut, retransmis aux services en aval (RLS)
+    # Client OAuth (serveur OAuth 2.1 de Supabase Auth, ex. client MCP) ;
+    # vide pour une session classique (web, desktop).
+    client_id: str = ""
+    expires_at: int = 0
 
 
 class TokenVerifier:
@@ -64,7 +68,9 @@ class TokenVerifier:
                                 headers={"WWW-Authenticate": "Bearer"}) from exc
         if claims.get("role") != "authenticated":
             raise HTTPException(403, "Rôle non autorisé.")
-        return User(id=claims["sub"], email=claims.get("email", ""), token=token)
+        return User(id=claims["sub"], email=claims.get("email", ""), token=token,
+                    client_id=str(claims.get("client_id") or ""),
+                    expires_at=int(claims["exp"]))
 
 
 def bearer_token(authorization: str | None) -> str:

@@ -140,7 +140,7 @@ class DashboardPage:
         vn_band.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(vn_band,
-                     text=f"⚖️  Valeur nette",
+                     text="⚖️  Valeur nette",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=vn_color).grid(row=0, column=0, padx=16, pady=10, sticky="w")
         ctk.CTkLabel(vn_band,
@@ -422,7 +422,7 @@ def _ctk_legend(parent, labels, vals, colors, total,
     leg = ctk.CTkScrollableFrame(parent, fg_color=C["card"], height=120)
     leg.pack(fill="x", padx=12, pady=(0, 6))
     leg.grid_columnconfigure((0, 1), weight=1)
-    for i, (lbl, val) in enumerate(zip(labels, vals)):
+    for i, (lbl, val) in enumerate(zip(labels, vals, strict=False)):
         is_active = (active_filter and lbl == active_filter and
                      active_filter not in (FILTER_ALL_CATS, FILTER_ALL_PAYEES, None, ""))
         rf = ctk.CTkFrame(leg,
@@ -548,7 +548,7 @@ def _render_hbar(card, data, key: str, root=None,
         ax.invert_yaxis()
         ax.set_xlabel("€", fontsize=9)
         mx = max(amounts) if amounts else 1
-        for bar, val in zip(bars, amounts):
+        for bar, val in zip(bars, amounts, strict=False):
             ax.text(bar.get_width() + mx * 0.01,
                     bar.get_y() + bar.get_height() / 2,
                     f"{val:,.0f} €", va="center",
