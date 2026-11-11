@@ -1,17 +1,17 @@
 apiVersion: v2
 name: fintrack
-description: Fintrack — suivi financier personnel (web, finance-api, ai-service, notifier, redis)
+description: Fintrack — suivi financier personnel (web, finance-api, ai-service, notifier, mcp, redis)
 type: application
 # Version du chart et de l'application : alignées sur la release (vX.Y.Z),
 # réécrites par la CI au moment du `helm package`.
-version: 2.2.0
-appVersion: "2.2.0"
+version: 2.3.0
+appVersion: "2.3.0"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/MoussaOudihat/finance-tracker
 sources:
   - https://github.com/MoussaOudihat/finance-tracker
 maintainers:
   - name: Moussa Oudihat
-keywords: [finance, budget, fastapi, supabase]
+keywords: [finance, budget, fastapi, supabase, mcp]
 annotations:
   artifacthub.io/license: MIT
