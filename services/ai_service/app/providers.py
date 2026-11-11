@@ -51,8 +51,11 @@ class Providers:
             raise ProviderError("Claude n'est pas configuré sur ce serveur.")
         if self._anthropic is None:
             import anthropic
+            # Budget temps : 2 tentatives × 50 s (+ contexte finance-api 15 s)
+            # < 120 s, délai d'attente du web. Avant : 3 × 60 s — le web
+            # abandonnait alors que l'appel (facturé) se poursuivait.
             self._anthropic = anthropic.Anthropic(api_key=self.cfg.anthropic_api_key,
-                                                  timeout=60.0, max_retries=2)
+                                                  timeout=50.0, max_retries=1)
         return self._anthropic
 
     def _gem(self):

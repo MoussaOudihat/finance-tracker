@@ -203,3 +203,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_type_period   ON assets(asset_type, year, 
 CREATE INDEX IF NOT EXISTS idx_asset_tx_period      ON asset_transactions(year, month);
 CREATE INDEX IF NOT EXISTS idx_asset_tx_name        ON asset_transactions(asset_name);
 CREATE INDEX IF NOT EXISTS idx_budgets_period       ON budgets(year, month);
+
+-- Puis exécuter, dans cet ordre (idempotents) :
+--   1. supabase/migration_v2_3_atomic.sql  (écritures atomiques, synchro, index)
+--   2. supabase/migration_mcp_readonly.sql (accès MCP en lecture seule, RLS optimisée)

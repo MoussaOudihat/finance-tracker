@@ -47,7 +47,8 @@ def test_expense_crud_and_summary(api, user_id, seeded):
         "label": " Courses ", "payee": "lidl"})
     assert r.status_code == 201, r.text
     e = r.json()
-    assert e["payee"] == "LIDL" and e["label"] == "Courses" and e["user_id"] == user_id
+    assert e["payee"] == "LIDL" and e["label"] == "Courses" and "user_id" not in e
+    assert seeded.tables["expenses"][0]["user_id"] == user_id      # user_id imposé par la base
     s = api.get("/v1/months/2026/11/summary", headers=h(user_id)).json()
     assert s["expenses"] == 42.5 and s["by_category"][0]["name"] == "ALIMENTATION"
     # sync timestamp touché : le desktop saura qu'il doit récupérer avant d'envoyer

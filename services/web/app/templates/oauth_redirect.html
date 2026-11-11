@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Retour vers l'application{% endblock %}
+{% block head %}
+{# Navigation hors soumission de formulaire (voir oauth_handoff). L'URL est
+   validée côté serveur (liste d'hôtes) et échappée par Jinja. #}
+<meta http-equiv="refresh" content="0;url={{ url }}">
+{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{{ "Accès autorisé" if approved else "Accès refusé" }}</h1>
+  <p>Retour vers l'application cliente…</p>
+  <p><a class="btn btn-primary" href="{{ url }}" rel="noreferrer">Continuer</a></p>
+  <p class="muted small">Vous pouvez fermer cet onglet une fois la connexion confirmée dans votre client.</p>
+</section>
+{% endblock %}

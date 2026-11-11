@@ -172,9 +172,6 @@ class RevenuesPage:
                          text="Activé dans Paramètres → Rapports",
                          font=ctk.CTkFont(size=9), text_color="#64748B",
                          ).pack(side="right", padx=10)
-            bottom_row = 4
-        else:
-            bottom_row = 3
 
         # ── Inline add ───────────────────────────────────────
         band = ctk.CTkFrame(card, fg_color="#F0FDF4", corner_radius=10)

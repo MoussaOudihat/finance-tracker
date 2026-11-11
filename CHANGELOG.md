@@ -6,6 +6,57 @@ Ce projet suit le [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [2.3.0] — 2026-11-11
+
+> Migration de la base requise : voir [docs/MIGRATION_V2_3.md](docs/MIGRATION_V2_3.md).
+
+### Ajouté
+- 🔌 **Serveur MCP en lecture seule** (`services/mcp_server`, pod `mcp`, image `fintrack-mcp`) : interroger ses données depuis Claude Code, claude.ai ou opencode. Transport Streamable HTTP sans état, authentification OAuth 2.1 via le serveur OAuth de Supabase Auth (découverte RFC 9728, PKCE, enregistrement dynamique), 11 outils de lecture. Voir [docs/MCP.md](docs/MCP.md).
+- 🌐 web : page de consentement OAuth `/oauth/consent` (connexion préalable avec retour sur la page, CSRF, liste d'hôtes de retour autorisés `OAUTH_ALLOWED_REDIRECT_HOSTS`).
+- ☸️ Chart Helm : `mcp.enabled` (Deployment, Service, NetworkPolicy, routes Ingress `/mcp` et `/.well-known/oauth-protected-resource`).
+- 🗄️ `supabase/migration_mcp_readonly.sql` : un jeton OAuth (claim `client_id`) ne peut jamais écrire (politiques RLS restrictives) ; politiques propriétaires réécrites avec `(SELECT auth.uid())` (évaluation unique par requête).
+
+### Corrigé (revue de code v2.2)
+- 🔒 **Envoi desktop atomique** : l'envoi « tout supprimer puis réinsérer » se fait désormais en une transaction (`fintrack_replace_snapshot`). Avant, une panne en cours d'envoi laissait Supabase à moitié vide, et les erreurs de suppression étaient ignorées.
+- 🕐 **Verrou de synchro fiable** : la version `last_supabase_sync` est comparée par égalité, et non plus en comparant l'horloge du PC à celle du serveur. Un PC dont l'horloge avançait pouvait écraser une saisie web.
+- ⚛️ **Écritures web transactionnelles** (`fintrack_apply`) : récurrentes (saisies + marquage), épargne + compte lié, saisies groupées, copie des budgets. La version de synchro avance dans la même transaction. Plus de demi-écriture ni de doublon au nouvel essai.
+- 🔢 Identifiants attribués en SQL sous verrou par utilisateur. Le contrôle « mois clôturé » se fait dans la transaction, sans fenêtre de course.
+- 🔎 Recherche : les bornes de montant sont filtrées par la base, avant la limite de 2000 lignes (des résultats manquaient).
+- 🧮 Quota IA réservé avant l'appel (incrément atomique) et rendu en cas d'échec. Les requêtes simultanées ne dépassent plus la limite. Délai Claude ramené à 2 × 50 s, sous le délai du web (120 s).
+- `Counter.decr` atomique (WATCH/MULTI) : le compteur ne passe plus sous zéro.
+- Middleware de requêtes en ASGI pur : le `request_id` ne déborde plus d'une requête à l'autre.
+- Récurrente dont la catégorie a été supprimée : erreur 422 claire au lieu d'une erreur 500.
+- Synchro desktop, récupération (pull) :
+  - la version distante est lue **avant** les données : une saisie web faite pendant le téléchargement ne peut plus être écrasée par l'envoi suivant ;
+  - une table ou des réglages illisibles annulent la récupération (sauvegarde restaurée) au lieu d'être ignorés.
+- Envoi desktop : délai propre de 120 s pour la transaction d'envoi. Erreurs classées par code (`PGRST202`, `57014`), et non plus d'après le texte.
+- Épargne → compte lié : l'ajustement est calculé par la base, dans la transaction (deux versements simultanés s'additionnent au lieu de s'écraser).
+- Récurrentes appliquées deux fois en même temps : 409 « modifié entre-temps » (au lieu de 404).
+- MCP :
+  - `search_entries` signale une liste incomplète (`truncated`) ;
+  - une panne JWKS répond 503 + `Retry-After` (et non 401, qui forçait une nouvelle autorisation OAuth) ;
+  - l'Ingress suit le chemin de `mcp.publicUrl` et accepte `/mcp/`.
+- Web :
+  - une session expirée pendant le consentement OAuth ramène sur la page de consentement après reconnexion ;
+  - une seule règle anti open-redirect (refuse aussi CR/LF et caractères de contrôle) ;
+  - un seul point de rafraîchissement du jeton.
+- finance-api : paramètre `limit` (≤ 500) sur `/v1/search/{kind}` ; un aller-retour PostgREST de moins par saisie de revenu ou d'épargne ; `max(id)` lu une fois par opération SQL.
+- Desktop : boutons d'horizon de la projection (chacun appelait la commande du dernier) ; erreur de génération PDF jamais affichée (`NameError`) et bouton bloqué. Lint `B`/`S` activé sur le code desktop.
+- Performance :
+  - politiques RLS évaluées une fois par requête ;
+  - index `(user_id, …)`, car les id sont attribués par utilisateur ;
+  - patrimoine courant et catégories lus une fois par requête.
+
+### Modifié
+- ⚠️ **Migration requise avant déploiement** : `supabase/migration_v2_3_atomic.sql`. finance-api et l'app desktop v2.3 l'exigent : sans elle, erreur 503 explicite.
+- `fintrack_common.auth.User` expose `client_id` et `expires_at`.
+- web : les routes sont réparties par domaine (`routes_auth`, `routes_finance`, `routes_ia`, `routes_settings`, `routes_misc`, `routes_entries`). `main.py` passe de 1 255 à 240 lignes, sans changement de comportement.
+- Docker Compose : service `mcp` optionnel (`--profile mcp`).
+- Guide de migration et de mise en production : [docs/MIGRATION_V2_3.md](docs/MIGRATION_V2_3.md).
+- Connexion web : paramètre `next` (chemin local uniquement) pour revenir sur la page demandée.
+
+---
+
 ## [2.2.0] — 2026-11-06
 
 ### Ajouté (application web)

@@ -3,7 +3,7 @@
 > Application desktop Windows pour suivre ses finances personnelles — **locale, sécurisée, open source.**  
 > Synchronisation Supabase optionnelle pour le multi-appareils.
 
-![Version](https://img.shields.io/badge/Version-2.0.0-4F46E5)
+![Version](https://img.shields.io/badge/Version-2.3.0-4F46E5)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-22C55E)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows)
@@ -190,21 +190,24 @@ Dans votre projet Supabase → **Settings → API** :
 
 ---
 
-## 🌐 Interface web — microservices (Docker / Kubernetes) — v2.0
+## 🌐 Interface web — microservices (Docker / Kubernetes) — v2.3
 
 Accédez à Fintrack depuis un navigateur (mobile compris) avec **le même compte Supabase** que l'application desktop. Architecture détaillée : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Sécurité : [SECURITY.md](SECURITY.md) · Chaîne DevSecOps : [docs/DEVSECOPS.md](docs/DEVSECOPS.md).
 
 | Service | Rôle | État |
 |---|---|---|
 | **web** | Pages HTML, sessions (Redis), orchestration | sans état · HPA |
-| **finance-api** | Données : écrit ligne par ligne dans Supabase Postgres avec le jeton de l'utilisateur (RLS) | sans état · HPA |
+| **finance-api** | Données : chaque écriture est une transaction Supabase Postgres (`fintrack_apply`), avec le jeton de l'utilisateur (RLS) | sans état · HPA |
 | **ai-service** | Analyse, assistant conversationnel, catégorisation — Claude ou Gemini | sans état · HPA |
 | **notifier** | TickTick (OAuth), ntfy, Discord/Slack : alertes budget, rappel mensuel | volume · 1 réplica |
+| **mcp** (optionnel) | Serveur MCP en lecture seule pour Claude Code / claude.ai / opencode — OAuth 2.1 via Supabase ([docs/MCP.md](docs/MCP.md)) | sans état · réplicable |
 | **redis** | Sessions et compteurs (quotas IA, tentatives de connexion) | éphémère |
 
 **Dans le navigateur** : tableau de bord, dépenses / revenus / épargne (avec la synchro Épargne → Patrimoine), **budgets** (alertes à 80 % et 100 %), patrimoine, **assistant IA** (analyse de la période, questions libres, suggestion de catégorie), **notifications** (TickTick, ntfy, webhooks). L'analyse avancée, la projection, les exports et la clôture de mois restent dans l'app desktop.
 
-> **Desktop + web** : le web écrit ligne par ligne et ne peut plus écraser les données. L'app desktop refuse désormais d'envoyer sa base si des modifications ont été faites ailleurs depuis sa dernière synchro : elle demande de récupérer d'abord.
+> **Desktop + web** : chaque écriture du web et chaque envoi du desktop est une transaction (tout ou rien). L'app desktop refuse d'envoyer sa base si des modifications ont été faites ailleurs depuis sa dernière synchro (version comparée par le serveur, sous verrou) : elle demande de récupérer d'abord.
+>
+> **Mise à jour vers la v2.3** : une migration de la base est requise **avant** le déploiement — [docs/MIGRATION_V2_3.md](docs/MIGRATION_V2_3.md).
 
 ### Docker Compose (ou Podman Compose)
 ```bash
@@ -222,7 +225,7 @@ kubectl label ns fintrack pod-security.kubernetes.io/enforce=restricted
 python deploy/gen_secrets.py --k8s                 # → deploy/helm/secrets.env (ignoré par git)
 kubectl -n fintrack create secret generic fintrack-secrets --from-env-file=deploy/helm/secrets.env
 
-helm upgrade --install fintrack oci://ghcr.io/moussaoudihat/charts/fintrack --version 2.0.0 -n fintrack \
+helm upgrade --install fintrack oci://ghcr.io/moussaoudihat/charts/fintrack --version 2.3.0 -n fintrack \
   --set config.supabaseUrl=https://<projet>.supabase.co \
   --set secrets.existingSecret=fintrack-secrets \
   --set ingress.host=fintrack.mondomaine.fr
@@ -235,7 +238,7 @@ Le chart applique : NetworkPolicies « deny-all » + flux explicites (sortie Int
 ### Registres d'images
 | Registre | Images | Chart |
 |---|---|---|
-| **GHCR** (toujours) | `ghcr.io/moussaoudihat/fintrack-{web,finance-api,ai-service,notifier}` | `oci://ghcr.io/moussaoudihat/charts/fintrack` |
+| **GHCR** (toujours) | `ghcr.io/moussaoudihat/fintrack-{web,finance-api,ai-service,notifier,mcp}` | `oci://ghcr.io/moussaoudihat/charts/fintrack` |
 | **Docker Hub** (si configuré) | `docker.io/<utilisateur>/fintrack-…` | `oci://registry-1.docker.io/<utilisateur>/fintrack` |
 
 Pour activer Docker Hub : créer un jeton d'accès *Read & Write* sur hub.docker.com, puis dans GitHub → *Settings → Secrets and variables → Actions* : variable `DOCKERHUB_USERNAME`, secret `DOCKERHUB_TOKEN`.
@@ -244,6 +247,7 @@ Pour activer Docker Hub : créer un jeton d'accès *Read & Write* sur hub.docker
 - **Claude / Gemini** : clés serveur `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` (secrets de ai-service). Modèles : `CLAUDE_MODEL` (défaut `claude-opus-5-5`), `GEMINI_MODEL`. Quota `AI_DAILY_LIMIT` par utilisateur et par jour. Seul un **résumé agrégé** est envoyé au fournisseur, après consentement explicite.
 - **TickTick** : créer une application sur [developer.ticktick.com](https://developer.ticktick.com), URL de redirection `https://<votre-hôte>/parametres/ticktick/callback`, puis renseigner `TICKTICK_CLIENT_ID`, `TICKTICK_REDIRECT_URI` et le secret `ticktick_client_secret`. L'utilisateur clique ensuite « Connecter TickTick » dans Notifications.
 - **ntfy / Discord / Slack** : URL saisie par l'utilisateur, limitée aux hôtes de `NOTIFIER_ALLOWED_HOSTS` (anti-SSRF).
+- **MCP (Claude Code, claude.ai, opencode)** : serveur MCP en lecture seule (`mcp.enabled: true`), authentification OAuth 2.1 via Supabase Auth. Mise en place : [docs/MCP.md](docs/MCP.md).
 
 ### Développement
 ```bash

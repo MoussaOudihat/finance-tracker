@@ -8,6 +8,7 @@
   {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
   <form method="post" action="/connexion" class="form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="next" value="{{ next or '/' }}">
     <label>Email
       <input name="identifier" type="email" autocomplete="email" value="{{ identifier or '' }}" required autofocus>
     </label>

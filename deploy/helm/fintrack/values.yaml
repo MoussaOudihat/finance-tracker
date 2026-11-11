@@ -78,6 +78,25 @@ notifier:
     size: 256Mi
     storageClass: ""        # vide = classe par défaut du cluster
 
+mcp:
+  # Serveur MCP en lecture seule (Claude Code, claude.ai, opencode…), exposé
+  # sur https://<ingress.host>/mcp. Prérequis Supabase : serveur OAuth 2.1
+  # activé (Authentication → OAuth Server), enregistrement dynamique des
+  # clients, Site URL = https://<ingress.host>, Authorization path =
+  # /oauth/consent, et migration supabase/migration_mcp_readonly.sql appliquée.
+  enabled: false
+  publicUrl: ""             # vide = https://<ingress.host>/mcp
+  exposeDetails: true       # false : agrégats seulement (pas de liste d'opérations)
+  # Hôtes https acceptés comme adresse de retour OAuth (la boucle locale
+  # http://localhost des clients CLI est toujours acceptée)
+  allowedRedirectHosts: claude.ai,claude.com
+  replicas: 2
+  resources:
+    requests: { cpu: 25m, memory: 96Mi }
+    limits: { memory: 192Mi }
+  autoscaling: { enabled: false, minReplicas: 2, maxReplicas: 4, targetCPU: 70 }
+  pdb: { enabled: true }
+
 redis:
   # Garder aligné avec deploy/compose/compose.yaml (Dependabot ne suit que Compose)
   image: docker.io/library/redis:8.10-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537

@@ -345,7 +345,7 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
 
     @app.get("/v1/recurring")
     def get_recurring(year: Year, month: Month, r: Repo = Depends(repo)):
-        mo = r.month(year, month, create=False)
+        mo = r.month(year, month)
         return {"closed": bool(mo and mo.get("closed")),
                 "items": ledger.recurring(r, year, month)}
 
@@ -380,8 +380,9 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
                    category_id: Optional[int] = None,
                    min_amount: Annotated[Optional[float], Query(ge=0, le=1e9)] = None,
                    max_amount: Annotated[Optional[float], Query(ge=0, le=1e9)] = None,
+                   limit: Annotated[int, Query(ge=1, le=500)] = 200,
                    r: Repo = Depends(repo)):
-        return ledger.search(r, kind, q, category_id, min_amount, max_amount)
+        return ledger.search(r, kind, q, category_id, min_amount, max_amount, limit)
 
     @app.post("/v1/revenues", status_code=201)
     def post_revenue(body: RevenueIn, r: Repo = Depends(repo)):

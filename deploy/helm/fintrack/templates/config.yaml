@@ -27,4 +27,9 @@ data:
   TICKTICK_CLIENT_ID: {{ .Values.config.ticktickClientId | quote }}
   TICKTICK_REDIRECT_URI: {{ include "fintrack.ticktickRedirect" . | quote }}
   FORWARDED_ALLOW_IPS: {{ .Values.config.forwardedAllowIps | quote }}
+  {{- if .Values.mcp.enabled }}
+  MCP_PUBLIC_URL: {{ include "fintrack.mcpPublicUrl" . | quote }}
+  MCP_EXPOSE_DETAILS: {{ ternary "true" "false" .Values.mcp.exposeDetails | quote }}
+  OAUTH_ALLOWED_REDIRECT_HOSTS: {{ .Values.mcp.allowedRedirectHosts | quote }}
+  {{- end }}
   FINTRACK_VERSION: {{ .Chart.AppVersion | quote }}

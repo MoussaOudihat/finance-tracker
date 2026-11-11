@@ -111,6 +111,7 @@ jobs:
           - { dir: finance_api, name: finance-api }
           - { dir: ai_service, name: ai-service }
           - { dir: notifier, name: notifier }
+          - { dir: mcp_server, name: mcp }
     env:
       DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
     steps:

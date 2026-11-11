@@ -645,7 +645,7 @@ class App(ctk.CTk):
         volontairement non persistée, pour ne jamais écraser un repli
         explicite d'un autre groupe.
         """
-        for label, g in self._nav_groups.items():
+        for _label, g in self._nav_groups.items():
             if page_key in g["keys"] and not g["expanded"]:
                 g["expanded"] = True
                 g["content"].pack(fill="x", padx=0, pady=0, after=g["header"])

@@ -324,10 +324,10 @@ def _line_hover(fig, ax, lines_data, x_labels):
         best_dist = 0.35
         best_text = None
         best_xy   = None
-        for line_obj, cname, y_vals in lines_data:
+        for line_obj, cname, _y_vals in lines_data:
             xdata = line_obj.get_xdata()
             ydata = line_obj.get_ydata()
-            for xi, yi in zip(xdata, ydata):
+            for xi, yi in zip(xdata, ydata, strict=False):
                 dist = abs(ev.xdata - xi)
                 if dist < best_dist:
                     best_dist = dist
@@ -514,7 +514,7 @@ def _section_month_detail(parent, db, y, m, app, toggle_cat, toggle_payee):
 
             total_p = sum(vals_p)
             items = [(lbl, f"{val:,.0f} €  ({val/total_p*100:.0f}%)" if total_p else f"{val:,.0f} €")
-                     for lbl, val in zip(labels_p, vals_p)]
+                     for lbl, val in zip(labels_p, vals_p, strict=False)]
             _ctk_legend(parent, items, colors_p,
                         toggle_fn=toggle_cat, active_filter=cat_f,
                         height=160, font_size=11)
@@ -775,7 +775,7 @@ def _draw_stacked(parent, db, n_months: int, app, toggle_cat):
             bars = ax.bar(x, vals, bottom=bottoms, color=colors[ci],
                           alpha=alpha, width=0.65, label=cname)
             bar_groups.append((bars, cname, vals, list(bottoms)))
-            bottoms = [b + v for b, v in zip(bottoms, vals)]
+            bottoms = [b + v for b, v in zip(bottoms, vals, strict=False)]
 
         for i, total in enumerate(bottoms):
             if total > 0:
@@ -817,7 +817,7 @@ def _draw_stacked(parent, db, n_months: int, app, toggle_cat):
                 return
             hit = False
             for bars, cname, vals, bots in bar_groups:
-                for i, (bar, val, bot) in enumerate(zip(bars, vals, bots)):
+                for i, (bar, val, _bot) in enumerate(zip(bars, vals, bots, strict=False)):
                     if bar.contains(ev)[0] and val > 0:
                         pct = val / bottoms[i] * 100 if bottoms[i] else 0
                         ann.xy = (ev.xdata, ev.ydata)
@@ -840,8 +840,8 @@ def _draw_stacked(parent, db, n_months: int, app, toggle_cat):
         def on_click(ev):
             if ev.inaxes != ax:
                 return
-            for bars, cname, vals, bots in bar_groups:
-                for bar, val in zip(bars, vals):
+            for bars, cname, vals, _bots in bar_groups:
+                for bar, val in zip(bars, vals, strict=False):
                     if bar.contains(ev)[0] and val > 0:
                         toggle_cat(cname)
                         return

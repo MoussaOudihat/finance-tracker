@@ -104,6 +104,22 @@ services:
     networks: [backend, egress]
     deploy: { resources: { limits: { cpus: "0.25", memory: 192M, pids: 128 } } }
 
+  # Serveur MCP en lecture seule (optionnel) : docker compose --profile mcp up -d
+  # Le reverse proxy TLS doit router /mcp et /.well-known/oauth-protected-resource*
+  # vers 127.0.0.1:${FINTRACK_MCP_PORT:-8090}, le reste vers web (voir docs/MCP.md).
+  mcp:
+    <<: *service
+    profiles: [mcp]
+    build: { <<: *build, args: { SERVICE: mcp_server } }
+    image: ghcr.io/moussaoudihat/fintrack-mcp:${FINTRACK_TAG:-dev}
+    environment:
+      FINANCE_API_URL: http://finance-api:8000
+    ports: ["127.0.0.1:${FINTRACK_MCP_PORT:-8090}:8000"]
+    networks: [backend, egress]      # egress : clés publiques JWKS de Supabase
+    depends_on:
+      finance-api: { condition: service_healthy }
+    deploy: { resources: { limits: { cpus: "0.25", memory: 192M, pids: 128 } } }
+
   redis:
     <<: *hardening
     image: docker.io/library/redis:8.10-alpine@sha256:21090af93f8324db2f0f0f4f38a7c60369d47d917e000c3423d89d2ae2883537

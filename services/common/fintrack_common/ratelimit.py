@@ -6,9 +6,12 @@ Redis n'est pas configuré — utile en développement et dans les tests.
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from collections import OrderedDict
+
+log = logging.getLogger(__name__)
 
 
 def _key(*parts: str) -> str:
@@ -60,8 +63,27 @@ class Counter:
         """Annule une consommation (ex. requête IA échouée : non décomptée)."""
         k = self._full(scope, *parts)
         if self.redis is not None:
-            if int(self.redis.get(k) or 0) > 0:
-                self.redis.decr(k)
+            # Lire-puis-décrémenter en deux commandes n'est pas atomique : deux
+            # annulations simultanées pouvaient passer le compteur sous zéro
+            # (quota offert). WATCH/MULTI : la décrémentation n'a lieu que si
+            # la valeur lue n'a pas changé entre-temps ; sinon on relit.
+            import redis as _redis
+            with self.redis.pipeline() as pipe:
+                for _ in range(10):
+                    try:
+                        pipe.watch(k)
+                        if int(pipe.get(k) or 0) <= 0:
+                            pipe.unwatch()
+                            return
+                        pipe.multi()
+                        pipe.decr(k)
+                        pipe.execute()
+                        return
+                    except _redis.WatchError:
+                        continue
+            # Contention extrême : on préfère perdre un remboursement que
+            # bloquer la requête — mais jamais en silence.
+            log.warning("Counter.decr abandonné après 10 conflits (%s)", scope)
             return
         with self._lock:
             v = self._local.get(k)

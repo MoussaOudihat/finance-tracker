@@ -58,6 +58,27 @@ capabilities:
   drop: [ALL]
 {{- end -}}
 
+{{/* URL publique du serveur MCP (identifiant de ressource OAuth) */}}
+{{- define "fintrack.mcpPublicUrl" -}}
+{{- if .Values.mcp.publicUrl -}}
+{{ .Values.mcp.publicUrl }}
+{{- else -}}
+https://{{ .Values.ingress.host }}/mcp
+{{- end -}}
+{{- end -}}
+
+{{/* Chemin du serveur MCP, déduit de l'URL publique (Ingress = application) */}}
+{{- define "fintrack.mcpPath" -}}
+{{- $u := urlParse (include "fintrack.mcpPublicUrl" .) -}}
+{{- if ne $u.host .Values.ingress.host -}}
+{{- fail (printf "mcp.publicUrl doit utiliser l'hôte de l'Ingress (%s), reçu : %s" .Values.ingress.host $u.host) -}}
+{{- end -}}
+{{- if or (not $u.path) (eq $u.path "/") -}}
+{{- fail "mcp.publicUrl doit contenir un chemin, ex. https://<hôte>/mcp" -}}
+{{- end -}}
+{{- $u.path -}}
+{{- end -}}
+
 {{/* URL de redirection TickTick par défaut */}}
 {{- define "fintrack.ticktickRedirect" -}}
 {{- if .Values.config.ticktickRedirectUri -}}

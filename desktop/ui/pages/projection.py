@@ -415,10 +415,13 @@ class ProjectionPage:
             _recalculate()
 
         # Override les boutons horizon
+        # cmd=… lie la commande de CE bouton (sans cela, tous les boutons
+        # appelaient la commande du dernier : la lambda lit la variable de
+        # boucle au moment du clic).
         for widget in horizon_buttons_frame.winfo_children():
             original_cmd = widget.cget("command")
-            widget.configure(command=lambda: (
-                original_cmd() if callable(original_cmd) else None,
+            widget.configure(command=lambda cmd=original_cmd: (
+                cmd() if callable(cmd) else None,
                 _recalculate(),
             ))
 
@@ -602,7 +605,7 @@ def _compute_projection(patrimoine_initial: float, epargne_mensuelle: float,
 
     for annee in range(1, horizon_ans + 1):
         # Croissance avec intérêts composés
-        for mois in range(12):
+        for _mois in range(12):
             capital = capital * (1 + taux_mensuel) + epargne_mensuelle
 
         # Croissance linéaire (sans rendement)

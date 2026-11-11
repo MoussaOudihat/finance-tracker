@@ -18,8 +18,10 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S", "B", "E731"]
 "desktop/tests/**" = ["S", "B"]
-# Code desktop historique : non concerné par le lint strict des services
-"desktop/**" = ["S", "B", "UP", "E"]
+# Code desktop : règles de bugs (B) et de sécurité (S) actives. Tolérés :
+# style historique (UP, E) et try/except silencieux de l'interface (S110,
+# S112 : affichage « au mieux », une erreur de rendu ne doit pas bloquer).
+"desktop/**" = ["UP", "E", "S110", "S112"]
 
 [tool.bandit]
 exclude_dirs = [".venv", "services/tests", "desktop"]

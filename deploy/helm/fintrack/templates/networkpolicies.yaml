@@ -37,7 +37,7 @@ spec:
   podSelector:
     matchExpressions:
       - { key: app.kubernetes.io/instance, operator: In, values: [{{ $inst }}] }
-      - { key: app.kubernetes.io/name, operator: In, values: [web, finance-api, ai-service, notifier] }
+      - { key: app.kubernetes.io/name, operator: In, values: [web, finance-api, ai-service, notifier, mcp] }
   policyTypes: [Egress]
   egress:
     - to:
@@ -83,12 +83,38 @@ spec:
         - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: web } }
         - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: ai-service } }
         - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: fintrack-test } }
+        {{- if .Values.mcp.enabled }}
+        - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: mcp } }
+        {{- end }}
       ports: [{ port: 8000 }]
   egress:
     - to:
         - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: notifier } }
       ports: [{ port: 8000 }]
 ---
+{{- if .Values.mcp.enabled }}
+# Serveur MCP : exposé par l'Ingress, ne parle qu'à finance-api (+ JWKS
+# Supabase via la règle de sortie HTTPS commune).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $inst }}-mcp
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: mcp } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace }} }
+        - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: fintrack-test } }
+      ports: [{ port: 8000 }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/instance: {{ $inst }}, app.kubernetes.io/name: finance-api } }
+      ports: [{ port: 8000 }]
+---
+{{- end }}
 # Pod de `helm test` : sortie vers web et finance-api uniquement (son
 # identité propre le garde hors du Service web et du PDB).
 apiVersion: networking.k8s.io/v1

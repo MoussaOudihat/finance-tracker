@@ -482,7 +482,7 @@ class Database:
             JOIN months mo ON e.month_id = mo.id
             WHERE (mo.year, mo.month) IN ({placeholders})
             GROUP BY c.id ORDER BY total DESC
-        """
+        """  # noqa: S608
         result = [dict(r) for r in self.con.execute(q, params).fetchall()]
         with self._cache_lock:
             self._cache[ck] = result
@@ -511,7 +511,7 @@ class Database:
             WHERE (mo.year, mo.month) IN ({placeholders})
             GROUP BY mo.year, mo.month, c.id
             ORDER BY mo.year, mo.month
-        """
+        """  # noqa: S608
         result = [dict(r) for r in self.con.execute(q, params).fetchall()]
         with self._cache_lock:
             self._cache[ck] = result
@@ -536,7 +536,7 @@ class Database:
             HAVING name <> ''
             ORDER BY total DESC
             LIMIT ?
-        """
+        """  # noqa: S608
         return [dict(r) for r in self.con.execute(q, params).fetchall()]
 
     def get_top_expense_labels_range(self, months: list[tuple[int, int]],
@@ -1307,7 +1307,7 @@ class Database:
             parsed_rows: list[tuple[bool, bool, dict]] = []
             needed_cats: set[str] = set()
 
-            for fname, content in self._iter_csv_from_zip(zip_path):
+            for _fname, content in self._iter_csv_from_zip(zip_path):
                 reader     = csv.DictReader(content.splitlines())
                 fieldnames = [k.strip() for k in (reader.fieldnames or [])]
                 is_expense = "Category" in fieldnames or "à qui" in fieldnames

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from contextlib import contextmanager
 from typing import Annotated, Literal, Optional
 
 import httpx
@@ -161,13 +162,20 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
             raise HTTPException(502, "Données indisponibles.")
         return r.json()
 
+    @contextmanager
     def _quota(user: User):
-        """Vérifie le quota AVANT l'appel, ne le décompte qu'APRÈS succès :
-        une panne du fournisseur ne consomme pas les requêtes du jour."""
+        """Réserve une unité du quota AVANT l'appel (incrément atomique : des
+        requêtes simultanées ne peuvent plus toutes passer), puis la rend si
+        l'appel échoue (une panne du fournisseur ne consomme rien)."""
         day = dt.date.today().isoformat()
-        if quota.get("daily", user.id, day) >= daily_limit:
+        if quota.incr("daily", user.id, day, window=86_400) > daily_limit:
+            quota.decr("daily", user.id, day)
             raise HTTPException(429, f"Limite quotidienne de {daily_limit} requêtes IA atteinte.")
-        return lambda: quota.incr("daily", user.id, day, window=86_400)
+        try:
+            yield
+        except BaseException:
+            quota.decr("daily", user.id, day)
+            raise
 
     def _run(fn):
         try:
@@ -184,49 +192,46 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
 
     @app.post("/v1/insights")
     def insights(body: InsightsIn, user: User = Depends(current_user)):
-        charge = _quota(user)
-        ctx = _finance_get(user, "/v1/ai-context", year=body.year, month=body.month,
-                           months=body.months)
-        prompt = INSIGHTS_PROMPT.format(context=json.dumps(ctx, ensure_ascii=False))
-        text = _run(lambda: prov.complete(body.provider, SYSTEM_ADVISOR,
-                                          [{"role": "user", "content": prompt}],
-                                          effort="medium", max_tokens=6000))
-        charge()
+        with _quota(user):
+            ctx = _finance_get(user, "/v1/ai-context", year=body.year, month=body.month,
+                               months=body.months)
+            prompt = INSIGHTS_PROMPT.format(context=json.dumps(ctx, ensure_ascii=False))
+            text = _run(lambda: prov.complete(body.provider, SYSTEM_ADVISOR,
+                                              [{"role": "user", "content": prompt}],
+                                              effort="medium", max_tokens=6000))
         return {"provider": body.provider, "text": text}
 
     @app.post("/v1/chat")
     def chat(body: ChatIn, user: User = Depends(current_user)):
         if body.messages[-1].role != "user":
             raise HTTPException(422, "Le dernier message doit venir de l'utilisateur.")
-        charge = _quota(user)
-        ctx = _finance_get(user, "/v1/ai-context", year=body.year, month=body.month, months=6)
-        # Le contexte ouvre la conversation ; l'historique suit (append-only).
-        msgs = [{"role": "user", "content":
-                 CHAT_INTRO.format(context=json.dumps(ctx, ensure_ascii=False))},
-                {"role": "assistant", "content": "C'est noté, je vous écoute."}]
-        msgs += [m.model_dump() for m in body.messages]
-        # Effort « medium » : en « low » le modèle répondait trop vite à côté
-        # de la question (mauvais mois, moyenne au lieu du chiffre demandé).
-        text = _run(lambda: prov.complete(body.provider, SYSTEM_ADVISOR, msgs,
-                                          effort="medium", max_tokens=4000))
-        charge()
+        with _quota(user):
+            ctx = _finance_get(user, "/v1/ai-context", year=body.year, month=body.month, months=6)
+            # Le contexte ouvre la conversation ; l'historique suit (append-only).
+            msgs = [{"role": "user", "content":
+                     CHAT_INTRO.format(context=json.dumps(ctx, ensure_ascii=False))},
+                    {"role": "assistant", "content": "C'est noté, je vous écoute."}]
+            msgs += [m.model_dump() for m in body.messages]
+            # Effort « medium » : en « low » le modèle répondait trop vite à côté
+            # de la question (mauvais mois, moyenne au lieu du chiffre demandé).
+            text = _run(lambda: prov.complete(body.provider, SYSTEM_ADVISOR, msgs,
+                                              effort="medium", max_tokens=4000))
         return {"provider": body.provider, "text": text}
 
     @app.post("/v1/categorize")
     def categorize(body: CategorizeIn, user: User = Depends(current_user)):
         if not (body.label.strip() or body.payee.strip()):
             raise HTTPException(422, "Libellé ou enseigne requis.")
-        charge = _quota(user)
-        cats = _finance_get(user, "/v1/categories")
-        names = [c["name"] for c in cats]
-        if not names:
-            raise HTTPException(409, "Aucune catégorie définie.")
-        prompt = (f"Catégories : {json.dumps(names, ensure_ascii=False)}\n"
-                  f"Libellé : {body.label.strip() or '—'}\n"
-                  f"Enseigne : {body.payee.strip() or '—'}")
-        name = _run(lambda: prov.choose(body.provider, SYSTEM_CATEGORIZER, prompt, names))
-        cat = next(c for c in cats if c["name"] == name)
-        charge()
+        with _quota(user):
+            cats = _finance_get(user, "/v1/categories")
+            names = [c["name"] for c in cats]
+            if not names:
+                raise HTTPException(409, "Aucune catégorie définie.")
+            prompt = (f"Catégories : {json.dumps(names, ensure_ascii=False)}\n"
+                      f"Libellé : {body.label.strip() or '—'}\n"
+                      f"Enseigne : {body.payee.strip() or '—'}")
+            name = _run(lambda: prov.choose(body.provider, SYSTEM_CATEGORIZER, prompt, names))
+            cat = next(c for c in cats if c["name"] == name)
         return {"category_id": cat["id"], "category": name, "provider": body.provider}
 
     @app.post("/v1/categorize/batch")
@@ -238,23 +243,22 @@ def create_app(*, verifier: Optional[TokenVerifier] = None,
         results: list[Optional[dict]] = [None] * len(body.items)
         if not todo:
             return {"provider": body.provider, "results": results}
-        charge = _quota(user)
-        cats = _finance_get(user, "/v1/categories")
-        by_name = {c["name"]: c["id"] for c in cats}
-        if not by_name:
-            raise HTTPException(409, "Aucune catégorie définie.")
-        lines = "\n".join(
-            f"{n}. Libellé : {json.dumps(it.label.strip(), ensure_ascii=False)} | "
-            f"Enseigne : {json.dumps(it.payee.strip(), ensure_ascii=False)}"
-            for n, (_, it) in enumerate(todo))
-        prompt = (f"Catégories : {json.dumps(list(by_name), ensure_ascii=False)}\n"
-                  f"Lignes à classer ({len(todo)}) :\n{lines}")
-        names = _run(lambda: prov.choose_many(body.provider, SYSTEM_CATEGORIZER_BATCH,
-                                              prompt, list(by_name), len(todo)))
-        for (orig, _), name in zip(todo, names, strict=True):
-            if name is not None:
-                results[orig] = {"category_id": by_name[name], "category": name}
-        charge()
+        with _quota(user):
+            cats = _finance_get(user, "/v1/categories")
+            by_name = {c["name"]: c["id"] for c in cats}
+            if not by_name:
+                raise HTTPException(409, "Aucune catégorie définie.")
+            lines = "\n".join(
+                f"{n}. Libellé : {json.dumps(it.label.strip(), ensure_ascii=False)} | "
+                f"Enseigne : {json.dumps(it.payee.strip(), ensure_ascii=False)}"
+                for n, (_, it) in enumerate(todo))
+            prompt = (f"Catégories : {json.dumps(list(by_name), ensure_ascii=False)}\n"
+                      f"Lignes à classer ({len(todo)}) :\n{lines}")
+            names = _run(lambda: prov.choose_many(body.provider, SYSTEM_CATEGORIZER_BATCH,
+                                                  prompt, list(by_name), len(todo)))
+            for (orig, _), name in zip(todo, names, strict=True):
+                if name is not None:
+                    results[orig] = {"category_id": by_name[name], "category": name}
         return {"provider": body.provider, "results": results}
 
     return app
