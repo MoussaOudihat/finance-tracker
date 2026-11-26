@@ -85,7 +85,7 @@ jobs:
       - run: pip install "bandit[sarif,toml]==1.9.4"
       - name: Bandit (services)
         run: bandit -r services -c pyproject.toml -x services/tests -f sarif -o bandit.sarif --exit-zero
-      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with: { sarif_file: bandit.sarif, category: bandit }
       - name: Échec sur sévérité moyenne ou plus
         run: bandit -r services -c pyproject.toml -x services/tests -ll
@@ -106,7 +106,7 @@ jobs:
           --config p/dockerfile --config p/kubernetes
           --exclude tests --exclude services/tests
           --sarif --sarif-output=semgrep.sarif services deploy
-      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         if: always()
         with: { sarif_file: semgrep.sarif, category: semgrep }
 
@@ -191,7 +191,7 @@ jobs:
           output: trivy-${{ matrix.service }}.sarif
           ignore-unfixed: true
           severity: CRITICAL,HIGH
-      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         if: always()
         with: { sarif_file: "trivy-${{ matrix.service }}.sarif", category: "trivy-${{ matrix.service }}" }
       - name: Trivy — échec sur CRITICAL/HIGH corrigeable
@@ -233,7 +233,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with: { version: v3.17.3 }
       - name: Helm lint (strict)
         run: helm lint deploy/helm/fintrack --strict --set config.supabaseUrl=https://ci.supabase.co --set secrets.supabaseAnonKey=ci
@@ -261,7 +261,7 @@ jobs:
           limit-severities-for-sarif: true
           output: trivy-config.sarif
           severity: CRITICAL,HIGH,MEDIUM
-      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         if: always()
         with: { sarif_file: trivy-config.sarif, category: trivy-config }
       - name: Trivy — échec sur CRITICAL/HIGH
